@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Edutrack — One-Page Flyer</title>
+<style>
+  :root {
+    --navy-950: #020617;
+    --navy-900: #0f172a;
+    --navy-300: #94a3b8;
+    --navy-400: #64748b;
+    --brand: #2563eb;
+    --brand-400: #60a5fa;
+    --violet: #7c3aed;
+    --emerald: #10b981;
+    --amber: #f59e0b;
+    --white: #ffffff;
+    --wa: #25d366;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { background: #020617; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    color: var(--white);
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+
+  /* A4 portrait: 210mm x 297mm = 794 x 1123 px @96dpi */
+  @page { size: A4 portrait; margin: 0; }
+  .flyer {
+    width: 794px;
+    height: 1123px;
+    overflow: hidden;
+    background: var(--navy-950);
+    position: relative;
+    padding: 30px 40px 22px;
+    display: flex;
+    flex-direction: column;
+  }
+
+  /* background decor */
+  .bg-grid {
+    position: absolute; inset: 0;
+    background-image:
+      linear-gradient(to right, rgba(148,163,184,.07) 1px, transparent 1px),
+      linear-gradient(to bottom, rgba(148,163,184,.07) 1px, transparent 1px);
+    background-size: 48px 48px;
+    pointer-events: none;
+  }
+  .orb {
+    position: absolute; border-radius: 50%; filter: blur(80px); pointer-events: none;
+  }
+
+  .content { position: relative; z-index: 2; flex: 1; display: flex; flex-direction: column; }
+
+  /* header */
+  .header { display: flex; align-items: center; justify-content: space-between; }
+  .logo-row { display: flex; align-items: center; gap: 12px; }
+  .logo-box {
+    width: 46px; height: 46px; border-radius: 12px;
+    background: linear-gradient(135deg, var(--brand), var(--violet));
+    display: flex; align-items: center; justify-content: center;
+    box-shadow: 0 8px 22px rgba(37,99,235,.4);
+  }
+  .wordmark { font-size: 34px; font-weight: 800; letter-spacing: -0.02em; }
+  .wordmark span { color: var(--brand-400); }
+  .header .tag {
+    font-size: 12px; color: var(--navy-300); letter-spacing: .06em;
+    text-align: right; line-height: 1.5;
+  }
+  .header .tag b { color: var(--white); }
+
+  /* hero */
+  .hero { margin-top: 16px; text-align: center; }
+  .hero .kicker {
+    font-size: 12px; font-weight: 700; letter-spacing: .22em; text-transform: uppercase;
+    color: var(--brand-400);
+  }
+  .hero h1 { font-size: 36px; font-weight: 800; letter-spacing: -0.02em; line-height: 1.12; margin-top: 8px; }
+  .grad {
+    background: linear-gradient(90deg, var(--brand-400), #a78bfa);
+    -webkit-background-clip: text; background-clip: text; color: transparent;
+  }
+  .hero p { font-size: 14.5px; line-height: 1.55; color: var(--navy-300); margin-top: 9px; max-width: 640px; margin-left: auto; margin-right: auto; }
+
+  /* features */
+  .features { margin-top: 16px; display: grid; grid-template-columns: 1fr 1fr; gap: 9px; }
+  .feat {
+    background: rgba(255,255,255,.05); border: 1px solid rgba(255,255,255,.1);
+    border-radius: 12px; padding: 10px 13px;
+    display: flex; gap: 11px; align-items: flex-start;
+  }
+  .feat .ic {
+    width: 30px; height: 30px; border-radius: 8px; flex-shrink: 0;
+    background: linear-gradient(135deg, var(--brand), var(--violet));
+    display: flex; align-items: center; justify-content: center;
+  }
+  .feat h3 { font-size: 14.5px; font-weight: 700; }
+  .feat p { font-size: 12px; line-height: 1.45; color: var(--navy-300); margin-top: 2px; }
+
+  /* steps */
+  .steps {
+    margin-top: 14px; display: flex; gap: 10px;
+    background: rgba(255,255,255,.05); border: 1px solid rgba(255,255,255,.1);
+    border-radius: 14px; padding: 12px 16px;
+  }
+  .step { flex: 1; }
+  .step .n {
+    font-size: 15px; font-weight: 800;
+    background: linear-gradient(135deg, var(--brand-400), #a78bfa);
+    -webkit-background-clip: text; background-clip: text; color: transparent;
+  }
+  .step p { font-size: 11.5px; line-height: 1.45; color: var(--navy-300); margin-top: 3px; }
+  .step b { color: var(--white); }
+
+  /* pilot band */
+  .pilot {
+    margin-top: 14px; display: flex; align-items: center; justify-content: center; gap: 12px;
+    border-radius: 14px; padding: 12px 18px;
+    background: linear-gradient(135deg, rgba(16,185,129,.18), rgba(37,99,235,.14));
+    border: 1px solid rgba(16,185,129,.35);
+  }
+  .pilot .dot {
+    width: 10px; height: 10px; border-radius: 50%; background: var(--emerald);
+    animation: pulse 1.6s infinite; flex-shrink: 0;
+  }
+  @keyframes pulse { 0%,100% { box-shadow: 0 0 0 0 rgba(16,185,129,.5);} 50% { box-shadow: 0 0 0 7px rgba(16,185,129,0);} }
+  .pilot b { font-size: 17px; font-weight: 800; }
+  .pilot span { font-size: 13px; color: var(--navy-300); }
+
+  /* contact */
+  .contact {
+    margin-top: auto;
+    display: flex; align-items: center; justify-content: space-between; gap: 26px;
+    background: rgba(255,255,255,.06); border: 1px solid rgba(255,255,255,.14);
+    border-radius: 16px; padding: 16px 24px;
+  }
+  .contact h3 { font-size: 21px; font-weight: 800; }
+  .ci { display: flex; align-items: center; gap: 9px; font-size: 13.5px; color: var(--navy-300); margin-top: 8px; }
+  .ci svg { flex-shrink: 0; color: var(--brand-400); }
+  .ci b { color: var(--white); font-weight: 700; }
+  .ci .wa { color: var(--wa); font-weight: 700; }
+  .qr {
+    background: #fff; border-radius: 14px; padding: 10px 10px 8px;
+    text-align: center; border: 2px solid var(--wa); flex-shrink: 0;
+    box-shadow: 0 12px 36px rgba(0,0,0,.45);
+  }
+  .qr img { display: block; border-radius: 6px; }
+  .qr p { margin-top: 6px; font-size: 11px; font-weight: 700; color: #0f172a; line-height: 1.4; }
+
+  /* footer */
+  .foot {
+    margin-top: 16px; display: flex; justify-content: space-between; align-items: center;
+    font-size: 11.5px; color: var(--navy-400);
+    border-top: 1px solid rgba(255,255,255,.08); padding-top: 12px;
+  }
+  .foot b { color: var(--navy-300); }
+
+  @media print {
+    html, body { background: #020617; }
+    .flyer { margin: 0; }
+  }
+</style>
+</head>
+<body>
+<div class="flyer">
+  <div class="bg-grid"></div>
+  <div class="orb" style="width:300px;height:300px;background:rgba(37,99,235,.22);top:-120px;right:-90px;"></div>
+  <div class="orb" style="width:260px;height:260px;background:rgba(124,58,237,.16);bottom:-100px;left:-80px;"></div>
+
+  <div class="content">
+    <!-- Header -->
+    <div class="header">
+      <div class="logo-row">
+        <div class="logo-box">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 10 12 5 2 10l10 5 10-5z"/><path d="M6 12v5c0 1.7 2.7 3 6 3s6-1.3 6-3v-5"/><path d="M22 10v6"/></svg>
+        </div>
+        <span class="wordmark">Edu<span>track</span></span>
+      </div>
+      <div class="tag">
+        <b>All-in-one school management</b><br />
+        Report cards · Grading · Attendance · Fees · Payroll · Parent portal
+      </div>
+    </div>
+
+    <!-- Hero -->
+    <div class="hero">
+      <p class="kicker">Built for Nigerian schools — JSS to SSS</p>
+      <h1>Run your entire school from<br /><span class="grad">one cloud platform</span></h1>
+      <p>
+        Edutrack unifies report cards, grading matrices, attendance, fee management,
+        teacher payroll and a parent portal — in one secure system your whole school can use
+        from any phone, tablet or computer.
+      </p>
+    </div>
+
+    <!-- Features -->
+    <div class="features">
+      <div class="feat">
+        <div class="ic"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M16 13H8"/><path d="M16 17H8"/></svg></div>
+        <div><h3>Automated Report Cards</h3><p>Branded A4 PDF with class position &amp; remarks — in one click.</p></div>
+      </div>
+      <div class="feat">
+        <div class="ic"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/><rect x="8" y="2" width="8" height="4" rx="1"/><path d="M9 13l2 2 4-4"/></svg></div>
+        <div><h3>Instant Grading Matrix</h3><p>CA 40 + Exam 60 — totals &amp; grades compute as you type.</p></div>
+      </div>
+      <div class="feat">
+        <div class="ic"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4"/><path d="M8 2v4"/><path d="M3 10h18"/><path d="M9 15l2 2 4-4"/></svg></div>
+        <div><h3>Daily Attendance</h3><p>One-tap registers per class arm, flowing onto report cards.</p></div>
+      </div>
+      <div class="feat">
+        <div class="ic"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12V7H5a2 2 0 0 1 0-4h14v4"/><path d="M3 5v14a2 2 0 0 0 2 2h16v-5"/><path d="M18 12a2 2 0 0 0 0 4h4v-4Z"/></svg></div>
+        <div><h3>Fee Management</h3><p>Live balances, auto receipts and a defaulter list.</p></div>
+      </div>
+      <div class="feat">
+        <div class="ic"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><path d="M7 15l4-6 4 3 5-8"/></svg></div>
+        <div><h3>Teacher Payroll</h3><p>Paid / pending at a glance — no spreadsheet reconciliation.</p></div>
+      </div>
+      <div class="feat">
+        <div class="ic"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 14c1.5-1.5 3-3.2 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.8 0-3 .5-4.5 2-1.5-1.5-2.7-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4 3 5.5l7 7Z"/></svg></div>
+        <div><h3>Parent Portal</h3><p>Results, attendance, fee balances &amp; Pay Now online.</p></div>
+      </div>
+      <div class="feat">
+        <div class="ic"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M9 12l2 2 4-4"/></svg></div>
+        <div><h3>Secure &amp; Multi-Tenant</h3><p>Every school fully isolated — your data stays yours.</p></div>
+      </div>
+      <div class="feat">
+        <div class="ic"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8"/><path d="M12 17v4"/></svg></div>
+        <div><h3>Installable App</h3><p>Pin Edutrack to Android &amp; Windows like a native app.</p></div>
+      </div>
+    </div>
+
+    <!-- Steps -->
+    <div class="steps">
+      <div class="step"><div class="n">01</div><p><b>Register</b><br />your school in under a minute</p></div>
+      <div class="step"><div class="n">02</div><p><b>Onboard</b><br />class arms, term &amp; branding</p></div>
+      <div class="step"><div class="n">03</div><p><b>Add people</b><br />teachers, students &amp; parents</p></div>
+      <div class="step"><div class="n">04</div><p><b>Grade &amp; grow</b><br />mark, collect &amp; print report cards</p></div>
+    </div>
+
+    <!-- Pilot -->
+    <div class="pilot">
+      <div class="dot"></div>
+      <b>Free pilot term for your school — no card required.</b>
+      <span>Most schools go live in under a week.</span>
+    </div>
+
+    <!-- Contact -->
+    <div class="contact">
+      <div>
+        <h3>Contact Ferdinard Ashonibare</h3>
+        <p class="ci">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="m22 7-10 6L2 7"/></svg>
+          <b>ferdinardoluwajuwonlo@gmail.com</b>
+        </p>
+        <p class="ci">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.13.96.36 1.9.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.91.34 1.85.57 2.81.7A2 2 0 0 1 22 16.92z"/></svg>
+          <span class="wa">+234 913 736 0986</span> <span>· WhatsApp / call</span>
+        </p>
+        <p class="ci">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M2 12h20"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+          <b>ferdinardashonibare.com</b> <span>· Lagos, Nigeria — serving schools nationwide</span>
+        </p>
+      </div>
+      <div class="qr">
+        <img src="data:image/png;base64,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" alt="Scan to chat with Ferdinard on WhatsApp" width="120" height="120" />
+        <p>Scan to chat<br />on WhatsApp</p>
+      </div>
+    </div>
+
+    <!-- Footer -->
+    <div class="foot">
+      <span><b>Edutrack</b> — School Management Platform</span>
+      <span>ferdinardashonibare.com · Edutrack © 2026</span>
+    </div>
+  </div>
+</div>
+</body>
+</html>

@@ -1,0 +1,45 @@
+{
+  "name": "Edutrack — School Management Platform",
+  "short_name": "Edutrack",
+  "description": "Run your entire school from one cloud platform. Report cards, grading matrices, class arms and teacher payroll for modern schools.",
+  "id": "/",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#f8fafc",
+  "theme_color": "#1e293b",
+  "categories": ["education", "productivity"],
+  "icons": [
+    {
+      "src": "/icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icons/icon-maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "School Login",
+      "url": "/login",
+      "description": "Sign in to your school portal"
+    },
+    {
+      "name": "Register School",
+      "url": "/register",
+      "description": "Create a new school tenant"
+    }
+  ]
+}
