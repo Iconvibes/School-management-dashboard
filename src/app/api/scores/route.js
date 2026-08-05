@@ -1,12 +1,10 @@
-import { getSession, jsonError } from "@/lib/auth";
+import { jsonError } from "@/lib/auth";
 import { store } from "@/lib/store";
+import { isDenied, requireAuth, requireClassScope } from "@/lib/policy";
 
 export async function POST(request) {
-  const session = await getSession();
-  if (!session) return jsonError("Not authenticated", 401);
-  if (session.role !== "SUPER_ADMIN" && session.role !== "TEACHER") {
-    return jsonError("Forbidden", 403);
-  }
+  const session = await requireAuth(["SUPER_ADMIN", "TEACHER"]);
+  if (isDenied(session)) return session;
 
   let body;
   try {
@@ -19,6 +17,10 @@ export async function POST(request) {
   if (!classArm || !subject || !Array.isArray(rows) || rows.length === 0) {
     return jsonError("classArm, subject and rows[] are required");
   }
+
+  // Teachers may only enter scores for their assigned arm.
+  const scope = await requireClassScope(session, { classArm, mode: "resolve", unassigned: "allow" });
+  if (isDenied(scope)) return scope;
 
   // Validate bounds
   for (const row of rows) {
@@ -51,11 +53,8 @@ export async function POST(request) {
 }
 
 export async function GET(request) {
-  const session = await getSession();
-  if (!session) return jsonError("Not authenticated", 401);
-  if (session.role !== "SUPER_ADMIN" && session.role !== "TEACHER") {
-    return jsonError("Forbidden", 403);
-  }
+  const session = await requireAuth(["SUPER_ADMIN", "TEACHER"]);
+  if (isDenied(session)) return session;
 
   const { searchParams } = new URL(request.url);
   const classArm = searchParams.get("classArm");
@@ -64,6 +63,10 @@ export async function GET(request) {
   if (!classArm || !subject) {
     return jsonError("classArm and subject query params are required");
   }
+
+  // Teachers may only read their assigned arm.
+  const scope = await requireClassScope(session, { classArm, mode: "resolve", unassigned: "allow" });
+  if (isDenied(scope)) return scope;
 
   const scores = await store.getScoresByClassSubject({
     schoolId: session.schoolId,

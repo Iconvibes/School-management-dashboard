@@ -1,5 +1,6 @@
 import { getSession, jsonError } from "@/lib/auth";
 import { store } from "@/lib/store";
+import { checkRateLimit } from "@/lib/rate-limit";
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -10,6 +11,15 @@ const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
  * Duplicate emails for the same kind are ignored (idempotent success).
  */
 export async function POST(request) {
+  // Public form guard: 10 demo requests per IP per 15 minutes.
+  const limited = checkRateLimit({
+    request,
+    windowMs: 15 * 60 * 1000,
+    max: 10,
+    prefix: "leads",
+  });
+  if (limited) return limited;
+
   let body;
   try {
     body = await request.json();

@@ -1,11 +1,11 @@
-import { getSession, jsonError } from "@/lib/auth";
+import { jsonError } from "@/lib/auth";
 import { store } from "@/lib/store";
+import { isDenied, requireAuth } from "@/lib/policy";
 
 /** GET /api/fees/structures?session=&term= — admin fee structures per class arm */
 export async function GET(request) {
-  const session = await getSession();
-  if (!session) return jsonError("Not authenticated", 401);
-  if (session.role !== "SUPER_ADMIN") return jsonError("Forbidden", 403);
+  const session = await requireAuth(["SUPER_ADMIN"]);
+  if (isDenied(session)) return session;
 
   const structures = await store.getFeeStructures(session.schoolId);
   return Response.json({ structures });
@@ -13,9 +13,8 @@ export async function GET(request) {
 
 /** PUT /api/fees/structures — upsert a fee structure { classArm, amount } */
 export async function PUT(request) {
-  const session = await getSession();
-  if (!session) return jsonError("Not authenticated", 401);
-  if (session.role !== "SUPER_ADMIN") return jsonError("Forbidden", 403);
+  const session = await requireAuth(["SUPER_ADMIN"]);
+  if (isDenied(session)) return session;
 
   let body;
   try {

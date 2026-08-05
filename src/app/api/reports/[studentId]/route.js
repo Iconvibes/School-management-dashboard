@@ -1,10 +1,18 @@
-import { getSession, jsonError } from "@/lib/auth";
+import { jsonError } from "@/lib/auth";
 import { store } from "@/lib/store";
 import {
   standingFromAverage,
   standingRemark,
   subjectRemark,
 } from "@/lib/grading";
+import { rankClassPosition } from "@/lib/ranking";
+import {
+  assertSameTenant,
+  isDenied,
+  requireAuth,
+  requireClassScope,
+  requireOwnChild,
+} from "@/lib/policy";
 
 /**
  * GET /api/reports/[studentId]
@@ -13,38 +21,23 @@ import {
  * TEACHER only students in their assigned class arm.
  */
 export async function GET(request, { params }) {
-  const session = await getSession();
-  if (!session) return jsonError("Not authenticated", 401);
-  if (session.role !== "SUPER_ADMIN" && session.role !== "TEACHER" && session.role !== "PARENT") {
-    return jsonError("Forbidden", 403);
-  }
+  const session = await requireAuth(["SUPER_ADMIN", "TEACHER", "PARENT"]);
+  if (isDenied(session)) return session;
 
   const { studentId } = await params;
   const student = await store.findUserById(studentId);
   if (!student) return jsonError("Student not found", 404);
-  if (student.schoolId !== session.schoolId) return jsonError("Forbidden", 403);
+  const tenantErr = assertSameTenant(student, session);
+  if (tenantErr) return tenantErr;
   if (student.role !== "STUDENT") return jsonError("Not a student account", 400);
 
   // Teachers only see students in their assigned class arm.
-  // Unassigned teachers may not read any report until assigned a class.
-  if (session.role === "TEACHER") {
-    const teacher = await store.findUserById(session.userId);
-    if (!teacher) return jsonError("Account no longer exists", 401);
-    if (!teacher.assignedClass) {
-      return jsonError("You have not been assigned a class arm yet. Contact your school admin.", 403);
-    }
-    if (student.assignedClass !== teacher.assignedClass) {
-      return jsonError("Teachers can only view students in their assigned class", 403);
-    }
-  }
+  const scope = await requireClassScope(session, { classArm: student.assignedClass, mode: "validate" });
+  if (isDenied(scope)) return scope;
 
   // Parents may only read reports for their own linked children
-  if (session.role === "PARENT") {
-    const children = await store.getChildren(session.userId);
-    if (!children.some((c) => c.id === studentId)) {
-      return jsonError("You can only view reports for your own children", 403);
-    }
-  }
+  const child = await requireOwnChild(session, studentId, "You can only view reports for your own children");
+  if (isDenied(child)) return child;
 
   const [scores, school, attendance] = await Promise.all([
     store.getScoresByStudent(studentId),
@@ -66,16 +59,14 @@ export async function GET(request, { params }) {
       classArm: student.assignedClass,
     });
     const classScores = await store.getScoresBySchool(session.schoolId);
-    const ranked = classmates
-      .map((c) => {
-        const sc = classScores.filter((s) => s.studentId === c.id);
-        const avg = sc.length ? sc.reduce((a, s) => a + s.totalScore, 0) / sc.length : 0;
-        return { id: c.id, avg };
-      })
-      .sort((a, b) => b.avg - a.avg);
-    position = ranked.findIndex((r) => r.id === studentId) + 1;
-    outOf = ranked.length;
-    if (position <= 0) position = null;
+    const classMap = {};
+    classScores.forEach((s) => {
+      if (!classMap[s.studentId]) classMap[s.studentId] = [];
+      classMap[s.studentId].push(s);
+    });
+    const pos = rankClassPosition(studentId, classmates, classMap);
+    position = pos.position;
+    outOf = pos.outOf;
   }
 
   return Response.json({

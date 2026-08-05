@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import bcrypt from "bcryptjs";
 import { store } from "@/lib/store";
 import { setAuthCookie, jsonError } from "@/lib/auth";
+import { checkRateLimit } from "@/lib/rate-limit";
 
 const ROLE_HOME = {
   SUPER_ADMIN: "/admin/dashboard",
@@ -11,6 +12,15 @@ const ROLE_HOME = {
 };
 
 export async function POST(request) {
+  // Brute-force guard: 10 login attempts per IP per 15 minutes.
+  const limited = checkRateLimit({
+    request,
+    windowMs: 15 * 60 * 1000,
+    max: 10,
+    prefix: "auth-login",
+  });
+  if (limited) return limited;
+
   let body;
   try {
     body = await request.json();

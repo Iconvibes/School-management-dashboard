@@ -1,13 +1,11 @@
-import { getSession, jsonError } from "@/lib/auth";
 import { store } from "@/lib/store";
 import { subjectRemark } from "@/lib/grading";
+import { rankClassPosition } from "@/lib/ranking";
+import { isDenied, requireAuth } from "@/lib/policy";
 
 export async function GET() {
-  const session = await getSession();
-  if (!session) return jsonError("Not authenticated", 401);
-  if (session.role !== "STUDENT" && session.role !== "SUPER_ADMIN") {
-    return jsonError("Forbidden", 403);
-  }
+  const session = await requireAuth(["STUDENT", "SUPER_ADMIN"]);
+  if (isDenied(session)) return session;
 
   const [scores, school, user, attendance, feeLedger] = await Promise.all([
     store.getScoresByStudent(session.userId),
@@ -36,16 +34,14 @@ export async function GET() {
       classArm: user.assignedClass,
     });
     const classScores = await store.getScoresBySchool(session.schoolId);
-    const ranked = classmates
-      .map((c) => {
-        const sc = classScores.filter((s) => s.studentId === c.id);
-        const avg = sc.length ? sc.reduce((a, s) => a + s.totalScore, 0) / sc.length : 0;
-        return { id: c.id, avg };
-      })
-      .sort((a, b) => b.avg - a.avg);
-    position = ranked.findIndex((r) => r.id === session.userId) + 1;
-    outOf = ranked.length;
-    if (position <= 0) position = null;
+    const classMap = {};
+    classScores.forEach((s) => {
+      if (!classMap[s.studentId]) classMap[s.studentId] = [];
+      classMap[s.studentId].push(s);
+    });
+    const pos = rankClassPosition(session.userId, classmates, classMap);
+    position = pos.position;
+    outOf = pos.outOf;
   }
 
   const fee = feeLedger.find((l) => l.studentId === session.userId);

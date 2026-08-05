@@ -1,5 +1,6 @@
-import { getSession, jsonError } from "@/lib/auth";
+import { jsonError } from "@/lib/auth";
 import { store } from "@/lib/store";
+import { isDenied, requireAuth, requireClassScope } from "@/lib/policy";
 
 // Local (not UTC) date so registers default to the actual school day
 function localDateStr() {
@@ -15,11 +16,8 @@ function localDateStr() {
  * SUPER_ADMIN may read any arm; TEACHER only their assigned arm.
  */
 export async function GET(request) {
-  const session = await getSession();
-  if (!session) return jsonError("Not authenticated", 401);
-  if (session.role !== "SUPER_ADMIN" && session.role !== "TEACHER") {
-    return jsonError("Forbidden", 403);
-  }
+  const session = await requireAuth(["SUPER_ADMIN", "TEACHER"]);
+  if (isDenied(session)) return session;
 
   const { searchParams } = new URL(request.url);
   let classArm = searchParams.get("classArm") || "";
@@ -27,16 +25,9 @@ export async function GET(request) {
 
   if (!classArm) return jsonError("classArm query param is required");
 
-  if (session.role === "TEACHER") {
-    const teacher = await store.findUserById(session.userId);
-    if (!teacher) return jsonError("Account no longer exists", 401);
-    if (!teacher.assignedClass) {
-      return jsonError("You have not been assigned a class arm yet. Contact your school admin.", 403);
-    }
-    if (classArm !== teacher.assignedClass) {
-      return jsonError("Teachers can only access their assigned class", 403);
-    }
-  }
+  // Teachers may only read their assigned arm.
+  const scope = await requireClassScope(session, { classArm, mode: "validate" });
+  if (isDenied(scope)) return scope;
 
   const [register, students] = await Promise.all([
     store.getAttendance(session.schoolId, classArm, date),
@@ -71,11 +62,8 @@ export async function GET(request) {
  * POST /api/attendance — save a register { classArm, date, rows: [{studentId, present}] }
  */
 export async function POST(request) {
-  const session = await getSession();
-  if (!session) return jsonError("Not authenticated", 401);
-  if (session.role !== "SUPER_ADMIN" && session.role !== "TEACHER") {
-    return jsonError("Forbidden", 403);
-  }
+  const session = await requireAuth(["SUPER_ADMIN", "TEACHER"]);
+  if (isDenied(session)) return session;
 
   let body;
   try {
@@ -89,13 +77,9 @@ export async function POST(request) {
     return jsonError("classArm, date and rows[] are required");
   }
 
-  if (session.role === "TEACHER") {
-    const teacher = await store.findUserById(session.userId);
-    if (!teacher) return jsonError("Account no longer exists", 401);
-    if (!teacher.assignedClass || teacher.assignedClass !== classArm) {
-      return jsonError("Teachers can only record attendance for their assigned class", 403);
-    }
-  }
+  // Teachers may only mark their assigned arm.
+  const scope = await requireClassScope(session, { classArm, mode: "validate" });
+  if (isDenied(scope)) return scope;
 
   // Tenant isolation: every marked student must belong to this school
   const tenantStudents = await store.listUsers({

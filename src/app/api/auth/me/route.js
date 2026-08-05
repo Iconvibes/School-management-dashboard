@@ -1,9 +1,10 @@
-import { getSession, jsonError } from "@/lib/auth";
+import { jsonError } from "@/lib/auth";
 import { store, isDemoMode } from "@/lib/store";
+import { isDenied, requireAuth } from "@/lib/policy";
 
 export async function GET() {
-  const session = await getSession();
-  if (!session) return jsonError("Not authenticated", 401);
+  const session = await requireAuth();
+  if (isDenied(session)) return session;
 
   const [user, school] = await Promise.all([
     store.findUserById(session.userId),

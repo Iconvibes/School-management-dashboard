@@ -1,5 +1,6 @@
-import { getSession, jsonError } from "@/lib/auth";
+import { jsonError } from "@/lib/auth";
 import { store } from "@/lib/store";
+import { isDenied, requireAuth, requireOwnChild } from "@/lib/policy";
 
 /**
  * POST /api/parent/pay — one-click "Pay Now" for a linked child's fee balance.
@@ -8,9 +9,8 @@ import { store } from "@/lib/store";
  * own school. Records the payment via the fee ledger and returns the receipt.
  */
 export async function POST(request) {
-  const session = await getSession();
-  if (!session) return jsonError("Not authenticated", 401);
-  if (session.role !== "PARENT") return jsonError("Forbidden", 403);
+  const session = await requireAuth(["PARENT"]);
+  if (isDenied(session)) return session;
 
   let body;
   try {
@@ -25,9 +25,8 @@ export async function POST(request) {
   if (Number.isNaN(amt) || amt <= 0) return jsonError("A valid amount is required");
 
   // Tenant + relationship check: the child must be linked to this parent
-  const children = await store.getChildren(session.userId);
-  const child = children.find((c) => c.id === studentId);
-  if (!child) return jsonError("You can only pay fees for your own children", 403);
+  const child = await requireOwnChild(session, studentId, "You can only pay fees for your own children");
+  if (isDenied(child)) return child;
 
   // Anti-fraud guard: only ONE payment per child may await confirmation at a
   // time — a parent can't stack duplicate payments the admin might

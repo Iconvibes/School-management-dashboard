@@ -1,5 +1,5 @@
-import { getSession, jsonError } from "@/lib/auth";
 import { store } from "@/lib/store";
+import { isDenied, requireAuth } from "@/lib/policy";
 
 /**
  * GET /api/fees — full fee ledger for the school (admin).
@@ -7,9 +7,8 @@ import { store } from "@/lib/store";
  * ?classArm= filters; ?defaulters=1 returns only students with a balance.
  */
 export async function GET(request) {
-  const session = await getSession();
-  if (!session) return jsonError("Not authenticated", 401);
-  if (session.role !== "SUPER_ADMIN") return jsonError("Forbidden", 403);
+  const session = await requireAuth(["SUPER_ADMIN"]);
+  if (isDenied(session)) return session;
 
   const { searchParams } = new URL(request.url);
   const classArm = searchParams.get("classArm") || "";

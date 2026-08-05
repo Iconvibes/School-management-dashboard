@@ -1,5 +1,6 @@
 import { jsonError } from "@/lib/auth";
 import { store } from "@/lib/store";
+import { checkRateLimit } from "@/lib/rate-limit";
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -9,6 +10,15 @@ const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
  * silently dropped, and an existing subscription still reports success.
  */
 export async function POST(request) {
+  // Public signup guard: 10 subscriptions per IP per 15 minutes.
+  const limited = checkRateLimit({
+    request,
+    windowMs: 15 * 60 * 1000,
+    max: 10,
+    prefix: "newsletter",
+  });
+  if (limited) return limited;
+
   let body;
   try {
     body = await request.json();

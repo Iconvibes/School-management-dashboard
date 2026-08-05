@@ -1,6 +1,7 @@
-import { getSession, jsonError } from "@/lib/auth";
 import { store } from "@/lib/store";
 import { computeGrade, standingFromAverage } from "@/lib/grading";
+import { buildArmRankings } from "@/lib/ranking";
+import { isDenied, requireAuth } from "@/lib/policy";
 
 /**
  * GET /api/parent/children
@@ -9,14 +10,14 @@ import { computeGrade, standingFromAverage } from "@/lib/grading";
  * Tenant-safe: children are resolved from the parent's own school only.
  */
 export async function GET() {
-  const session = await getSession();
-  if (!session) return jsonError("Not authenticated", 401);
-  if (session.role !== "PARENT") return jsonError("Forbidden", 403);
+  const session = await requireAuth(["PARENT"]);
+  if (isDenied(session)) return session;
 
   const children = await store.getChildren(session.userId);
-  const [school, allScores] = await Promise.all([
+  const [school, allScores, students] = await Promise.all([
     store.getSchoolById(session.schoolId),
     store.getScoresBySchool(session.schoolId),
+    store.listUsers({ schoolId: session.schoolId, role: "STUDENT" }),
   ]);
   const ledger = await store.getFeeLedger(session.schoolId);
 
@@ -25,6 +26,8 @@ export async function GET() {
     if (!scoreMap[s.studentId]) scoreMap[s.studentId] = [];
     scoreMap[s.studentId].push(s);
   });
+
+  const armRankings = buildArmRankings(students, scoreMap);
 
   const rows = [];
   for (const child of children) {
@@ -35,25 +38,14 @@ export async function GET() {
     const attendance = await store.getStudentAttendanceSummary(session.schoolId, child.id);
     const feeEntry = ledger.find((l) => l.studentId === child.id);
 
-    // Class position within the child's arm
+    // Class position within the child's arm — one ranking pass per arm (done
+    // above for the whole school), instead of re-ranking per child.
     let position = null;
     let outOf = null;
     if (child.assignedClass) {
-      const classmates = await store.listUsers({
-        schoolId: session.schoolId,
-        role: "STUDENT",
-        classArm: child.assignedClass,
-      });
-      const ranked = classmates
-        .map((c) => {
-          const cs = scoreMap[c.id] || [];
-          const avg = cs.length ? cs.reduce((a, s) => a + s.totalScore, 0) / cs.length : 0;
-          return { id: c.id, avg };
-        })
-        .sort((a, b) => b.avg - a.avg);
-      position = ranked.findIndex((r) => r.id === child.id) + 1;
-      outOf = ranked.length;
-      if (position <= 0) position = null;
+      const pos = armRankings[child.assignedClass]?.[child.id];
+      position = pos?.position ?? null;
+      outOf = pos?.outOf ?? null;
     }
 
     rows.push({

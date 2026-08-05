@@ -1,29 +1,22 @@
-import { getSession, jsonError } from "@/lib/auth";
+import { jsonError } from "@/lib/auth";
 import { store } from "@/lib/store";
+import { isDenied, requireAuth, requireClassScope } from "@/lib/policy";
 
 export async function GET(request) {
-  const session = await getSession();
-  if (!session) return jsonError("Not authenticated", 401);
-  if (session.role !== "SUPER_ADMIN" && session.role !== "TEACHER") {
-    return jsonError("Forbidden", 403);
-  }
+  const session = await requireAuth(["SUPER_ADMIN", "TEACHER"]);
+  if (isDenied(session)) return session;
 
   const { searchParams } = new URL(request.url);
   const role = searchParams.get("role") || undefined;
   let classArm = searchParams.get("classArm") || undefined;
 
-  // Teachers may only list students of their own class arm
+  // Teachers may only list students — of their own class arm (assigned), or
+  // of any arm (unassigned).
   if (session.role === "TEACHER") {
     if (role && role !== "STUDENT") return jsonError("Forbidden", 403);
-    const user = await store.findUserById(session.userId);
-    if (!user) return jsonError("Account no longer exists", 401);
-    // Assigned teachers are locked to their class; unassigned may see all students
-    if (user.assignedClass) {
-      if (!classArm) classArm = user.assignedClass; // default to their own class
-      else if (classArm !== user.assignedClass) {
-        return jsonError("Teachers can only access their assigned class", 403);
-      }
-    }
+    const scope = await requireClassScope(session, { classArm, mode: "resolve", unassigned: "allow" });
+    if (isDenied(scope)) return scope;
+    classArm = scope.classArm;
   }
 
   const users = await store.listUsers({
@@ -49,11 +42,8 @@ export async function GET(request) {
 }
 
 export async function POST(request) {
-  const session = await getSession();
-  if (!session) return jsonError("Not authenticated", 401);
-  if (session.role !== "SUPER_ADMIN" && session.role !== "TEACHER") {
-    return jsonError("Forbidden", 403);
-  }
+  const session = await requireAuth(["SUPER_ADMIN", "TEACHER"]);
+  if (isDenied(session)) return session;
 
   let body;
   try {
@@ -86,12 +76,10 @@ export async function POST(request) {
     if (roleEnum !== "STUDENT") {
       return jsonError("Teachers can only add student accounts", 403);
     }
-    const user = await store.findUserById(session.userId);
-    if (!user) return jsonError("Account no longer exists", 401);
-    if (user.assignedClass) {
-      // Locked to their own class — ignore whatever the client sent.
-      assignedClass = user.assignedClass;
-    } else {
+    const scope = await requireClassScope(session, { classArm: assignedClass, mode: "force", unassigned: "allow" });
+    if (isDenied(scope)) return scope;
+    assignedClass = scope.classArm;
+    if (!scope.teacher.assignedClass) {
       if (!assignedClass) {
         return jsonError("Please choose a class arm for this student");
       }

@@ -1,8 +1,18 @@
 import { NextResponse } from "next/server";
 import { store } from "@/lib/store";
 import { setAuthCookie, jsonError } from "@/lib/auth";
+import { checkRateLimit } from "@/lib/rate-limit";
 
 export async function POST(request) {
+  // New-tenant guard: 5 school registrations per IP per hour.
+  const limited = checkRateLimit({
+    request,
+    windowMs: 60 * 60 * 1000,
+    max: 5,
+    prefix: "auth-register",
+  });
+  if (limited) return limited;
+
   let body;
   try {
     body = await request.json();

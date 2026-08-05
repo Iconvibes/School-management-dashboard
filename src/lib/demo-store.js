@@ -242,6 +242,22 @@ function seed() {
 
 seed();
 
+/**
+ * Test hook: wipe the in-memory state and re-seed from scratch. Used by the
+ * node:test suite so every test starts from the same deterministic dataset.
+ * Sequence counters intentionally keep climbing — ids stay unique.
+ */
+export function __resetDemoStore() {
+  schools.length = 0;
+  users.length = 0;
+  scores.length = 0;
+  feeStructures.length = 0;
+  feePayments.length = 0;
+  attendance.length = 0;
+  leads.length = 0;
+  seed();
+}
+
 // ---- Helpers ---------------------------------------------------------------
 
 const clone = (obj) => (obj ? { ...obj } : obj);

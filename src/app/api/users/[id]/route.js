@@ -1,21 +1,15 @@
-import { getSession, jsonError } from "@/lib/auth";
+import { jsonError } from "@/lib/auth";
 import { store } from "@/lib/store";
-
-/** Verify the target user belongs to the caller's tenant. */
-async function assertOwnTenant(session, id) {
-  const target = await store.findUserById(id);
-  if (!target) return jsonError("User not found", 404);
-  if (target.schoolId !== session.schoolId) return jsonError("Forbidden", 403);
-  return null;
-}
+import { assertSameTenant, isDenied, requireAuth } from "@/lib/policy";
 
 export async function PATCH(request, { params }) {
-  const session = await getSession();
-  if (!session) return jsonError("Not authenticated", 401);
-  if (session.role !== "SUPER_ADMIN") return jsonError("Forbidden", 403);
+  const session = await requireAuth(["SUPER_ADMIN"]);
+  if (isDenied(session)) return session;
 
   const { id } = await params;
-  const tenantErr = await assertOwnTenant(session, id);
+  const target = await store.findUserById(id);
+  if (!target) return jsonError("User not found", 404);
+  const tenantErr = assertSameTenant(target, session);
   if (tenantErr) return tenantErr;
 
   let body;
@@ -51,12 +45,13 @@ export async function PATCH(request, { params }) {
 }
 
 export async function DELETE(request, { params }) {
-  const session = await getSession();
-  if (!session) return jsonError("Not authenticated", 401);
-  if (session.role !== "SUPER_ADMIN") return jsonError("Forbidden", 403);
+  const session = await requireAuth(["SUPER_ADMIN"]);
+  if (isDenied(session)) return session;
 
   const { id } = await params;
-  const tenantErr = await assertOwnTenant(session, id);
+  const target = await store.findUserById(id);
+  if (!target) return jsonError("User not found", 404);
+  const tenantErr = assertSameTenant(target, session);
   if (tenantErr) return tenantErr;
 
   const ok = await store.deleteUser(id);
