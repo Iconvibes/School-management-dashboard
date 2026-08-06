@@ -1,6 +1,7 @@
 import { store } from "@/lib/store";
 import { computeGrade, standingFromAverage } from "@/lib/grading";
 import { buildArmRankings } from "@/lib/ranking";
+import { receiptsFromLedger } from "@/lib/receipts";
 import { isDenied, requireAuth } from "@/lib/policy";
 
 /**
@@ -69,6 +70,10 @@ export async function GET() {
             feePaid: feeEntry.feePaid,
           }
         : { amount: 0, paid: 0, pending: 0, balance: 0, feePaid: false },
+      // Confirmed payments — the source of the child's downloadable receipts.
+      // Each carries its own balance-after so old receipts stay historically
+      // accurate instead of showing today's balance.
+      receipts: receiptsFromLedger(feeEntry, feeEntry?.amount),
     });
   }
 

@@ -1,3 +1,4 @@
+import bcrypt from "bcryptjs";
 import { connectDB } from "@/lib/db";
 import School from "@/models/School";
 import User from "@/models/User";
@@ -6,6 +7,10 @@ import FeeStructure from "@/models/FeeStructure";
 import FeePayment from "@/models/FeePayment";
 import Attendance from "@/models/Attendance";
 import Lead from "@/models/Lead";
+import Notification from "@/models/Notification";
+import FeeAudit from "@/models/FeeAudit";
+import DigestPref from "@/models/DigestPref";
+import Digest from "@/models/Digest";
 import { computeGrade } from "@/lib/grading";
 
 async function ready() {
@@ -134,11 +139,16 @@ export async function createUser({ schoolId, name, email, password, role, assign
 
 export async function updateUser(id, patch) {
   await ready();
-  const allowed = ["name", "assignedClass", "payrollStatus", "feePaid", "parentId", "phone", "address"];
+  const allowed = ["name", "assignedClass", "payrollStatus", "feePaid", "parentId", "phone", "address", "password"];
   const update = {};
   allowed.forEach((k) => {
     if (patch[k] !== undefined) update[k] = patch[k];
   });
+  // findByIdAndUpdate bypasses the model's pre("save") bcrypt hook, so hash
+  // explicitly here. Callers validate length before reaching the store.
+  if (update.password !== undefined) {
+    update.password = await bcrypt.hash(update.password, 10);
+  }
   return safe(await User.findByIdAndUpdate(id, update, { new: true }));
 }
 
@@ -429,4 +439,181 @@ export async function listLeads(kind) {
   await ready();
   const query = kind ? { kind } : {};
   return (await Lead.find(query).sort({ createdAt: -1 })).map(safe);
+}
+
+// ---- Notifications (admin inbox) ----------------------------------------------
+
+export async function createNotification({ schoolId, kind, to, subject, preview, body, amount }) {
+  await ready();
+  const notification = await Notification.create({
+    schoolId,
+    kind: kind || "info",
+    to: Array.isArray(to) ? to : [],
+    subject,
+    preview,
+    body: body || "",
+    amount: Number.isFinite(Number(amount)) ? Number(amount) : undefined,
+  });
+  return safe(notification);
+}
+
+/**
+ * Newest first. Each entry carries the caller's OWN `read` flag — two admins
+ * see different read states; readBy (other admins' ids) is stripped.
+ */
+export async function listNotifications(schoolId, userId) {
+  await ready();
+  const docs = await Notification.find({ schoolId }).sort({ createdAt: -1 });
+  return docs.map((d) => {
+    const json = d.toJSON();
+    delete json.readBy;
+    json.read = isReadBy(d, userId);
+    return json;
+  });
+}
+
+/**
+ * Mark a batch as read FOR THE CALLING ADMIN (their id joins readBy — other
+ * admins keep their own unread state). Returns the caller's remaining unread
+ * count. Legacy school-wide `read: true` documents count as read for everyone
+ * (the "*" sentinel) until they're re-marked.
+ */
+export async function markNotificationsRead(schoolId, userId, ids) {
+  await ready();
+  const idList = Array.isArray(ids) ? ids.filter(Boolean) : [];
+  if (idList.length && userId) {
+    await Notification.updateMany(
+      { schoolId, _id: { $in: idList } },
+      { $addToSet: { readBy: userId } }
+    );
+  }
+  const docs = await Notification.find({ schoolId });
+  return docs.filter((d) => !isReadBy(d, userId)).length;
+}
+
+// A notification is read for a given admin if their id is in readBy, OR the
+// "*" sentinel is (legacy school-wide "read by everyone" state), OR the doc
+// still carries the pre-schema-change school-wide `read: true` (Mongo docs
+// are not rewritten by a schema change — readBy only). Defined after the
+// functions that use it — the const is only read at call time.
+const isReadBy = (doc, userId) => {
+  const readBy = Array.isArray(doc.readBy) ? doc.readBy : [];
+  return (
+    readBy.includes(userId) ||
+    readBy.includes("*") ||
+    doc.read === true
+  );
+};
+
+/**
+ * Mark a batch of notifications as "reconciled" — their fee reminder was
+ * forwarded to the student's newly linked parent. Sets reconciledAt so a
+ * reminder is never forwarded twice. Returns the count actually marked.
+ */
+export async function markNotificationsReconciled(schoolId, ids) {
+  await ready();
+  const idList = Array.isArray(ids) ? ids.filter(Boolean) : [];
+  if (!idList.length) return 0;
+  const res = await Notification.updateMany(
+    {
+      schoolId,
+      _id: { $in: idList },
+      // Only un-reconciled rows — the $set below would otherwise bump the
+      // timestamp on every repeat call.
+      $or: [{ reconciledAt: { $exists: false } }, { reconciledAt: null }],
+    },
+    { $set: { reconciledAt: new Date() } }
+  );
+  return res.modifiedCount || 0;
+}
+
+// ---- Fee audit trail ------------------------------------------------------------
+
+export async function logFeeAudit({
+  schoolId,
+  action,
+  actorId = "",
+  actorName,
+  actorRole = "",
+  studentId = "",
+  studentName = "",
+  classArm = "",
+  receiptNo = "",
+  amount = 0,
+  method = "",
+  note = "",
+}) {
+  await ready();
+  return safe(
+    await FeeAudit.create({
+      schoolId,
+      action,
+      actorId,
+      actorName: actorName || "Unknown",
+      actorRole,
+      studentId,
+      studentName,
+      classArm,
+      receiptNo,
+      amount: Number(amount) || 0,
+      method,
+      note: note || "",
+    })
+  );
+}
+
+/** Newest first. */
+export async function listFeeAudit(schoolId, { limit = 100 } = {}) {
+  await ready();
+  return (await FeeAudit.find({ schoolId }).sort({ createdAt: -1 }).limit(limit)).map(safe);
+}
+
+// ---- Admin digest preferences (per-admin schedule) -----------------------------
+
+/** The digest schedule for ONE admin (default: off). Per-admin, not per-school. */
+export async function getDigestPref(schoolId, userId) {
+  await ready();
+  const pref = await DigestPref.findOne({ schoolId, userId });
+  return pref ? safe(pref) : { schoolId, userId, frequency: "off", lastSentAt: null };
+}
+
+/** Set one admin's digest frequency: "off" | "daily" | "weekly". */
+export async function setDigestPref(schoolId, userId, frequency) {
+  await ready();
+  const freq = ["off", "daily", "weekly"].includes(frequency) ? frequency : "off";
+  return safe(
+    await DigestPref.findOneAndUpdate(
+      { schoolId, userId },
+      { schoolId, userId, frequency: freq },
+      { upsert: true, new: true }
+    )
+  );
+}
+
+/** Record a sent digest email and bump the admin's lastSentAt. */
+export async function sendDigest({ schoolId, userId, frequency, subject, preview, body, itemCount }) {
+  await ready();
+  const digest = await Digest.create({
+    schoolId,
+    userId,
+    frequency: frequency === "weekly" ? "weekly" : "daily",
+    subject,
+    preview,
+    body: body || "",
+    itemCount: Number(itemCount) || 0,
+  });
+  await DigestPref.findOneAndUpdate(
+    { schoolId, userId },
+    { schoolId, userId, lastSentAt: digest.createdAt },
+    { upsert: true, setDefaultsOnInsert: true }
+  );
+  return safe(digest);
+}
+
+/** Digest history for one admin, newest first. */
+export async function listDigests(schoolId, userId, { limit = 20 } = {}) {
+  await ready();
+  return (
+    await Digest.find({ schoolId, userId }).sort({ createdAt: -1 }).limit(limit)
+  ).map(safe);
 }

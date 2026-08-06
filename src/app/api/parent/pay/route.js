@@ -1,6 +1,7 @@
 import { jsonError } from "@/lib/auth";
 import { store } from "@/lib/store";
 import { isDenied, requireAuth, requireOwnChild } from "@/lib/policy";
+import { buildPaymentNotification } from "@/lib/notifications";
 
 /**
  * POST /api/parent/pay — one-click "Pay Now" for a linked child's fee balance.
@@ -50,6 +51,49 @@ export async function POST(request) {
     note: "Paid by parent via Pay Now",
     status: "PENDING",
   });
+
+  // Audit: a parent payment is a money event even before it clears — the
+  // trail records who submitted it, and the admin's confirm later closes it.
+  try {
+    const parent = await store.findUserById(session.userId);
+    await store.logFeeAudit({
+      schoolId: session.schoolId,
+      action: "PARENT_PAYMENT_SUBMITTED",
+      actorId: session.userId,
+      actorName: parent?.name || "A parent",
+      actorRole: "PARENT",
+      studentId: child.id,
+      studentName: child.name,
+      classArm: child.assignedClass || "",
+      receiptNo: payment.receiptNo,
+      amount: amt,
+      method: method || "CARD",
+      note: "Paid by parent via Pay Now — awaiting confirmation",
+    });
+  } catch {
+    // An audit failure must never fail a successful payment.
+  }
+
+  // Email-style notification for the school's admins — visible in the inbox
+  // bell on every admin page, not just the fee tab. Never blocks the payment.
+  try {
+    const [parent, admins] = await Promise.all([
+      store.findUserById(session.userId),
+      store.listUsers({ schoolId: session.schoolId, role: "SUPER_ADMIN" }),
+    ]);
+    const note = buildPaymentNotification({
+      payment,
+      student: child,
+      parent: { name: parent?.name || "A parent" },
+    });
+    await store.createNotification({
+      schoolId: session.schoolId,
+      ...note,
+      to: admins.map((a) => a.email),
+    });
+  } catch {
+    // A notification failure must never fail a successful payment.
+  }
 
   return Response.json({ payment }, { status: 201 });
 }

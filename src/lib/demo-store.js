@@ -1,4 +1,7 @@
 import bcrypt from "bcryptjs";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 
 /**
  * In-memory store used when MONGODB_URI is not set (demo mode).
@@ -15,11 +18,168 @@ const feeStructures = [];
 const feePayments = [];
 const attendance = [];
 const leads = [];
+const notifications = [];
+const feeAudit = [];
+const digestPrefs = [];
+const digests = [];
 let receiptSeq = 1000;
 
-const hash = (pw) => bcrypt.hashSync(pw, 10);
+// Cost 4 instead of production's 10: this is the in-memory DEMO store, and
+// bcrypt.cost is only in the stored hash — login verification via bcrypt.compare
+// works regardless. It keeps demo imports of ~1000 accounts snappy while
+// bcryptjs at cost 10 would block the event loop for over a minute.
+const hash = (pw) => bcrypt.hashSync(pw, 4);
 
 const nowIso = () => new Date().toISOString();
+
+// ---- Disk persistence (demo mode) -------------------------------------------
+//
+// The demo store is in-memory, so a dev-server restart used to wipe every
+// imported or created account. When MONGODB_URI is unset we now snapshot the
+// whole state to a JSON file (`.demo-data/store.json` by default) after every
+// mutation, and restore it on boot — long-running demos keep their students
+// (and the 900-student sample roster) across restarts.
+//
+// Design notes:
+//  - Writes are debounced (one timer), so a 900-row bulk import coalesces
+//    into a SINGLE disk write instead of 900.
+//  - The snapshot is written to a temp file then renamed — atomic, so a crash
+//    mid-write can never leave a torn file behind. A missing or corrupt file
+//    simply falls back to a fresh seed.
+//  - Passwords are stored as bcrypt hashes only — plaintext never touches
+//    disk. The file is gitignored.
+//  - Under `node --test` (NODE_TEST_CONTEXT=child-v8) the file is redirected
+//    to a per-process temp path, so the test suite never writes to (or wipes)
+//    a real demo's state.
+
+const STORE_VERSION = 1;
+const DEFAULT_STORE_FILE = path.join(process.cwd(), ".demo-data", "store.json");
+
+const isTestRun = () => !!process.env.NODE_TEST_CONTEXT;
+let storeFile =
+  process.env.DEMO_STORE_FILE ||
+  (isTestRun()
+    ? path.join(os.tmpdir(), `edutrack-demo-${process.pid}.json`)
+    : DEFAULT_STORE_FILE);
+
+let persistTimer = null;
+let persistDirty = false;
+
+/** Snapshot the whole in-memory state (live references — serialized at write). */
+function dump() {
+  return {
+    version: STORE_VERSION,
+    seq,
+    receiptSeq,
+    schools,
+    users,
+    scores,
+    feeStructures,
+    feePayments,
+    attendance,
+    leads,
+    notifications,
+    feeAudit,
+    digestPrefs,
+    digests,
+  };
+}
+
+/** Replace in-memory state from a snapshot. Returns false if it's unusable. */
+function restore(data) {
+  if (!data || data.version !== STORE_VERSION) return false;
+  const collections = [
+    "schools",
+    "users",
+    "scores",
+    "feeStructures",
+    "feePayments",
+    "attendance",
+    "leads",
+    "notifications",
+    "feeAudit",
+    "digestPrefs",
+    "digests",
+  ];
+  for (const key of collections) {
+    // Backward-compatible restore: snapshots written before a collection
+    // existed (e.g. notifications) load as empty rather than failing the
+    // whole file and silently re-seeding the demo.
+    if (data[key] === undefined) data[key] = [];
+    if (!Array.isArray(data[key])) return false;
+  }
+  seq = Number.isInteger(data.seq) ? data.seq : 100;
+  receiptSeq = Number.isInteger(data.receiptSeq) ? data.receiptSeq : 1000;
+  schools.length = 0;
+  schools.push(...data.schools);
+  users.length = 0;
+  users.push(...data.users);
+  scores.length = 0;
+  scores.push(...data.scores);
+  feeStructures.length = 0;
+  feeStructures.push(...data.feeStructures);
+  feePayments.length = 0;
+  feePayments.push(...data.feePayments);
+  attendance.length = 0;
+  attendance.push(...data.attendance);
+  leads.length = 0;
+  leads.push(...data.leads);
+  notifications.length = 0;
+  notifications.push(
+    ...(data.notifications || []).map((n) => {
+      const copy = { ...n };
+      // Legacy migration: snapshots written before per-admin read-state stored
+      // a school-wide `read` boolean. `read: true` meant every admin had seen
+      // it — represent that as the "*" sentinel in readBy.
+      if (copy.read === true && !Array.isArray(copy.readBy)) copy.readBy = ["*"];
+      delete copy.read;
+      return copy;
+    })
+  );
+  feeAudit.length = 0;
+  feeAudit.push(...data.feeAudit);
+  digestPrefs.length = 0;
+  digestPrefs.push(...(data.digestPrefs || []));
+  digests.length = 0;
+  digests.push(...(data.digests || []));
+  return true;
+}
+
+/** Atomic write: temp file + rename. Never throws — demo runs on read-only FS too. */
+function writeSnapshot() {
+  try {
+    fs.mkdirSync(path.dirname(storeFile), { recursive: true });
+    const tmp = `${storeFile}.tmp`;
+    // Compact JSON — this file is machine-read, never human-edited, and a
+    // 900-student state (with attendance records) stays small and fast.
+    fs.writeFileSync(tmp, JSON.stringify(dump()));
+    fs.renameSync(tmp, storeFile);
+  } catch {
+    // Not writable (CI, read-only FS) — demo keeps working in memory.
+  }
+}
+
+/** Debounced save-after-mutation. */
+function persist() {
+  persistDirty = true;
+  if (persistTimer) return;
+  persistTimer = setTimeout(() => {
+    persistTimer = null;
+    if (!persistDirty) return;
+    persistDirty = false;
+    writeSnapshot();
+  }, 100);
+}
+
+function loadPersisted() {
+  try {
+    if (!fs.existsSync(storeFile)) return false;
+    const data = JSON.parse(fs.readFileSync(storeFile, "utf8"));
+    return restore(data);
+  } catch {
+    return false;
+  }
+}
 
 // ---- Seed data -------------------------------------------------------------
 
@@ -79,6 +239,15 @@ function seed() {
     "",
     { payrollStatus: "PAID" }
   );
+
+  // Staff roles below the Super Admin — Bursar (fees) and Registrar (roster).
+  // The demo credentials live on the login page (DEMO_CREDENTIALS).
+  addUser("Mrs. Chioma Eze", "bursar@edutrack.app", "bursar123", "BURSAR", "", {
+    phone: "0802 555 0142",
+  });
+  addUser("Mr. Adewale Ojo", "registrar@edutrack.app", "registrar123", "REGISTRAR", "", {
+    phone: "0802 555 0187",
+  });
 
   const teachers = [
     addUser("Mrs. Adaeze Okafor", "a.okafor@edutrack.app", "teacher123", "TEACHER", "SS1 Science", { payrollStatus: "PAID" }),
@@ -240,14 +409,7 @@ function seed() {
   return { admin, teachers, students };
 }
 
-seed();
-
-/**
- * Test hook: wipe the in-memory state and re-seed from scratch. Used by the
- * node:test suite so every test starts from the same deterministic dataset.
- * Sequence counters intentionally keep climbing — ids stay unique.
- */
-export function __resetDemoStore() {
+function clearAll() {
   schools.length = 0;
   users.length = 0;
   scores.length = 0;
@@ -255,7 +417,64 @@ export function __resetDemoStore() {
   feePayments.length = 0;
   attendance.length = 0;
   leads.length = 0;
+  notifications.length = 0;
+  feeAudit.length = 0;
+  digestPrefs.length = 0;
+  digests.length = 0;
+}
+
+// Boot: restore a persisted demo, otherwise seed fresh and write the seed to
+// disk so even the very next restart is stable.
+if (!loadPersisted()) {
   seed();
+  writeSnapshot();
+}
+
+/**
+ * Test hook: wipe the in-memory state and re-seed from scratch. Used by the
+ * node:test suite so every test starts from the same deterministic dataset.
+ * Sequence counters intentionally keep climbing — ids stay unique.
+ *
+ * Also deletes the persisted snapshot: a reset means "start from the fresh
+ * seed", so the next boot must not resurrect the old state.
+ */
+export function __resetDemoStore() {
+  clearAll();
+  seed();
+  try {
+    fs.rmSync(storeFile, { force: true });
+  } catch {}
+  clearPersistPending();
+}
+
+/** Cancel any pending debounced write (used by the reset/reload hooks). */
+function clearPersistPending() {
+  if (persistTimer) clearTimeout(persistTimer);
+  persistTimer = null;
+  persistDirty = false;
+}
+
+/** Test hook: point persistence at a specific file (e.g. a temp path). */
+export function __setDemoStoreFile(file) {
+  storeFile = file;
+  clearPersistPending();
+}
+
+/** Test hook: flush any pending debounced write immediately. */
+export function __persistNow() {
+  if (persistTimer) clearTimeout(persistTimer);
+  persistTimer = null;
+  if (persistDirty) {
+    persistDirty = false;
+    writeSnapshot();
+  }
+}
+
+/** Test hook: simulate a process restart — reload state from disk. */
+export function __reloadDemoStore() {
+  clearPersistPending();
+  clearAll();
+  if (!loadPersisted()) seed();
 }
 
 // ---- Helpers ---------------------------------------------------------------
@@ -292,6 +511,7 @@ export async function createSchoolAndAdmin({ schoolName, adminName, email, passw
     createdAt: nowIso(),
   };
   users.push(user);
+  persist();
   return { school, user };
 }
 
@@ -340,6 +560,7 @@ export async function updateSchool(id, patch) {
   allowed.forEach((k) => {
     if (patch[k] !== undefined) school[k] = patch[k];
   });
+  persist();
   return clone(school);
 }
 
@@ -368,16 +589,22 @@ export async function createUser({ schoolId, name, email, password, role, assign
     createdAt: nowIso(),
   };
   users.push(user);
+  persist();
   return clone(user);
 }
 
 export async function updateUser(id, patch) {
   const user = users.find((u) => u.id === id);
   if (!user) return null;
+  // password is handled separately below — it must never touch the stored
+  // object as plaintext (even transiently), only as a hash.
   const allowed = ["name", "assignedClass", "payrollStatus", "feePaid", "parentId", "phone", "address"];
   allowed.forEach((k) => {
     if (patch[k] !== undefined) user[k] = patch[k];
   });
+  // Passwords are stored hashed (hashSync at demo cost) — hash on reset too.
+  if (patch.password !== undefined) user.password = hash(patch.password);
+  persist();
   return clone(user);
 }
 
@@ -398,6 +625,7 @@ export async function deleteUser(id) {
   const idx = users.findIndex((u) => u.id === id);
   if (idx === -1) return false;
   users.splice(idx, 1);
+  persist();
   return true;
 }
 
@@ -428,6 +656,7 @@ export async function saveScores({ schoolId, classArm, subject, rows }) {
     score.grade = grade;
     saved.push(clone(score));
   }
+  if (saved.length) persist();
   return saved;
 }
 
@@ -515,6 +744,7 @@ export async function saveFeeStructure(schoolId, { classArm, amount, session, te
     feeStructures.push(structure);
   }
   structure.amount = Math.max(0, Number(amount) || 0);
+  persist();
   return clone(structure);
 }
 
@@ -588,6 +818,7 @@ export async function recordFeePayment({ schoolId, studentId, amount, method, no
   const ledger = await getFeeLedger(schoolId);
   const entry = ledger.find((l) => l.studentId === studentId);
   student.feePaid = entry ? entry.balance <= 0 : true;
+  persist();
   return clone(payment);
 }
 
@@ -606,6 +837,7 @@ export async function confirmFeePayment({ schoolId, paymentId }) {
     const entry = ledger.find((l) => l.studentId === student.id);
     student.feePaid = entry ? entry.balance <= 0 : true;
   }
+  persist();
   return clone(payment);
 }
 
@@ -639,6 +871,7 @@ export async function saveAttendance(schoolId, classArm, date, records) {
     studentId: r.studentId,
     present: !!r.present,
   }));
+  persist();
   return clone(rec);
 }
 
@@ -682,6 +915,7 @@ export async function createLead({ kind, name = "", school = "", email, phone = 
     updatedAt: nowIso(),
   };
   leads.push(lead);
+  persist();
   return clone(lead);
 }
 
@@ -690,5 +924,245 @@ export async function listLeads(kind) {
   return leads
     .filter((l) => (kind ? l.kind === kind : true))
     .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
+    .map(clone);
+}
+
+// ---- Notifications (admin inbox) ----------------------------------------------
+
+/** Create an email-style notification for a school (e.g. a parent payment). */
+export async function createNotification({ schoolId, kind, to, subject, preview, body, amount }) {
+  const notification = {
+    id: nid("not"),
+    schoolId,
+    kind: kind || "info",
+    to: Array.isArray(to) ? to : [],
+    subject,
+    preview,
+    body: body || "",
+    // Optional money fact (e.g. a fee reminder's outstanding balance) so the
+    // reconcile flow can forward the LATEST amount without re-parsing text.
+    amount: Number.isFinite(Number(amount)) ? Number(amount) : undefined,
+    readBy: [],
+    createdAt: nowIso(),
+  };
+  notifications.push(notification);
+  persist();
+  return clone(notification);
+}
+
+// A notification is read for a given admin if their id is in readBy, OR the
+// "*" sentinel is (the legacy school-wide "read by everyone" state), OR it
+// still carries the old school-wide `read: true` (defense-in-depth for any
+// legacy object that reaches this helper outside the restore migration).
+const isReadBy = (n, userId) => {
+  const readBy = Array.isArray(n.readBy) ? n.readBy : [];
+  return readBy.includes(userId) || readBy.includes("*") || n.read === true;
+};
+
+/**
+ * Newest first (parity with Mongo's createdAt desc sort). Each entry carries
+ * the caller's OWN `read` flag — two admins see different read states, and
+ * readBy (other admins' ids) is stripped from the payload.
+ */
+export async function listNotifications(schoolId, userId) {
+  return notifications
+    .filter((n) => n.schoolId === schoolId)
+    // Tie-break on the (monotonic) id suffix so same-millisecond creates still
+    // order deterministically — newest created sorts first.
+    .sort(
+      (a, b) =>
+        new Date(b.createdAt) - new Date(a.createdAt) ||
+        Number(b.id.replace(/\D/g, "")) - Number(a.id.replace(/\D/g, ""))
+    )
+    .map((n) => {
+      const copy = { ...n };
+      delete copy.readBy;
+      copy.read = isReadBy(n, userId);
+      return copy;
+    });
+}
+
+/**
+ * Mark a batch as read FOR THE CALLING ADMIN (their id joins readBy — other
+ * admins keep their own unread state). Returns the caller's remaining unread
+ * count. A legacy school-wide `read: true` becomes "*" so it stays read.
+ */
+export async function markNotificationsRead(schoolId, userId, ids) {
+  const set = new Set(ids || []);
+  let changed = false;
+  notifications.forEach((n) => {
+    if (n.schoolId !== schoolId || !set.has(n.id)) return;
+    if (n.read === true) {
+      // Legacy school-wide read → sentinel, then record this admin too.
+      n.readBy = Array.isArray(n.readBy) ? n.readBy : [];
+      if (!n.readBy.includes("*")) n.readBy.push("*");
+      delete n.read;
+      changed = true;
+    }
+    if (n.readBy === undefined) n.readBy = [];
+    if (!n.readBy.includes(userId)) {
+      n.readBy.push(userId);
+      changed = true;
+    }
+  });
+  if (changed) persist();
+  return notifications.filter(
+    (n) => n.schoolId === schoolId && !isReadBy(n, userId)
+  ).length;
+}
+
+/**
+ * Mark a batch of notifications as "reconciled" — i.e. their fee reminder
+ * was forwarded to the student's newly linked parent. Sets reconciledAt (the
+ * moment the copy was sent) so a reminder is never forwarded twice. Returns
+ * the number actually marked (already-reconciled ones don't count).
+ */
+export async function markNotificationsReconciled(schoolId, ids) {
+  const set = new Set(ids || []);
+  const stamp = nowIso();
+  let changed = 0;
+  notifications.forEach((n) => {
+    if (n.schoolId !== schoolId || !set.has(n.id)) return;
+    if (n.reconciledAt) return; // already forwarded
+    n.reconciledAt = stamp;
+    changed += 1;
+  });
+  if (changed) persist();
+  return changed;
+}
+
+// ---- Fee audit trail ----------------------------------------------------------
+
+/**
+ * Append a fee audit entry — an immutable "who did what, and when" record
+ * for reconciliation. The actor is resolved by the caller (the API route)
+ * so the store stays a dumb ledger, same as the Mongo parity function.
+ */
+export async function logFeeAudit({
+  schoolId,
+  action,
+  actorId = "",
+  actorName,
+  actorRole = "",
+  studentId = "",
+  studentName = "",
+  classArm = "",
+  receiptNo = "",
+  amount = 0,
+  method = "",
+  note = "",
+}) {
+  const entry = {
+    id: nid("aud"),
+    schoolId,
+    action,
+    actorId,
+    actorName: actorName || "Unknown",
+    actorRole,
+    studentId,
+    studentName,
+    classArm,
+    receiptNo,
+    amount: Number(amount) || 0,
+    method,
+    note: note || "",
+    createdAt: nowIso(),
+  };
+  feeAudit.push(entry);
+  persist();
+  return clone(entry);
+}
+
+/** Newest first (parity with Mongo's createdAt desc sort). */
+export async function listFeeAudit(schoolId, { limit = 100 } = {}) {
+  return feeAudit
+    .filter((e) => e.schoolId === schoolId)
+    .sort(
+      (a, b) =>
+        new Date(b.createdAt) - new Date(a.createdAt) ||
+        Number(b.id.replace(/\D/g, "")) - Number(a.id.replace(/\D/g, ""))
+    )
+    .slice(0, limit)
+    .map(clone);
+}
+
+// ---- Admin digest preferences (per-admin schedule) ---------------------------
+
+/**
+ * The digest schedule for ONE admin (default: off). Digest frequency is a
+ * per-admin setting — two admins in the same school can pick different
+ * schedules, and each digest only carries the admin's OWN unread items.
+ */
+export async function getDigestPref(schoolId, userId) {
+  const pref = digestPrefs.find((p) => p.schoolId === schoolId && p.userId === userId);
+  if (pref) return clone(pref);
+  return { schoolId, userId, frequency: "off", lastSentAt: null };
+}
+
+/** Set one admin's digest frequency: "off" | "daily" | "weekly". */
+export async function setDigestPref(schoolId, userId, frequency) {
+  const freq = ["off", "daily", "weekly"].includes(frequency) ? frequency : "off";
+  let pref = digestPrefs.find((p) => p.schoolId === schoolId && p.userId === userId);
+  if (!pref) {
+    pref = {
+      id: nid("dgp"),
+      schoolId,
+      userId,
+      frequency: "off",
+      lastSentAt: null,
+      createdAt: nowIso(),
+    };
+    digestPrefs.push(pref);
+  }
+  pref.frequency = freq;
+  persist();
+  return clone(pref);
+}
+
+/**
+ * Record a sent digest email (the admin's unread items at send time) and bump
+ * their lastSentAt. Returns the stored digest record.
+ */
+export async function sendDigest({ schoolId, userId, frequency, subject, preview, body, itemCount }) {
+  const digest = {
+    id: nid("dgs"),
+    schoolId,
+    userId,
+    frequency: frequency === "weekly" ? "weekly" : "daily",
+    subject,
+    preview,
+    body: body || "",
+    itemCount: Number(itemCount) || 0,
+    createdAt: nowIso(),
+  };
+  digests.push(digest);
+
+  let pref = digestPrefs.find((p) => p.schoolId === schoolId && p.userId === userId);
+  if (!pref) {
+    pref = {
+      id: nid("dgp"),
+      schoolId,
+      userId,
+      frequency: "off",
+      lastSentAt: null,
+      createdAt: nowIso(),
+    };
+    digestPrefs.push(pref);
+  }
+  pref.lastSentAt = digest.createdAt;
+  persist();
+  return clone(digest);
+}
+
+/** Digest history for one admin, newest first. */
+export async function listDigests(schoolId, userId, { limit = 20 } = {}) {
+  return digests
+    .filter((d) => d.schoolId === schoolId && d.userId === userId)
+    .sort(
+      (a, b) =>
+        new Date(b.createdAt) - new Date(a.createdAt) ||
+        Number(b.id.replace(/\D/g, "")) - Number(a.id.replace(/\D/g, ""))
+    )
+    .slice(0, limit)
     .map(clone);
 }

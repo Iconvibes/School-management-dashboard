@@ -22,8 +22,15 @@ import {
   Banknote,
   AlertTriangle,
   CheckCircle2,
+  History,
   HeartHandshake,
   UserPlus,
+  Upload,
+  KeyRound,
+  Copy,
+  Check,
+  BellRing,
+  Send,
 } from "lucide-react";
 import Sidebar from "@/components/Sidebar";
 import MetricCard from "@/components/MetricCard";
@@ -52,6 +59,46 @@ function PayrollBadge({ status }) {
   );
 }
 
+// Fee audit trail — human labels + badge colours per action type.
+const AUDIT_META = {
+  PAYMENT_RECORDED: {
+    label: "Payment recorded",
+    cls: "bg-emerald-50 text-emerald-700 ring-emerald-600/20",
+  },
+  PAYMENT_CONFIRMED: {
+    label: "Payment confirmed",
+    cls: "bg-blue-50 text-blue-700 ring-blue-600/20",
+  },
+  PARENT_PAYMENT_SUBMITTED: {
+    label: "Parent payment submitted",
+    cls: "bg-amber-50 text-amber-700 ring-amber-600/20",
+  },
+  RECEIPT_DOWNLOADED: {
+    label: "Receipt downloaded",
+    cls: "bg-navy-50 text-navy-600 ring-navy-600/20",
+  },
+  REMINDER_SENT: {
+    label: "Reminder sent",
+    cls: "bg-violet-50 text-violet-700 ring-violet-600/20",
+  },
+  REMEDY_FORWARDED: {
+    label: "Reminders forwarded",
+    cls: "bg-sky-50 text-sky-700 ring-sky-600/20",
+  },
+};
+
+function AuditBadge({ action }) {
+  const meta = AUDIT_META[action] || {
+    label: action || "Fee action",
+    cls: "bg-navy-50 text-navy-600 ring-navy-600/20",
+  };
+  return (
+    <span className={`inline-flex items-center rounded-full px-2.5 py-1 text-xs font-bold ring-1 ${meta.cls}`}>
+      {meta.label}
+    </span>
+  );
+}
+
 export default function AdminDashboard() {
   const router = useRouter();
   const [session, setSession] = useState(null);
@@ -70,6 +117,7 @@ export default function AdminDashboard() {
     email: "",
     password: "",
     assignedClass: "",
+    staffRole: "BURSAR",
   });
   // Report cards tab state
   const [reportStudents, setReportStudents] = useState([]);
@@ -89,6 +137,17 @@ export default function AdminDashboard() {
   const [payModal, setPayModal] = useState(null); // studentId
   const [payForm, setPayForm] = useState({ amount: "", method: "CASH", note: "" });
   const [feeSaving, setFeeSaving] = useState(false);
+  // Reminder state — "Send reminder" to parents of defaulters
+  const [reminderModal, setReminderModal] = useState(null); // null | "all" | studentId
+  const [reminderSending, setReminderSending] = useState(false);
+  const [reminderResult, setReminderResult] = useState(null); // { sent, skipped } after send
+  // Reconcile & forward — push student-addressed reminders to newly linked parents
+  const [pendingReconciles, setPendingReconciles] = useState([]);
+  const [reconcileModal, setReconcileModal] = useState(false);
+  const [reconcileSending, setReconcileSending] = useState(false);
+  const [reconcileResult, setReconcileResult] = useState(null); // { forwarded, skipped }
+  // Fee audit trail — who did what (record / confirm / parent pay / download)
+  const [audit, setAudit] = useState([]);
   // Parent linking state
   const [parents, setParents] = useState([]);
   const [linkModal, setLinkModal] = useState(null); // studentId being linked
@@ -101,6 +160,12 @@ export default function AdminDashboard() {
     phone: "",
   });
   const [linkSaving, setLinkSaving] = useState(false);
+  // Reset-password state
+  const [resetTarget, setResetTarget] = useState(null); // user being reset
+  const [resetNewPassword, setResetNewPassword] = useState(""); // provided custom pw
+  const [resetLoading, setResetLoading] = useState(false);
+  const [resetDone, setResetDone] = useState(null); // { newPassword } after success
+  const [resetCopied, setResetCopied] = useState(false);
 
   const showToast = useCallback((msg) => {
     setToast(msg);
@@ -161,6 +226,26 @@ export default function AdminDashboard() {
       .catch(() => {});
   }, [tab, feeClass, feeDefaultersOnly]);
 
+  // Load the fee audit trail once per visit to the tab (the trail is global,
+  // not filtered by class arm or defaulter state).
+  useEffect(() => {
+    if (tab !== "fees") return;
+    fetch("/api/fees/audit")
+      .then((r) => r.json())
+      .then((data) => setAudit(data.entries || []))
+      .catch(() => {});
+  }, [tab]);
+
+  // Students whose reminders went to THEM (no parent at send time) and who
+  // have a parent now — the school can forward those reminders to the parent.
+  useEffect(() => {
+    if (tab !== "fees") return;
+    fetch("/api/fees/reconcile")
+      .then((r) => r.json())
+      .then((data) => setPendingReconciles(data.pending || []))
+      .catch(() => {});
+  }, [tab]);
+
   async function confirmPayment(id) {
     setConfirmingId(id);
     try {
@@ -183,6 +268,8 @@ export default function AdminDashboard() {
       setPendingPayments(ld.pendingPayments || []);
       const sr = await fetch("/api/admin/stats");
       setStats((await sr.json()).stats);
+      const ar = await fetch("/api/fees/audit");
+      setAudit((await ar.json()).entries || []);
     } catch (err) {
       showToast(err.message);
     } finally {
@@ -209,7 +296,8 @@ export default function AdminDashboard() {
     (async () => {
       const meRes = await fetch("/api/auth/me");
       const meData = await meRes.json();
-      if (!meData.user || meData.user.role !== "SUPER_ADMIN") {
+      // Any staff role opens the admin console; everyone else is redirected.
+      if (!meData.user || !["SUPER_ADMIN", "BURSAR", "REGISTRAR"].includes(meData.user.role)) {
         router.replace("/login");
         return;
       }
@@ -266,9 +354,10 @@ export default function AdminDashboard() {
   async function createUser(role) {
     setSaving(true);
     try {
-      // The modal value is lowercase ("teacher" | "student") but the API
-      // requires the uppercase role enum — normalize before sending.
-      const roleEnum = String(role || "").toUpperCase();
+      // The modal value is lowercase ("teacher" | "student" | "staff") but
+      // the API requires the uppercase role enum — normalize before sending.
+      // For "staff", form.staffRole holds the chosen BURSAR/REGISTRAR.
+      const roleEnum = String(role === "staff" ? form.staffRole || "BURSAR" : role || "").toUpperCase();
       const res = await fetch("/api/users", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -283,6 +372,9 @@ export default function AdminDashboard() {
           activeTeachers: s.activeTeachers + 1,
           payrollPending: s.payrollPending + 1, // new teachers start PENDING
         }));
+      } else if (roleEnum === "BURSAR" || roleEnum === "REGISTRAR") {
+        // Staff accounts land nowhere on this dashboard's tables (no roster/
+        // payroll rows for them) — the toast below confirms the creation.
       } else {
         const arm = data.user.assignedClass || "Unassigned";
         setStudents((ss) => [...ss, data.user]);
@@ -296,13 +388,50 @@ export default function AdminDashboard() {
         }));
       }
       setModal(null);
-      setForm({ name: "", email: "", password: "", assignedClass: "" });
-      showToast(`${roleEnum === "TEACHER" ? "Teacher" : "Student"} added successfully`);
+      setForm({ name: "", email: "", password: "", assignedClass: "", staffRole: "BURSAR" });
+      showToast(`${roleEnum === "TEACHER" ? "Teacher" : roleEnum === "BURSAR" ? "Bursar" : roleEnum === "REGISTRAR" ? "Registrar" : "Student"} added successfully`);
     } catch (err) {
       showToast(err.message);
     } finally {
       setSaving(false);
     }
+  }
+
+  async function resetPassword() {
+    if (!resetTarget) return;
+    setResetLoading(true);
+    setResetDone(null);
+    try {
+      const res = await fetch(`/api/users/${resetTarget.id}/reset-password`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ password: resetNewPassword || undefined }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to reset password");
+      setResetDone({ newPassword: data.newPassword });
+      showToast(`Password reset for ${resetTarget.name}`);
+    } catch (err) {
+      showToast(err.message);
+    } finally {
+      setResetLoading(false);
+    }
+  }
+
+  function openReset(user) {
+    setResetTarget(user);
+    setResetNewPassword("");
+    setResetDone(null);
+    setResetCopied(false);
+  }
+
+  async function copyNewPassword() {
+    if (!resetDone) return;
+    try {
+      await navigator.clipboard.writeText(resetDone.newPassword);
+      setResetCopied(true);
+      setTimeout(() => setResetCopied(false), 1500);
+    } catch {}
   }
 
   const filteredTeachers = teachers.filter((t) =>
@@ -395,6 +524,62 @@ export default function AdminDashboard() {
     }
   }
 
+  async function sendReminders(scope) {
+    // scope: "all" (every defaulter) or a single studentId (one student's row)
+    setReminderSending(true);
+    setReminderResult(null);
+    try {
+      const res = await fetch("/api/fees/reminders", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(scope === "all" ? {} : { studentIds: [scope] }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to send reminders");
+      setReminderResult(data);
+      if (data.sent?.length > 0) {
+        showToast(
+          `Reminder${data.sent.length === 1 ? "" : "s"} sent to ${data.sent.length} parent${data.sent.length === 1 ? "" : "s"}`
+        );
+      }
+      // Refresh the audit trail — the sends are logged there.
+      const ar = await fetch("/api/fees/audit");
+      setAudit((await ar.json()).entries || []);
+    } catch (err) {
+      showToast(err.message);
+    } finally {
+      setReminderSending(false);
+    }
+  }
+
+  async function reconcileAndForward() {
+    setReconcileSending(true);
+    setReconcileResult(null);
+    try {
+      const res = await fetch("/api/fees/reconcile", { method: "POST" });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to forward reminders");
+      setReconcileResult(data);
+      const n = data.forwarded?.length ?? 0;
+      if (n > 0) {
+        showToast(
+          `Forwarded ${data.forwarded.reduce((a, f) => a + (f.remindersForwarded || 0), 0)} reminder${data.forwarded.reduce((a, f) => a + (f.remindersForwarded || 0), 0) === 1 ? "" : "s"} to ${n} parent${n === 1 ? "" : "s"}`
+        );
+      }
+      // The originals are reconciled — the pending list drops to zero, and the
+      // forwards are on the audit trail.
+      setPendingReconciles((prev) =>
+        prev.filter((p) => !data.forwarded?.some((f) => f.studentId === p.studentId))
+      );
+      const ar = await fetch("/api/fees/audit");
+      setAudit((await ar.json()).entries || []);
+    } catch (err) {
+      showToast(err.message);
+    } finally {
+      setReconcileSending(false);
+    }
+  }
+
   async function recordPayment() {
     if (!payModal) return;
     setFeeSaving(true);
@@ -419,6 +604,8 @@ export default function AdminDashboard() {
       setFeeTotals(ld.totals || null);
       const sr = await fetch("/api/admin/stats");
       setStats((await sr.json()).stats);
+      const ar = await fetch("/api/fees/audit");
+      setAudit((await ar.json()).entries || []);
     } catch (err) {
       showToast(err.message);
     } finally {
@@ -441,11 +628,38 @@ export default function AdminDashboard() {
     );
   }
 
+  // Role gates for the shared admin console (mirrors ROLE_PERMISSIONS in
+  // src/lib/policy.js — the API enforces these too, the UI just hides what a
+  // role can't do).
+  const myRole = session.user?.role;
+  const isSuper = myRole === "SUPER_ADMIN";
+  const canFees = ["SUPER_ADMIN", "BURSAR"].includes(myRole);
+  const canRoster = ["SUPER_ADMIN", "REGISTRAR"].includes(myRole);
+  const canReports = ["SUPER_ADMIN", "REGISTRAR"].includes(myRole);
+  const ROLE_LABEL = {
+    SUPER_ADMIN: "Super Admin",
+    BURSAR: "Bursar",
+    REGISTRAR: "Registrar",
+  };
+
+  // Tabs each staff role may open (fees stay with admin+bursar; roster and
+  // report cards with admin+registrar; payroll is admin-only).
+  const visibleTabs = [
+    { key: "overview", label: "Overview" },
+    ...(isSuper ? [{ key: "teachers", label: "Teachers & Payroll" }] : []),
+    ...(canRoster ? [{ key: "students", label: "Students & Fees" }] : []),
+    ...(canFees ? [{ key: "fees", label: "Fee Management" }] : []),
+    ...(canReports ? [{ key: "reports", label: "Report Cards" }] : []),
+  ];
+  // A role-specific hash (e.g. /admin/dashboard#fees as a BURSAR) must not
+  // land on a tab they can't see — fall back to the first visible tab.
+  const activeTab = visibleTabs.some((t) => t.key === tab) ? tab : visibleTabs[0].key;
+
   const maxArm = Math.max(1, ...Object.values(stats.classDistribution || {}));
 
   return (
     <main className="flex min-h-screen flex-1 bg-navy-50">
-      <Sidebar role="SUPER_ADMIN" open={sidebarOpen} onClose={() => setSidebarOpen(false)} />
+      <Sidebar role={myRole} open={sidebarOpen} onClose={() => setSidebarOpen(false)} />
 
       <div className="flex-1 lg:pl-64">
         {/* Topbar */}
@@ -466,7 +680,7 @@ export default function AdminDashboard() {
           </div>
           <div className="flex items-center gap-3">
             <span className="hidden items-center gap-1.5 rounded-full bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-700 ring-1 ring-emerald-600/20 sm:flex">
-              <ShieldCheck className="h-3.5 w-3.5" /> Super Admin
+              <ShieldCheck className="h-3.5 w-3.5" /> {ROLE_LABEL[myRole] || myRole}
             </span>
             <div className="flex h-9 w-9 items-center justify-center rounded-full bg-gradient-to-br from-brand-500 to-brand-700 text-sm font-bold text-white">
               {session.user.name.split(" ").map((w) => w[0]).join("").slice(0, 2).toUpperCase()}
@@ -507,8 +721,10 @@ export default function AdminDashboard() {
             />
           </div>
 
-          {/* Pending payment notification — a parent paid and is awaiting confirmation */}
-          {stats.pendingPayments?.count > 0 && (
+          {/* Pending payment notification — a parent paid and is awaiting confirmation.
+              Only shown to roles that can open the Fee Management tab (a registrar
+              can't confirm anything, so the banner would be a dead end for them). */}
+          {canFees && stats.pendingPayments?.count > 0 && (
             <button
               onClick={() => setTab("fees")}
               className="mt-6 flex w-full items-center gap-3 rounded-2xl border border-amber-200 bg-amber-50 px-5 py-4 text-left shadow-sm transition hover:border-amber-300 hover:bg-amber-100"
@@ -533,13 +749,7 @@ export default function AdminDashboard() {
           {/* Tabs */}
           <div className="mt-8 flex flex-wrap items-center justify-between gap-3">
             <div className="flex gap-1 rounded-xl bg-navy-100 p-1">
-              {[
-                { key: "overview", label: "Overview" },
-                { key: "teachers", label: "Teachers & Payroll" },
-                { key: "students", label: "Students & Fees" },
-                { key: "fees", label: "Fee Management" },
-                { key: "reports", label: "Report Cards" },
-              ].map((t) => (
+              {visibleTabs.map((t) => (
                 <button
                   key={t.key}
                   onClick={() => {
@@ -547,7 +757,7 @@ export default function AdminDashboard() {
                     history.replaceState(null, "", t.key === "overview" ? "/admin/dashboard" : `/admin/dashboard#${t.key}`);
                   }}
                   className={`rounded-lg px-4 py-2 text-sm font-semibold transition ${
-                    tab === t.key ? "bg-white text-navy-800 shadow-sm" : "text-navy-500 hover:text-navy-700"
+                    activeTab === t.key ? "bg-white text-navy-800 shadow-sm" : "text-navy-500 hover:text-navy-700"
                   }`}
                 >
                   {t.label}
@@ -564,23 +774,54 @@ export default function AdminDashboard() {
                   className="w-44 rounded-xl border border-navy-200 bg-white py-2 pl-9 pr-3 text-sm outline-none transition focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20"
                 />
               </div>
-              <button
-                onClick={() => setModal("teacher")}
-                className="inline-flex items-center gap-1.5 rounded-xl bg-navy-800 px-4 py-2 text-sm font-semibold text-white transition hover:bg-navy-700"
-              >
-                <Plus className="h-4 w-4" /> Teacher
-              </button>
-              <button
-                onClick={() => setModal("student")}
-                className="inline-flex items-center gap-1.5 rounded-xl bg-brand-600 px-4 py-2 text-sm font-semibold text-white shadow-lg shadow-brand-600/30 transition hover:bg-brand-500"
-              >
-                <Plus className="h-4 w-4" /> Student
-              </button>
+              {canRoster && (
+                <a
+                  href="/admin/import"
+                  className="inline-flex items-center gap-1.5 rounded-xl border border-navy-200 bg-white px-4 py-2 text-sm font-semibold text-navy-700 transition hover:border-brand-300 hover:bg-brand-50/50 hover:text-brand-700"
+                  title="Bulk import students & teachers from a CSV"
+                >
+                  <Upload className="h-4 w-4" /> Import
+                </a>
+              )}
+              {canRoster && (
+                <a
+                  href="/admin/quick-add"
+                  className="inline-flex items-center gap-1.5 rounded-xl border border-navy-200 bg-white px-4 py-2 text-sm font-semibold text-navy-700 transition hover:border-brand-300 hover:bg-brand-50/50 hover:text-brand-700"
+                  title="Quick-add students by pasting their names"
+                >
+                  <UserPlus className="h-4 w-4" /> Quick Add
+                </a>
+              )}
+              {isSuper && (
+                <>
+                  <button
+                    onClick={() => setModal("teacher")}
+                    className="inline-flex items-center gap-1.5 rounded-xl bg-navy-800 px-4 py-2 text-sm font-semibold text-white transition hover:bg-navy-700"
+                  >
+                    <Plus className="h-4 w-4" /> Teacher
+                  </button>
+                  <button
+                    onClick={() => setModal("staff")}
+                    title="Add a bursar or registrar account"
+                    className="inline-flex items-center gap-1.5 rounded-xl border border-navy-200 bg-white px-4 py-2 text-sm font-semibold text-navy-700 transition hover:border-brand-300 hover:bg-brand-50/50 hover:text-brand-700"
+                  >
+                    <Plus className="h-4 w-4" /> Staff
+                  </button>
+                </>
+              )}
+              {canRoster && (
+                <button
+                  onClick={() => setModal("student")}
+                  className="inline-flex items-center gap-1.5 rounded-xl bg-brand-600 px-4 py-2 text-sm font-semibold text-white shadow-lg shadow-brand-600/30 transition hover:bg-brand-500"
+                >
+                  <Plus className="h-4 w-4" /> Student
+                </button>
+              )}
             </div>
           </div>
 
           {/* Overview */}
-          {tab === "overview" && (
+          {activeTab === "overview" && (
             <div className="mt-5 grid gap-5 lg:grid-cols-3">
               <div className="rounded-2xl border border-navy-200/70 bg-white p-6 shadow-sm lg:col-span-2">
                 <div className="flex items-center gap-2">
@@ -616,10 +857,31 @@ export default function AdminDashboard() {
                 </p>
                 <div className="mt-5 space-y-2.5">
                   {[
-                    { label: "Manage teachers & payroll", action: () => setTab("teachers") },
-                    { label: "Manage students & fees", action: () => setTab("students") },
-                    { label: "Add a teacher", action: () => setModal("teacher") },
-                    { label: "Add a student", action: () => setModal("student") },
+                    ...(canRoster
+                      ? [
+                          { label: "Import students & teachers (CSV)", action: () => router.push("/admin/import") },
+                          { label: "Quick-add students (paste names)", action: () => router.push("/admin/quick-add") },
+                          { label: "Start from class sizes (paper register)", action: () => router.push("/admin/placeholders") },
+                        ]
+                      : []),
+                    ...(canRoster
+                      ? [{ label: "Manage students & fees", action: () => setTab("students") }]
+                      : []),
+                    ...(canFees
+                      ? [{ label: "Manage fees & ledger", action: () => setTab("fees") }]
+                      : []),
+                    ...(canReports
+                      ? [{ label: "View report cards", action: () => setTab("reports") }]
+                      : []),
+                    ...(isSuper
+                      ? [
+                          { label: "Manage teachers & payroll", action: () => setTab("teachers") },
+                          { label: "Add a teacher", action: () => setModal("teacher") },
+                        ]
+                      : []),
+                    ...(canRoster
+                      ? [{ label: "Add a student", action: () => setModal("student") }]
+                      : []),
                   ].map((a) => (
                     <button
                       key={a.label}
@@ -636,7 +898,7 @@ export default function AdminDashboard() {
           )}
 
           {/* Teachers */}
-          {tab === "teachers" && (
+          {activeTab === "teachers" && (
             <div className="mt-5 overflow-hidden rounded-2xl border border-navy-200/70 bg-white shadow-sm">
               <div className="border-b border-navy-100 px-6 py-4">
                 <h2 className="text-lg font-bold text-navy-800">Teacher directory & payroll</h2>
@@ -663,6 +925,13 @@ export default function AdminDashboard() {
                               {t.name.split(" ").map((w) => w[0]).join("").slice(0, 2).toUpperCase()}
                             </div>
                             <span className="font-semibold text-navy-800">{t.name}</span>
+                            <button
+                              onClick={() => openReset(t)}
+                              title={`Reset ${t.name}'s password`}
+                              className="ml-1 rounded-lg p-1.5 text-navy-300 transition hover:bg-brand-50 hover:text-brand-600"
+                            >
+                              <KeyRound className="h-4 w-4" />
+                            </button>
                           </div>
                         </td>
                         <td className="px-6 py-4 text-navy-500">{t.email}</td>
@@ -695,7 +964,7 @@ export default function AdminDashboard() {
           )}
 
           {/* Fee Management */}
-          {tab === "fees" && (
+          {activeTab === "fees" && (
             <div className="mt-5 animate-fade-up">
               {/* Summary cards */}
               <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
@@ -732,6 +1001,38 @@ export default function AdminDashboard() {
                   accent="navy"
                 />
               </div>
+
+              {/* Reconcile & forward — reminders that went to the STUDENT (no
+                  parent at send time) and can now be pushed to a linked parent. */}
+              {pendingReconciles.length > 0 && (
+                <div className="mt-5 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-sky-200 bg-sky-50/70 px-5 py-4 shadow-sm">
+                  <div className="flex items-center gap-3">
+                    <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-sky-600 text-white shadow-md shadow-sky-600/30">
+                      <Send className="h-5 w-5" />
+                    </span>
+                    <div className="min-w-0">
+                      <p className="text-sm font-bold text-sky-900">
+                        {pendingReconciles.reduce((a, p) => a + p.reminders.length, 0)} reminder{pendingReconciles.reduce((a, p) => a + p.reminders.length, 0) === 1 ? "" : "s"} can be forwarded to parents
+                      </p>
+                      <p className="truncate text-xs text-sky-700">
+                        These went to the student when no parent was linked — now that a parent exists, send them a copy too.
+                      </p>
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => {
+                      setReconcileModal(true);
+                      setReconcileResult(null);
+                    }}
+                    className="inline-flex items-center gap-1.5 rounded-xl bg-sky-600 px-4 py-2 text-sm font-semibold text-white shadow-lg shadow-sky-600/30 transition hover:bg-sky-500"
+                  >
+                    <Send className="h-4 w-4" /> Reconcile &amp; forward
+                    <span className="rounded-full bg-white/25 px-1.5 py-0.5 text-[10px] font-bold">
+                      {pendingReconciles.length}
+                    </span>
+                  </button>
+                </div>
+              )}
 
               {/* Payments awaiting confirmation (from the parent portal) */}
               {pendingPayments.length > 0 && (
@@ -782,14 +1083,24 @@ export default function AdminDashboard() {
                               {new Date(p.createdAt).toLocaleDateString()}
                             </td>
                             <td className="px-6 py-3.5 text-right">
-                              <button
-                                onClick={() => confirmPayment(p.id)}
-                                disabled={confirmingId === p.id}
-                                className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-600 px-3.5 py-2 text-xs font-semibold text-white shadow-md shadow-emerald-600/30 transition hover:bg-emerald-500 disabled:opacity-60"
-                              >
-                                {confirmingId === p.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <CheckCircle2 className="h-3.5 w-3.5" />}
-                                Confirm
-                              </button>
+                              {isSuper ? (
+                                <button
+                                  onClick={() => confirmPayment(p.id)}
+                                  disabled={confirmingId === p.id}
+                                  className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-600 px-3.5 py-2 text-xs font-semibold text-white shadow-md shadow-emerald-600/30 transition hover:bg-emerald-500 disabled:opacity-60"
+                                >
+                                  {confirmingId === p.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <CheckCircle2 className="h-3.5 w-3.5" />}
+                                  Confirm
+                                </button>
+                              ) : (
+                                <span
+                                  title="Only the Super Admin can confirm parent-portal payments"
+                                  className="inline-flex items-center gap-1.5 rounded-lg bg-navy-100 px-3.5 py-2 text-xs font-semibold text-navy-500"
+                                >
+                                  <ShieldCheck className="h-3.5 w-3.5" />
+                                  Super Admin only
+                                </span>
+                              )}
                             </td>
                           </tr>
                         ))}
@@ -829,6 +1140,23 @@ export default function AdminDashboard() {
                   <AlertTriangle className="h-4 w-4" />
                   {feeDefaultersOnly ? "Showing defaulters" : "Defaulters only"}
                 </button>
+                <button
+                  onClick={() => {
+                    setReminderModal("all");
+                    setReminderResult(null);
+                  }}
+                  disabled={(feeTotals?.defaulters ?? 0) === 0}
+                  title="Send a fee reminder to every parent with an outstanding balance"
+                  className="inline-flex items-center gap-1.5 rounded-xl border border-violet-300 bg-violet-50 px-4 py-2 text-sm font-semibold text-violet-700 transition hover:border-violet-400 hover:bg-violet-100 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  <BellRing className="h-4 w-4" />
+                  Send reminders
+                  {(feeTotals?.defaulters ?? 0) > 0 && (
+                    <span className="rounded-full bg-violet-600 px-1.5 py-0.5 text-[10px] font-bold text-white">
+                      {feeTotals.defaulters}
+                    </span>
+                  )}
+                </button>
               </div>
 
               {/* Fee structures editor */}
@@ -861,21 +1189,29 @@ export default function AdminDashboard() {
                                 type="number"
                                 min={0}
                                 value={feeDraft[arm] ?? ""}
+                                disabled={!isSuper}
                                 onChange={(e) => setFeeDraft((d) => ({ ...d, [arm]: e.target.value }))}
                                 placeholder="e.g. 185000"
-                                className="w-40 rounded-lg border border-navy-200 bg-white px-3 py-2 text-sm font-medium text-navy-800 outline-none transition focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20"
+                                className="w-40 rounded-lg border border-navy-200 bg-white px-3 py-2 text-sm font-medium text-navy-800 outline-none transition focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 disabled:cursor-not-allowed disabled:bg-navy-50 disabled:text-navy-400"
                               />
                             </div>
                           </td>
                           <td className="px-6 py-3.5 text-right">
-                            <button
-                              onClick={() => saveFeeStructure(arm)}
-                              disabled={feeSaving}
-                              className="inline-flex items-center gap-1.5 rounded-lg bg-navy-800 px-3.5 py-2 text-xs font-semibold text-white transition hover:bg-navy-700 disabled:opacity-60"
-                            >
-                              {feeSaving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <CheckCircle2 className="h-3.5 w-3.5" />}
-                              Save
-                            </button>
+                            {isSuper ? (
+                              <button
+                                onClick={() => saveFeeStructure(arm)}
+                                disabled={feeSaving}
+                                className="inline-flex items-center gap-1.5 rounded-lg bg-navy-800 px-3.5 py-2 text-xs font-semibold text-white transition hover:bg-navy-700 disabled:opacity-60"
+                              >
+                                {feeSaving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <CheckCircle2 className="h-3.5 w-3.5" />}
+                                Save
+                              </button>
+                            ) : (
+                              <span className="inline-flex items-center gap-1.5 rounded-lg bg-navy-100 px-3.5 py-2 text-xs font-semibold text-navy-500">
+                                <ShieldCheck className="h-3.5 w-3.5" />
+                                Super Admin only
+                              </span>
+                            )}
                           </td>
                         </tr>
                       ))}
@@ -960,17 +1296,32 @@ export default function AdminDashboard() {
                               {l.feePaid ? "Paid" : l.balance > 0 ? "Outstanding" : "Unbilled"}
                             </span>
                           </td>
-                          <td className="px-6 py-3.5 text-right">
-                            <button
-                              onClick={() => {
-                                setPayModal(l.studentId);
-                                setPayForm((f) => ({ ...f, amount: l.balance > 0 ? String(l.balance) : "" }));
-                              }}
-                              className="inline-flex items-center gap-1.5 rounded-lg bg-brand-600 px-3.5 py-2 text-xs font-semibold text-white shadow-md shadow-brand-600/30 transition hover:bg-brand-500"
-                            >
-                              <Banknote className="h-3.5 w-3.5" />
-                              Record payment
-                            </button>
+                          <td className="px-6 py-3.5">
+                            <div className="flex items-center justify-end gap-2">
+                              {l.balance > 0 && (
+                                <button
+                                  onClick={() => {
+                                    setReminderModal(l.studentId);
+                                    setReminderResult(null);
+                                  }}
+                                  title={`Send a fee reminder to ${l.name}'s parent`}
+                                  className="inline-flex items-center gap-1.5 rounded-lg border border-violet-300 bg-violet-50 px-3.5 py-2 text-xs font-semibold text-violet-700 transition hover:border-violet-400 hover:bg-violet-100"
+                                >
+                                  <BellRing className="h-3.5 w-3.5" />
+                                  Remind
+                                </button>
+                              )}
+                              <button
+                                onClick={() => {
+                                  setPayModal(l.studentId);
+                                  setPayForm((f) => ({ ...f, amount: l.balance > 0 ? String(l.balance) : "" }));
+                                }}
+                                className="inline-flex items-center gap-1.5 rounded-lg bg-brand-600 px-3.5 py-2 text-xs font-semibold text-white shadow-md shadow-brand-600/30 transition hover:bg-brand-500"
+                              >
+                                <Banknote className="h-3.5 w-3.5" />
+                                Record payment
+                              </button>
+                            </div>
                           </td>
                         </tr>
                       ))}
@@ -978,6 +1329,89 @@ export default function AdminDashboard() {
                         <tr>
                           <td colSpan={8} className="px-6 py-12 text-center text-navy-400">
                             No students found{feeDefaultersOnly ? " with outstanding balances" : ""}. Adjust your filters.
+                          </td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              {/* Audit trail — who did what, and when (reconciliation) */}
+              <div className="mt-5 overflow-hidden rounded-2xl border border-navy-200/70 bg-white shadow-sm">
+                <div className="border-b border-navy-100 px-6 py-4">
+                  <h2 className="flex items-center gap-2 text-lg font-bold text-navy-800">
+                    <History className="h-5 w-5 text-brand-600" />
+                    Audit trail
+                  </h2>
+                  <p className="text-sm text-navy-400">
+                    Every fee action — who did it, and when. Use this to reconcile payments, confirmations and receipts.
+                  </p>
+                </div>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left text-sm">
+                    <thead>
+                      <tr className="border-b border-navy-100 bg-navy-50/60 text-xs font-semibold uppercase tracking-wider text-navy-400">
+                        <th className="px-6 py-3">When</th>
+                        <th className="px-6 py-3">Action</th>
+                        <th className="px-6 py-3">Who</th>
+                        <th className="px-6 py-3">Student</th>
+                        <th className="px-6 py-3">Receipt</th>
+                        <th className="px-6 py-3 text-right">Amount</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {audit.map((e) => (
+                        <tr key={e.id} className="border-b border-navy-50 transition hover:bg-navy-50/40">
+                          <td className="whitespace-nowrap px-6 py-3.5 text-xs text-navy-500">
+                            {new Date(e.createdAt).toLocaleString()}
+                          </td>
+                          <td className="px-6 py-3.5">
+                            <AuditBadge action={e.action} />
+                          </td>
+                          <td className="px-6 py-3.5">
+                            <p className="font-semibold text-navy-800">{e.actorName}</p>
+                            <p className="text-xs text-navy-400">
+                              {e.actorRole === "PARENT"
+                                ? "Parent portal"
+                                : e.actorRole === "SUPER_ADMIN"
+                                  ? "School admin"
+                                  : e.actorRole === "BURSAR"
+                                    ? "Bursar"
+                                    : e.actorRole === "REGISTRAR"
+                                      ? "Registrar"
+                                      : e.actorRole || "System"}
+                            </p>
+                          </td>
+                          <td className="px-6 py-3.5">
+                            {e.studentName ? (
+                              <>
+                                <p className="font-medium text-navy-700">{e.studentName}</p>
+                                {e.classArm && <p className="text-xs text-navy-400">{e.classArm}</p>}
+                              </>
+                            ) : (
+                              <span className="text-navy-300">—</span>
+                            )}
+                          </td>
+                          <td className="px-6 py-3.5">
+                            {e.receiptNo ? (
+                              <span className="rounded-md bg-navy-100 px-2 py-1 text-xs font-bold text-navy-600">
+                                {e.receiptNo}
+                              </span>
+                            ) : (
+                              <span className="text-navy-300">—</span>
+                            )}
+                          </td>
+                          <td className="px-6 py-3.5 text-right font-bold text-navy-800">
+                            {e.amount > 0 ? naira(e.amount) : "—"}
+                          </td>
+                        </tr>
+                      ))}
+                      {audit.length === 0 && (
+                        <tr>
+                          <td colSpan={6} className="px-6 py-12 text-center text-navy-400">
+                            No fee actions logged yet. Every payment you record or confirm — and every parent
+                            payment or receipt download — will appear here.
                           </td>
                         </tr>
                       )}
@@ -998,7 +1432,7 @@ export default function AdminDashboard() {
           )}
 
           {/* Report Cards */}
-          {tab === "reports" && (
+          {activeTab === "reports" && (
             <div className="mt-5 animate-fade-up">
               {/* Class filter + search row */}
               <div className="mb-5 flex flex-wrap items-center gap-3">
@@ -1122,7 +1556,7 @@ export default function AdminDashboard() {
           )}
 
           {/* Students */}
-          {tab === "students" && (
+          {activeTab === "students" && (
             <div className="mt-5 overflow-hidden rounded-2xl border border-navy-200/70 bg-white shadow-sm">
               <div className="border-b border-navy-100 px-6 py-4">
                 <h2 className="text-lg font-bold text-navy-800">Students, fees & parents</h2>
@@ -1150,6 +1584,13 @@ export default function AdminDashboard() {
                               {s.name.split(" ").map((w) => w[0]).join("").slice(0, 2).toUpperCase()}
                             </div>
                             <span className="font-semibold text-navy-800">{s.name}</span>
+                            <button
+                              onClick={() => openReset(s)}
+                              title={`Reset ${s.name}'s password`}
+                              className="ml-1 rounded-lg p-1.5 text-navy-300 transition hover:bg-emerald-50 hover:text-emerald-600"
+                            >
+                              <KeyRound className="h-4 w-4" />
+                            </button>
                           </div>
                         </td>
                         <td className="px-6 py-4 text-navy-500">{s.email}</td>
@@ -1159,7 +1600,20 @@ export default function AdminDashboard() {
                           </span>
                         </td>
                         <td className="px-6 py-4">
-                          <button onClick={() => toggleFee(s.id, s.feePaid)} title="Click to toggle fee status">
+                          {isSuper ? (
+                            <button onClick={() => toggleFee(s.id, s.feePaid)} title="Click to toggle fee status">
+                              <span
+                                className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-bold ring-1 ${
+                                  s.feePaid
+                                    ? "bg-emerald-50 text-emerald-700 ring-emerald-600/20"
+                                    : "bg-rose-50 text-rose-700 ring-rose-600/20"
+                                }`}
+                              >
+                                <span className={`h-1.5 w-1.5 rounded-full ${s.feePaid ? "bg-emerald-500" : "bg-rose-500"}`} />
+                                {s.feePaid ? "Paid" : "Unpaid"}
+                              </span>
+                            </button>
+                          ) : (
                             <span
                               className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-bold ring-1 ${
                                 s.feePaid
@@ -1170,7 +1624,7 @@ export default function AdminDashboard() {
                               <span className={`h-1.5 w-1.5 rounded-full ${s.feePaid ? "bg-emerald-500" : "bg-rose-500"}`} />
                               {s.feePaid ? "Paid" : "Unpaid"}
                             </span>
-                          </button>
+                          )}
                         </td>
                         <td className="px-6 py-4">
                           {s.parentId ? (
@@ -1351,6 +1805,201 @@ export default function AdminDashboard() {
         </div>
       </Modal>
 
+      {/* Reconcile & forward modal — confirm the forward, or show its result */}
+      <Modal
+        open={reconcileModal}
+        onClose={() => setReconcileModal(false)}
+        title="Reconcile & forward reminders"
+      >
+        {reconcileSending ? (
+          <div className="flex flex-col items-center py-8">
+            <Loader2 className="h-8 w-8 animate-spin text-sky-600" />
+            <p className="mt-3 text-sm font-semibold text-navy-600">Forwarding reminders…</p>
+          </div>
+        ) : reconcileResult ? (
+          <div className="space-y-4">
+            {reconcileResult.forwarded?.length > 0 ? (
+              <>
+                <div className="flex items-start gap-3 rounded-xl border border-sky-200 bg-sky-50 p-4">
+                  <CheckCircle2 className="mt-0.5 h-5 w-5 shrink-0 text-sky-600" />
+                  <div>
+                    <p className="text-sm font-bold text-sky-900">
+                      {reconcileResult.forwarded.reduce((a, f) => a + (f.remindersForwarded || 0), 0)} reminder{reconcileResult.forwarded.reduce((a, f) => a + (f.remindersForwarded || 0), 0) === 1 ? "" : "s"} forwarded to {reconcileResult.forwarded.length} parent{reconcileResult.forwarded.length === 1 ? "" : "s"}
+                    </p>
+                    <p className="mt-1 text-xs text-sky-700">
+                      Each parent now has a copy on their portal, and the forward is logged in the audit trail below.
+                    </p>
+                  </div>
+                </div>
+                <div className="max-h-56 overflow-y-auto rounded-xl border border-navy-100">
+                  {reconcileResult.forwarded.map((f) => (
+                    <div
+                      key={f.studentId}
+                      className="flex items-center justify-between gap-3 border-b border-navy-50 px-4 py-2.5 last:border-0"
+                    >
+                      <div className="min-w-0">
+                        <p className="truncate text-sm font-semibold text-navy-800">{f.studentName}</p>
+                        <p className="truncate text-xs text-navy-400">to {f.parent.name}</p>
+                      </div>
+                      <span className="shrink-0 text-xs font-bold text-sky-600">
+                        {f.remindersForwarded} reminder{f.remindersForwarded === 1 ? "" : "s"}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </>
+            ) : (
+              <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">
+                Nothing to forward — no reminders are waiting on a parent.
+              </div>
+            )}
+            <button
+              onClick={() => setReconcileModal(false)}
+              className="inline-flex w-full items-center justify-center rounded-xl bg-navy-800 py-3 text-sm font-semibold text-white transition hover:bg-navy-700"
+            >
+              Done
+            </button>
+          </div>
+        ) : (
+          <div className="space-y-4">
+            <p className="text-sm text-navy-600">
+              These reminders were sent to the <strong>student</strong> because no parent was linked at the time.
+              Forwarding sends the parent a copy on their portal and marks the originals as done — they won&apos;t be
+              forwarded again.
+            </p>
+            <div className="max-h-64 overflow-y-auto rounded-xl border border-navy-100">
+              {pendingReconciles.map((p) => (
+                <div
+                  key={p.studentId}
+                  className="flex items-center justify-between gap-3 border-b border-navy-50 px-4 py-2.5 last:border-0"
+                >
+                  <div className="min-w-0">
+                    <p className="truncate text-sm font-semibold text-navy-800">{p.studentName}</p>
+                    <p className="truncate text-xs text-navy-400">
+                      {p.classArm || "Unassigned"} · to {p.parent.name}
+                    </p>
+                  </div>
+                  <span className="shrink-0 rounded-full bg-sky-50 px-2 py-0.5 text-xs font-bold text-sky-700 ring-1 ring-sky-600/20">
+                    {p.reminders.length} reminder{p.reminders.length === 1 ? "" : "s"}
+                  </span>
+                </div>
+              ))}
+            </div>
+            <button
+              onClick={() => reconcileAndForward()}
+              disabled={reconcileSending}
+              className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-sky-600 py-3 text-sm font-semibold text-white shadow-lg shadow-sky-600/30 transition hover:bg-sky-500 disabled:opacity-60"
+            >
+              {reconcileSending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
+              Forward to {pendingReconciles.length} parent{pendingReconciles.length === 1 ? "" : "s"}
+            </button>
+          </div>
+        )}
+      </Modal>
+
+      {/* Send fee reminder modal — confirm or show the send result */}
+      <Modal
+        open={reminderModal !== null}
+        onClose={() => setReminderModal(null)}
+        title={reminderModal === "all" ? "Send fee reminders" : "Send fee reminder"}
+      >
+        {reminderSending ? (
+          <div className="flex flex-col items-center py-8">
+            <Loader2 className="h-8 w-8 animate-spin text-violet-600" />
+            <p className="mt-3 text-sm font-semibold text-navy-600">Sending reminders…</p>
+          </div>
+        ) : reminderResult ? (
+          <div className="space-y-4">
+            {reminderResult.sent?.length > 0 ? (
+              <>
+                <div className="flex items-start gap-3 rounded-xl border border-emerald-200 bg-emerald-50 p-4">
+                  <CheckCircle2 className="mt-0.5 h-5 w-5 shrink-0 text-emerald-600" />
+                  <div>
+                    <p className="text-sm font-bold text-emerald-800">
+                      {reminderResult.sent.length} reminder{reminderResult.sent.length === 1 ? "" : "s"} sent
+                    </p>
+                    <p className="mt-1 text-xs text-emerald-700">
+                      Parents have been notified via the notification system — each send is
+                      logged in the audit trail below.
+                    </p>
+                  </div>
+                </div>
+                <div className="max-h-56 overflow-y-auto rounded-xl border border-navy-100">
+                  {reminderResult.sent.map((s) => (
+                    <div
+                      key={s.studentId}
+                      className="flex items-center justify-between gap-3 border-b border-navy-50 px-4 py-2.5 last:border-0"
+                    >
+                      <div className="min-w-0">
+                        <p className="truncate text-sm font-semibold text-navy-800">{s.studentName}</p>
+                        <p className="truncate text-xs text-navy-400">
+                          to {s.recipient?.name}
+                          {s.recipient?.kind === "student" && (
+                            <span className="ml-1.5 rounded-full bg-violet-100 px-1.5 py-0.5 text-[10px] font-bold text-violet-700">
+                              student · no parent
+                            </span>
+                          )}
+                        </p>
+                      </div>
+                      <span className="shrink-0 text-xs font-bold text-amber-600">{naira(s.balance)}</span>
+                    </div>
+                  ))}
+                </div>
+              </>
+            ) : (
+              <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">
+                No reminders were sent.{" "}
+                {reminderResult.skipped?.length > 0
+                  ? `${reminderResult.skipped.length} student${reminderResult.skipped.length === 1 ? "" : "s"} ${reminderResult.skipped.length === 1 ? "has" : "have"} an outstanding balance but no linked parent account.`
+                  : "The selected students have no outstanding balance."}
+              </div>
+            )}
+            {reminderResult.skipped?.length > 0 && (
+              <p className="text-xs text-navy-400">
+                Skipped {reminderResult.skipped.length} student{reminderResult.skipped.length === 1 ? "" : "s"} without a linked parent.
+              </p>
+            )}
+            <button
+              onClick={() => setReminderModal(null)}
+              className="inline-flex w-full items-center justify-center rounded-xl bg-navy-800 py-3 text-sm font-semibold text-white transition hover:bg-navy-700"
+            >
+              Done
+            </button>
+          </div>
+        ) : (
+          <div className="space-y-4">
+            <p className="text-sm text-navy-600">
+              {reminderModal === "all" ? (
+                <>
+                  This will notify the parent of{" "}
+                  <strong>{feeTotals?.defaulters ?? 0} student{(feeTotals?.defaulters ?? 0) === 1 ? "" : "s"}</strong>{" "}
+                  with an outstanding balance. Students without a linked parent are reminded directly.
+                </>
+              ) : (
+                <>
+                  Send a fee reminder to the parent of{" "}
+                  <strong>{feeLedger.find((l) => l.studentId === reminderModal)?.name}</strong>{" "}
+                  ({naira(feeLedger.find((l) => l.studentId === reminderModal)?.balance)} outstanding).
+                </>
+              )}
+            </p>
+            <p className="rounded-xl bg-violet-50 px-4 py-3 text-xs text-violet-700 ring-1 ring-violet-600/20">
+              <BellRing className="mr-1 inline h-3.5 w-3.5" />
+              The parent sees the reminder on their portal — students without a parent get it
+              directly on their dashboard. Every send is recorded in the audit trail.
+            </p>
+            <button
+              onClick={() => sendReminders(reminderModal)}
+              disabled={reminderSending}
+              className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-violet-600 py-3 text-sm font-semibold text-white shadow-lg shadow-violet-600/30 transition hover:bg-violet-500 disabled:opacity-60"
+            >
+              {reminderSending ? <Loader2 className="h-4 w-4 animate-spin" /> : <BellRing className="h-4 w-4" />}
+              Send reminder{reminderModal === "all" ? "s" : ""}
+            </button>
+          </div>
+        )}
+      </Modal>
+
       {/* Record fee payment modal */}
       <Modal
         open={payModal !== null}
@@ -1411,11 +2060,17 @@ export default function AdminDashboard() {
         </div>
       </Modal>
 
-      {/* Add user modal */}
+      {/* Add user modal — teacher | student | staff (bursar/registrar) */}
       <Modal
         open={modal !== null}
         onClose={() => setModal(null)}
-        title={modal === "teacher" ? "Add teacher" : "Add student"}
+        title={
+          modal === "teacher"
+            ? "Add teacher"
+            : modal === "staff"
+              ? "Add staff account"
+              : "Add student"
+        }
       >
         <div className="space-y-4">
           <label className="block">
@@ -1447,28 +2102,125 @@ export default function AdminDashboard() {
               className={inputCls}
             />
           </label>
-          <label className="block">
-            <span className="mb-1.5 block text-sm font-medium text-navy-700">Class arm</span>
-            <select
-              value={form.assignedClass}
-              onChange={(e) => setForm({ ...form, assignedClass: e.target.value })}
-              className={inputCls}
-            >
-              <option value="">Unassigned</option>
-              {(session.school?.activeArms || []).map((arm) => (
-                <option key={arm}>{arm}</option>
-              ))}
-            </select>
-          </label>
+          {modal === "staff" ? (
+            <label className="block">
+              <span className="mb-1.5 block text-sm font-medium text-navy-700">Role</span>
+              <select
+                value={form.staffRole}
+                onChange={(e) => setForm({ ...form, staffRole: e.target.value })}
+                className={inputCls}
+              >
+                <option value="BURSAR">Bursar — fees, payments & reminders</option>
+                <option value="REGISTRAR">Registrar — roster, imports & report cards</option>
+              </select>
+            </label>
+          ) : (
+            <label className="block">
+              <span className="mb-1.5 block text-sm font-medium text-navy-700">Class arm</span>
+              <select
+                value={form.assignedClass}
+                onChange={(e) => setForm({ ...form, assignedClass: e.target.value })}
+                className={inputCls}
+              >
+                <option value="">Unassigned</option>
+                {(session.school?.activeArms || []).map((arm) => (
+                  <option key={arm}>{arm}</option>
+                ))}
+              </select>
+            </label>
+          )}
           <button
             onClick={() => createUser(modal)}
             disabled={saving}
             className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-brand-600 py-3 font-semibold text-white shadow-lg shadow-brand-600/30 transition hover:bg-brand-500 disabled:opacity-60"
           >
             {saving ? <Loader2 className="h-5 w-5 animate-spin" /> : <Plus className="h-5 w-5" />}
-            Add {modal === "teacher" ? "teacher" : "student"}
+            Add {modal === "teacher" ? "teacher" : modal === "staff" ? "staff account" : "student"}
           </button>
         </div>
+      </Modal>
+
+      {/* Reset password modal */}
+      <Modal
+        open={resetTarget !== null}
+        onClose={() => setResetTarget(null)}
+        title="Reset password"
+      >
+        {resetTarget && (
+          <div className="space-y-4">
+            <div className="flex items-center gap-3 rounded-xl border border-navy-100 bg-navy-50/60 px-4 py-3">
+              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-brand-50 text-sm font-bold text-brand-600">
+                {resetTarget.name.split(" ").map((w) => w[0]).join("").slice(0, 2).toUpperCase()}
+              </div>
+              <div className="min-w-0">
+                <p className="truncate font-bold text-navy-800">{resetTarget.name}</p>
+                <p className="truncate text-xs text-navy-400">
+                  {resetTarget.email} · {resetTarget.assignedClass || "Unassigned"}
+                </p>
+              </div>
+            </div>
+
+            {resetDone ? (
+              <div className="animate-fade-up space-y-4">
+                <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4">
+                  <p className="flex items-center gap-1.5 text-sm font-bold text-emerald-800">
+                    <CheckCircle2 className="h-4 w-4" />
+                    Password reset successfully
+                  </p>
+                  <p className="mt-1 text-xs text-emerald-700">
+                    The old password no longer works. Hand this new one to {resetTarget.name.split(" ")[0]} — they can change it after logging in.
+                  </p>
+                </div>
+
+                <div className="flex items-center gap-2 rounded-xl border border-navy-200 bg-navy-900 px-4 py-3">
+                  <KeyRound className="h-5 w-5 shrink-0 text-brand-300" />
+                  <code className="min-w-0 flex-1 select-all break-all font-mono text-lg font-bold tracking-wide text-white">
+                    {resetDone.newPassword}
+                  </code>
+                  <button
+                    onClick={copyNewPassword}
+                    title="Copy to clipboard"
+                    className="inline-flex shrink-0 items-center gap-1 rounded-lg bg-white/10 px-3 py-2 text-xs font-semibold text-white transition hover:bg-white/20"
+                  >
+                    {resetCopied ? <Check className="h-3.5 w-3.5 text-emerald-400" /> : <Copy className="h-3.5 w-3.5" />}
+                    {resetCopied ? "Copied" : "Copy"}
+                  </button>
+                </div>
+
+                <button
+                  onClick={() => setResetTarget(null)}
+                  className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-navy-800 py-3 font-semibold text-white transition hover:bg-navy-700"
+                >
+                  Done
+                </button>
+              </div>
+            ) : (
+              <div className="space-y-4">
+                <label className="block">
+                  <span className="mb-1.5 block text-sm font-medium text-navy-700">New password</span>
+                  <input
+                    type="text"
+                    value={resetNewPassword}
+                    onChange={(e) => setResetNewPassword(e.target.value)}
+                    placeholder="Leave blank to auto-generate a strong one"
+                    className={inputCls}
+                  />
+                  <span className="mt-1.5 block text-xs text-navy-400">
+                    Must be at least 6 characters. Auto-generated passwords skip confusing characters (0/O, 1/l/I).
+                  </span>
+                </label>
+                <button
+                  onClick={resetPassword}
+                  disabled={resetLoading}
+                  className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-brand-600 py-3 font-semibold text-white shadow-lg shadow-brand-600/30 transition hover:bg-brand-500 disabled:opacity-60"
+                >
+                  {resetLoading ? <Loader2 className="h-5 w-5 animate-spin" /> : <KeyRound className="h-5 w-5" />}
+                  Reset password
+                </button>
+              </div>
+            )}
+          </div>
+        )}
       </Modal>
 
       {/* Toast */}

@@ -6,6 +6,8 @@ import { checkRateLimit } from "@/lib/rate-limit";
 
 const ROLE_HOME = {
   SUPER_ADMIN: "/admin/dashboard",
+  BURSAR: "/admin/dashboard",
+  REGISTRAR: "/admin/dashboard",
   TEACHER: "/teacher/dashboard",
   STUDENT: "/student/dashboard",
   PARENT: "/parent/dashboard",

@@ -3,7 +3,10 @@ import { store } from "@/lib/store";
 import { isDenied, requireAuth, requireClassScope } from "@/lib/policy";
 
 export async function GET(request) {
-  const session = await requireAuth(["SUPER_ADMIN", "TEACHER"]);
+  // BURSAR is included so their dashboard loads (the admin console fetches
+  // the roster on mount regardless of role); viewing names/emails for
+  // reconciliation is a legitimate bursar need. Editing is still gated.
+  const session = await requireAuth(["SUPER_ADMIN", "BURSAR", "REGISTRAR", "TEACHER"]);
   if (isDenied(session)) return session;
 
   const { searchParams } = new URL(request.url);
@@ -42,7 +45,7 @@ export async function GET(request) {
 }
 
 export async function POST(request) {
-  const session = await requireAuth(["SUPER_ADMIN", "TEACHER"]);
+  const session = await requireAuth(["SUPER_ADMIN", "REGISTRAR", "TEACHER"]);
   if (isDenied(session)) return session;
 
   let body;
@@ -60,8 +63,13 @@ export async function POST(request) {
   if (!name || !email || !password || !roleEnum) {
     return jsonError("Name, email, password and role are required");
   }
-  if (!["STUDENT", "TEACHER", "PARENT"].includes(roleEnum)) {
-    return jsonError("Role must be STUDENT, TEACHER or PARENT");
+  // SUPER_ADMIN may create any role; REGISTRAR may build the student roster
+  // (students + their parents); TEACHER may only add students.
+  if (!["STUDENT", "TEACHER", "PARENT", "BURSAR", "REGISTRAR"].includes(roleEnum)) {
+    return jsonError("Role must be STUDENT, TEACHER, PARENT, BURSAR or REGISTRAR");
+  }
+  if (session.role === "REGISTRAR" && !["STUDENT", "PARENT"].includes(roleEnum)) {
+    return jsonError("Registrars can only add student and parent accounts", 403);
   }
   if (String(password).length < 6) {
     return jsonError("Password must be at least 6 characters");

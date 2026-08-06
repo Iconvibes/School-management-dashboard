@@ -14,6 +14,7 @@ import {
   Wallet,
   CalendarCheck,
   Trophy,
+  BellRing,
 } from "lucide-react";
 import Sidebar from "@/components/Sidebar";
 import ReportCardModal from "@/components/ReportCardModal";
@@ -26,6 +27,15 @@ const naira = (n) =>
     maximumFractionDigits: 0,
   }).format(Number(n) || 0);
 
+// Shown until a student has at least one recorded score. Neutral, encouraging
+// styling — no red "Needs Support" badge for results that simply don't exist yet.
+const PENDING_STANDING = {
+  label: "Results Pending",
+  color: "#64748b",
+  classes: "bg-navy-100 text-navy-500 ring-navy-500/20",
+  remark: "Your teachers haven't recorded your results yet — check back after the first assessment.",
+};
+
 export default function StudentDashboard() {
   const router = useRouter();
   const [session, setSession] = useState(null);
@@ -33,6 +43,7 @@ export default function StudentDashboard() {
   const [loading, setLoading] = useState(true);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [previewOpen, setPreviewOpen] = useState(false);
+  const [reminders, setReminders] = useState([]);
 
   useEffect(() => {
     (async () => {
@@ -44,26 +55,33 @@ export default function StudentDashboard() {
       }
       setSession(meData);
 
-      const scoresRes = await fetch("/api/scores/student");
-      const scoresData = await scoresRes.json();
-      setData(scoresData);
+      const [scoresRes, remindersRes] = await Promise.all([
+        fetch("/api/scores/student"),
+        fetch("/api/student/reminders"),
+      ]);
+      setData(await scoresRes.json());
+      setReminders((await remindersRes.json()).reminders || []);
       setLoading(false);
     })();
   }, [router]);
 
   const summary = useMemo(() => {
-    if (!data) return { subjects: 0, average: 0, standing: null, best: null, position: null, outOf: 0 };
-    const avg = data.summary?.average || 0;
-    const standing = standingFromAverage(avg);
-    const best = data.scores?.length
+    if (!data)
+      return { hasScores: false, subjects: 0, average: 0, standing: null, best: null, position: null, outOf: 0 };
+    const hasScores = (data.scores?.length || 0) > 0;
+    const avg = hasScores ? data.summary?.average || 0 : 0;
+    const standing = hasScores ? standingFromAverage(avg) : PENDING_STANDING;
+    const best = hasScores
       ? data.scores.reduce((a, b) => (b.totalScore > a.totalScore ? b : a))
       : null;
     return {
+      hasScores,
       subjects: data.summary?.subjects || 0,
       average: avg,
-      position: data.summary?.position || null,
-      outOf: data.summary?.outOf || 0,
-      standing: { ...standing, remark: standingRemark(standing.label) },
+      // No rank until the first scores exist — an all-zero position is noise.
+      position: hasScores ? data.summary?.position || null : null,
+      outOf: hasScores ? data.summary?.outOf || 0 : 0,
+      standing: { ...standing, remark: standing.remark || standingRemark(standing.label) },
       best,
     };
   }, [data]);
@@ -112,6 +130,34 @@ export default function StudentDashboard() {
         </header>
 
         <div className="mx-auto max-w-7xl px-5 py-8">
+          {/* Fee reminders — shown when the school reminded the student directly
+              (no linked parent on file, so the parent portal couldn't carry it). */}
+          {reminders.length > 0 && (
+            <div className="mb-6 rounded-2xl border border-violet-200 bg-violet-50 p-5">
+              <div className="flex items-center gap-2">
+                <BellRing className="h-5 w-5 text-violet-600" />
+                <h2 className="text-lg font-bold text-navy-800">
+                  {reminders.length} fee reminder{reminders.length === 1 ? "" : "s"} from the school
+                </h2>
+              </div>
+              <div className="mt-3 space-y-2">
+                {reminders.map((r) => (
+                  <div key={r.id} className="rounded-xl bg-white p-4 shadow-sm ring-1 ring-violet-100">
+                    <p className="text-sm font-bold text-navy-800">{r.subject}</p>
+                    <p className="mt-0.5 text-xs text-navy-500">{r.preview}</p>
+                    <p className="mt-1 text-[11px] text-navy-400">
+                      {new Date(r.createdAt).toLocaleString()}
+                    </p>
+                  </div>
+                ))}
+              </div>
+              <p className="mt-3 text-xs text-violet-700">
+                Please settle your outstanding balance at the school office, or ask a parent or
+                guardian to complete the payment for you.
+              </p>
+            </div>
+          )}
+
           {/* Profile banner */}
           <div
             className="relative overflow-hidden rounded-2xl p-8 text-white shadow-xl"
@@ -143,7 +189,9 @@ export default function StudentDashboard() {
                   <Award className="h-4 w-4" /> {summary.standing?.label}
                 </span>
                 <p className="mt-2 text-xs text-navy-200">
-                  {summary.subjects} subjects · Avg {summary.average}%
+                  {summary.hasScores
+                    ? `${summary.subjects} subjects · Avg ${summary.average}%`
+                    : "Results will appear here once your teachers record them"}
                 </p>
               </div>
             </div>
@@ -156,16 +204,24 @@ export default function StudentDashboard() {
                 <TrendingUp className="h-5 w-5 text-brand-600" />
                 <h2 className="font-bold text-navy-800">Overall average</h2>
               </div>
-              <p className="mt-3 text-4xl font-extrabold text-navy-800">{summary.average}%</p>
-              <div className="mt-3 h-2.5 overflow-hidden rounded-full bg-navy-100">
-                <div
-                  className="h-full rounded-full"
-                  style={{
-                    width: `${Math.min(100, summary.average)}%`,
-                    background: `linear-gradient(to right, ${brand}, ${brand}cc)`,
-                  }}
-                />
-              </div>
+              {summary.hasScores ? (
+                <>
+                  <p className="mt-3 text-4xl font-extrabold text-navy-800">{summary.average}%</p>
+                  <div className="mt-3 h-2.5 overflow-hidden rounded-full bg-navy-100">
+                    <div
+                      className="h-full rounded-full"
+                      style={{
+                        width: `${Math.min(100, summary.average)}%`,
+                        background: `linear-gradient(to right, ${brand}, ${brand}cc)`,
+                      }}
+                    />
+                  </div>
+                </>
+              ) : (
+                <p className="mt-4 text-sm font-medium text-navy-400">
+                  No results recorded this term yet — your average will show here.
+                </p>
+              )}
             </div>
 
             <div className="rounded-2xl border border-navy-200/70 bg-white p-6 shadow-sm">
@@ -174,10 +230,14 @@ export default function StudentDashboard() {
                 <h2 className="font-bold text-navy-800">Class position</h2>
               </div>
               <p className="mt-3 text-3xl font-extrabold text-navy-800">
-                {summary.position ? ordinal(summary.position) : "—"}
+                {summary.hasScores && summary.position ? ordinal(summary.position) : "—"}
               </p>
               <p className="mt-1 text-sm text-navy-400">
-                {summary.position ? `of ${summary.outOf} students in ${session.user.assignedClass || "your class"}` : "Based on term averages"}
+                {summary.hasScores
+                  ? summary.position
+                    ? `of ${summary.outOf} students in ${session.user.assignedClass || "your class"}`
+                    : "Based on term averages"
+                  : "Ranking appears once your results are recorded"}
               </p>
             </div>
 
@@ -236,7 +296,7 @@ export default function StudentDashboard() {
                   </p>
                 </>
               ) : (
-                <p className="mt-3 text-sm text-navy-400">No scores yet</p>
+                <p className="mt-3 text-sm text-navy-400">No results recorded yet</p>
               )}
             </div>
           </div>

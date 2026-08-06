@@ -13,6 +13,8 @@ import {
   GraduationCap,
   BookOpen,
   HeartHandshake,
+  Wallet,
+  ClipboardList,
   Info,
   Search,
   School,
@@ -24,6 +26,8 @@ import Logo from "@/components/Logo";
 
 const ROLES = [
   { key: "SUPER_ADMIN", label: "Super Admin", icon: ShieldCheck, desc: "Run the school" },
+  { key: "BURSAR", label: "Bursar", icon: Wallet, desc: "Manage fees & payments" },
+  { key: "REGISTRAR", label: "Registrar", icon: ClipboardList, desc: "Manage the roster" },
   { key: "TEACHER", label: "Teacher", icon: GraduationCap, desc: "Grade & manage class" },
   { key: "STUDENT", label: "Student", icon: BookOpen, desc: "View report card" },
   { key: "PARENT", label: "Parent", icon: HeartHandshake, desc: "Track your children" },
@@ -33,6 +37,8 @@ const ROLES = [
 const DEMO_SCHOOL = { id: "sch_101", name: "Greenfield International School" };
 const DEMO_CREDENTIALS = [
   { role: "SUPER_ADMIN", email: "admin@edutrack.app", password: "admin123" },
+  { role: "BURSAR", email: "bursar@edutrack.app", password: "bursar123" },
+  { role: "REGISTRAR", email: "registrar@edutrack.app", password: "registrar123" },
   { role: "TEACHER", email: "a.okafor@edutrack.app", password: "teacher123" },
   { role: "STUDENT", email: "k.adebayo@edutrack.app", password: "student123" },
   { role: "PARENT", email: "p.adebayo@edutrack.app", password: "parent123" },
@@ -285,7 +291,7 @@ export default function LoginPage() {
                 <p className="mt-1.5 text-sm text-navy-500">Choose your portal and sign in.</p>
 
                 {/* Role tabs */}
-                <div className="mt-5 grid grid-cols-2 gap-2 rounded-xl bg-navy-50 p-1.5 sm:grid-cols-4">
+                <div className="mt-5 grid grid-cols-2 gap-2 rounded-xl bg-navy-50 p-1.5 sm:grid-cols-3 lg:grid-cols-6">
                   {ROLES.map((r) => (
                     <button
                       key={r.key}

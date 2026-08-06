@@ -17,11 +17,12 @@ import {
 /**
  * GET /api/reports/[studentId]
  * Full report-card payload (student + school + scores + summary) for a
- * specific student. SUPER_ADMIN may read any student in their school;
- * TEACHER only students in their assigned class arm.
+ * specific student. SUPER_ADMIN/REGISTRAR may read any student in their
+ * school; TEACHER only students in their assigned class arm; PARENT only
+ * their own linked children.
  */
 export async function GET(request, { params }) {
-  const session = await requireAuth(["SUPER_ADMIN", "TEACHER", "PARENT"]);
+  const session = await requireAuth(["SUPER_ADMIN", "REGISTRAR", "TEACHER", "PARENT"]);
   if (isDenied(session)) return session;
 
   const { studentId } = await params;

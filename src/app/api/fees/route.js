@@ -1,5 +1,5 @@
 import { store } from "@/lib/store";
-import { isDenied, requireAuth } from "@/lib/policy";
+import { isDenied, requirePermission } from "@/lib/policy";
 
 /**
  * GET /api/fees — full fee ledger for the school (admin).
@@ -7,7 +7,7 @@ import { isDenied, requireAuth } from "@/lib/policy";
  * ?classArm= filters; ?defaulters=1 returns only students with a balance.
  */
 export async function GET(request) {
-  const session = await requireAuth(["SUPER_ADMIN"]);
+  const session = await requirePermission(["SUPER_ADMIN", "BURSAR"], "fees.view");
   if (isDenied(session)) return session;
 
   const { searchParams } = new URL(request.url);

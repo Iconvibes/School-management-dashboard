@@ -13,19 +13,43 @@ import {
   Wallet,
   CalendarCheck,
   HeartHandshake,
+  Upload,
+  UserPlus,
 } from "lucide-react";
 import Logo from "@/components/Logo";
+import NotificationsBell from "@/components/NotificationsBell";
 
 export default function Sidebar({ role, open, onClose }) {
   const router = useRouter();
 
+  // The admin console shows different navigation per staff role:
+  //   SUPER_ADMIN — everything
+  //   BURSAR     — overview + fee management (no roster tools, no payroll)
+  //   REGISTRAR  — overview + roster tools + report cards (no fee access)
   const items =
     role === "SUPER_ADMIN"
       ? [
           { href: "/admin/dashboard", label: "Overview", icon: LayoutDashboard },
+          { href: "/admin/import", label: "Bulk Import", icon: Upload },
+          { href: "/admin/quick-add", label: "Quick Add", icon: UserPlus },
+          { href: "/admin/placeholders", label: "From Class Sizes", icon: ClipboardList },
           { href: "/admin/dashboard#teachers", label: "Teachers & Payroll", icon: Users },
           { href: "/admin/dashboard#students", label: "Students & Fees", icon: BookOpen },
           { href: "/admin/dashboard#fees", label: "Fee Management", icon: Wallet },
+          { href: "/admin/dashboard#reports", label: "Report Cards", icon: ClipboardList },
+        ]
+      : role === "BURSAR"
+      ? [
+          { href: "/admin/dashboard", label: "Overview", icon: LayoutDashboard },
+          { href: "/admin/dashboard#fees", label: "Fee Management", icon: Wallet },
+        ]
+      : role === "REGISTRAR"
+      ? [
+          { href: "/admin/dashboard", label: "Overview", icon: LayoutDashboard },
+          { href: "/admin/import", label: "Bulk Import", icon: Upload },
+          { href: "/admin/quick-add", label: "Quick Add", icon: UserPlus },
+          { href: "/admin/placeholders", label: "From Class Sizes", icon: ClipboardList },
+          { href: "/admin/dashboard#students", label: "Students & Fees", icon: BookOpen },
           { href: "/admin/dashboard#reports", label: "Report Cards", icon: ClipboardList },
         ]
       : role === "TEACHER"
@@ -88,7 +112,8 @@ export default function Sidebar({ role, open, onClose }) {
           ))}
         </nav>
 
-        <div className="border-t border-white/10 p-3">
+        <div className="space-y-1 border-t border-white/10 p-3">
+          {role === "SUPER_ADMIN" && <NotificationsBell />}
           <button
             onClick={handleLogout}
             className="flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium text-navy-200 transition hover:bg-rose-500/10 hover:text-rose-300"

@@ -15,14 +15,16 @@
 
 import { getSession, jsonError } from "@/lib/auth";
 import { store } from "@/lib/store";
+import {
+  can,
+  mayEditUser,
+  mayResetPassword,
+  ROLES,
+  ROLE_PERMISSIONS,
+  STAFF_ROLES,
+} from "@/lib/permissions";
 
-/** Canonical roles (mirrors the User model's role enum). */
-export const ROLES = Object.freeze({
-  SUPER_ADMIN: "SUPER_ADMIN",
-  TEACHER: "TEACHER",
-  PARENT: "PARENT",
-  STUDENT: "STUDENT",
-});
+export { can, mayEditUser, mayResetPassword, ROLES, ROLE_PERMISSIONS, STAFF_ROLES };
 
 /** Shared policy copy — one message instead of the four that drifted apart. */
 const MSG = Object.freeze({
@@ -45,6 +47,22 @@ export async function requireAuth(roles) {
   const session = await getSession();
   if (!session) return jsonError("Not authenticated", 401);
   if (roles && !roles.includes(session.role)) return jsonError("Forbidden", 403);
+  return session;
+}
+
+/**
+ * Role list + action permission in one gate.
+ *
+ *   const session = await requirePermission(["SUPER_ADMIN", "BURSAR"], "fees.record");
+ *   if (isDenied(session)) return session;
+ *
+ * Keeps the positional requireAuth style while letting one endpoint be split
+ * into finer gates (record vs. confirm vs. structure edits).
+ */
+export async function requirePermission(roles, action) {
+  const session = await requireAuth(roles);
+  if (isDenied(session)) return session;
+  if (!can(session.role, action)) return jsonError("Forbidden", 403);
   return session;
 }
 

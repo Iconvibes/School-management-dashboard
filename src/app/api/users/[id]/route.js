@@ -1,9 +1,9 @@
 import { jsonError } from "@/lib/auth";
 import { store } from "@/lib/store";
-import { assertSameTenant, isDenied, requireAuth } from "@/lib/policy";
+import { assertSameTenant, isDenied, mayEditUser, requireAuth } from "@/lib/policy";
 
 export async function PATCH(request, { params }) {
-  const session = await requireAuth(["SUPER_ADMIN"]);
+  const session = await requireAuth(["SUPER_ADMIN", "REGISTRAR"]);
   if (isDenied(session)) return session;
 
   const { id } = await params;
@@ -17,6 +17,10 @@ export async function PATCH(request, { params }) {
     body = await request.json();
   } catch {
     return jsonError("Invalid request body");
+  }
+
+  if (!mayEditUser(session.role, target, body)) {
+    return jsonError("Registrars can only edit student and parent records", 403);
   }
 
   // role is deliberately NOT updatable here — prevents self-escalation
@@ -45,6 +49,9 @@ export async function PATCH(request, { params }) {
 }
 
 export async function DELETE(request, { params }) {
+  // Deleting records is destructive — SUPER_ADMIN only. A registrar edits the
+  // roster through PATCH (name, class, parent link, reset password) but never
+  // removes accounts.
   const session = await requireAuth(["SUPER_ADMIN"]);
   if (isDenied(session)) return session;
 

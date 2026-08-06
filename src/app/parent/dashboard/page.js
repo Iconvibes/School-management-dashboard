@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   Menu,
@@ -15,11 +15,17 @@ import {
   CreditCard,
   Users,
   ChevronRight,
+  PieChart,
+  CheckCircle2,
+  ReceiptText,
+  BellRing,
 } from "lucide-react";
 import Sidebar from "@/components/Sidebar";
 import ReportCardModal from "@/components/ReportCardModal";
+import ReceiptModal from "@/components/ReceiptModal";
 import Modal from "@/components/Modal";
 import { gradeBadgeClasses, ordinal } from "@/lib/grading";
+import { summarizeFamilyFees } from "@/lib/family-fees";
 
 const naira = (n) =>
   new Intl.NumberFormat("en-NG", {
@@ -39,12 +45,32 @@ export default function ParentDashboard() {
   const [selectedId, setSelectedId] = useState(null);
   const [reportPayload, setReportPayload] = useState(null);
   const [reportLoading, setReportLoading] = useState(false);
+  // Receipts — shown once a payment is confirmed by the school
+  const [receiptChild, setReceiptChild] = useState(null);
   // Pay Now flow
   const [payOpen, setPayOpen] = useState(false);
+  const [payTarget, setPayTarget] = useState(null); // the child being paid for
   const [payForm, setPayForm] = useState({ amount: "", method: "CARD" });
   const [paying, setPaying] = useState(false);
   const [payResult, setPayResult] = useState(null);
+  // Fee reminders from the school (children with outstanding balances)
+  const [reminders, setReminders] = useState([]);
   const [toast, setToast] = useState("");
+
+  // Refetch the children + fee ledger + reminders. Returns the body so
+  // callers can inspect it (e.g. pick the first child on first load).
+  const refresh = useCallback(async () => {
+    const res = await fetch("/api/parent/children");
+    const body = await res.json();
+    setData(body);
+    // Reminders are best-effort — a school reminder can arrive at any time.
+    try {
+      const rr = await fetch("/api/parent/reminders");
+      const rb = await rr.json();
+      if (rb.reminders) setReminders(rb.reminders);
+    } catch {}
+    return body;
+  }, []);
 
   useEffect(() => {
     (async () => {
@@ -55,15 +81,39 @@ export default function ParentDashboard() {
         return;
       }
       setSession(meData);
-      const res = await fetch("/api/parent/children");
-      const body = await res.json();
-      setData(body);
+      const body = await refresh();
       if (body.children?.length) setSelectedId(body.children[0].id);
       setLoading(false);
     })();
-  }, [router]);
+  }, [router, refresh]);
 
-  const children = data?.children || [];
+  // Keep the portal fresh — a school confirmation (and its receipt) can arrive
+  // at any time, so refetch when the tab regains focus and on a light poll,
+  // mirroring the admin notification bell. Closes the loop without a reload.
+  useEffect(() => {
+    let alive = true;
+    // Tab return fires both `focus` and `visibilitychange`, so dedupe to one
+    // fetch per switch.
+    let lastRefetch = 0;
+    const refetch = () => {
+      const now = Date.now();
+      if (!alive || now - lastRefetch < 2000) return;
+      lastRefetch = now;
+      refresh();
+    };
+    window.addEventListener("focus", refetch);
+    document.addEventListener("visibilitychange", refetch);
+    const id = setInterval(refetch, 30000);
+    return () => {
+      alive = false;
+      window.removeEventListener("focus", refetch);
+      document.removeEventListener("visibilitychange", refetch);
+      clearInterval(id);
+    };
+  }, [refresh]);
+
+  // Memoized so the family summary's useMemo dependency stays stable.
+  const children = useMemo(() => data?.children || [], [data]);
   const selected = children.find((c) => c.id === selectedId) || children[0] || null;
   const brand = data?.school?.brandColor || "#2563EB";
 
@@ -83,28 +133,34 @@ export default function ParentDashboard() {
     }
   }
 
-  function openPay() {
-    if (!selected) return;
-    setPayForm({ amount: selected.fee.balance > 0 ? String(selected.fee.balance) : "", method: "CARD" });
+  function openPay(child) {
+    // Called from the selected child's card (no arg) or from the family
+    // summary rows (any child). The target is captured in its own state so
+    // the modal always pays for exactly the child it was opened for, even if
+    // the selection behind it changes.
+    const target = child || selected;
+    if (!target) return;
+    setPayTarget(target);
+    setSelectedId(target.id);
+    setPayForm({ amount: target.fee.balance > 0 ? String(target.fee.balance) : "", method: "CARD" });
     setPayResult(null);
     setPayOpen(true);
   }
 
   async function submitPay() {
-    if (!selected) return;
+    if (!payTarget) return;
     setPaying(true);
     try {
       const res = await fetch("/api/parent/pay", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ studentId: selected.id, ...payForm }),
+        body: JSON.stringify({ studentId: payTarget.id, ...payForm }),
       });
       const body = await res.json();
       if (!res.ok) throw new Error(body.error || "Payment failed");
       setPayResult(body.payment);
       // Refresh children data
-      const r2 = await fetch("/api/parent/children");
-      setData(await r2.json());
+      await refresh();
     } catch (err) {
       setToast(err.message);
       setTimeout(() => setToast(""), 3000);
@@ -119,6 +175,9 @@ export default function ParentDashboard() {
     const standing = avg >= 70 ? "Distinction" : avg >= 60 ? "Very Good" : avg >= 50 ? "Good" : avg >= 40 ? "Credit" : "Needs Support";
     return { avg, standing };
   }, [selected]);
+
+  // Combined balance across every linked child — the family-level view.
+  const feeSummary = useMemo(() => summarizeFamilyFees(children), [children]);
 
   if (loading) {
     return (
@@ -171,8 +230,145 @@ export default function ParentDashboard() {
             </div>
           ) : (
             <>
+              {/* Fee reminders from the school — children with outstanding balances */}
+              {reminders.length > 0 && (
+                <div className="mb-5 animate-fade-up rounded-2xl border border-violet-200 bg-violet-50 p-5">
+                  <div className="flex items-center gap-2">
+                    <BellRing className="h-5 w-5 text-violet-600" />
+                    <h2 className="text-sm font-bold text-violet-800">
+                      {reminders.length} fee reminder{reminders.length === 1 ? "" : "s"} from the school
+                    </h2>
+                  </div>
+                  <div className="mt-3 space-y-2.5">
+                    {reminders.map((r) => (
+                      <div key={r.id} className="rounded-xl border border-violet-100 bg-white p-3.5">
+                        <p className="text-sm font-bold text-navy-800">{r.subject}</p>
+                        <p className="mt-0.5 text-xs text-navy-500">{r.preview}</p>
+                        <p className="mt-1 text-[11px] text-navy-400">
+                          {new Date(r.createdAt).toLocaleString()}
+                        </p>
+                      </div>
+                    ))}
+                  </div>
+                  <p className="mt-3 text-[11px] text-violet-600/80">
+                    You can clear these balances with Pay Now below — the school confirms each payment.
+                  </p>
+                </div>
+              )}
+
+              {/* Family balance — combined across all linked children */}
+              <div className="animate-fade-up overflow-hidden rounded-2xl bg-gradient-to-br from-emerald-950 via-emerald-800 to-emerald-600 text-white shadow-xl">
+                <div className="pointer-events-none absolute -right-16 -top-16 h-64 w-64 rounded-full bg-white/10 blur-3xl" />
+                <div className="relative p-6 sm:p-8">
+                  <div className="flex flex-wrap items-end justify-between gap-5">
+                    <div className="min-w-0">
+                      <p className="flex items-center gap-2 text-sm font-semibold text-emerald-200">
+                        <PieChart className="h-4 w-4" />
+                        Family balance · {feeSummary.children} linked child{feeSummary.children === 1 ? "" : "ren"}
+                      </p>
+                      <p className="mt-2 text-4xl font-extrabold tracking-tight sm:text-5xl">
+                        {naira(feeSummary.balance)}
+                      </p>
+                      <p className="mt-2 text-sm text-emerald-100/90">
+                        {feeSummary.withBalance === 0 ? (
+                          <span className="inline-flex items-center gap-1.5">
+                            <CheckCircle2 className="h-4 w-4" /> All children are fully paid for this term
+                          </span>
+                        ) : (
+                          <>
+                            {feeSummary.withBalance} of {feeSummary.children} child
+                            {feeSummary.children === 1 ? "" : "ren"} still{" "}
+                            {feeSummary.withBalance === 1 ? "has" : "have"} an outstanding balance
+                          </>
+                        )}
+                      </p>
+                    </div>
+
+                    {/* Stat tiles */}
+                    <div className="grid grid-cols-3 gap-3 text-right">
+                      {[
+                        { label: "Total billed", value: naira(feeSummary.billed) },
+                        { label: "Paid", value: naira(feeSummary.paid) },
+                        { label: "Awaiting confirmation", value: naira(feeSummary.pending) },
+                      ].map((s) => (
+                        <div
+                          key={s.label}
+                          className="rounded-xl bg-white/10 px-4 py-3 ring-1 ring-white/15 backdrop-blur"
+                        >
+                          <p className="text-lg font-extrabold leading-tight">{s.value}</p>
+                          <p className="mt-0.5 text-[11px] font-medium text-emerald-100/80">{s.label}</p>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Per-child rows — manage every payment from one view */}
+                  <div className="mt-6 overflow-hidden rounded-xl bg-black/20 ring-1 ring-white/10">
+                    {children.map((c) => (
+                      <div
+                        key={c.id}
+                        className="flex flex-wrap items-center gap-3 px-4 py-3 transition hover:bg-white/5"
+                      >
+                        <button
+                          onClick={() => setSelectedId(c.id)}
+                          className="flex min-w-0 flex-1 items-center gap-3 text-left"
+                          title={`View ${c.name}`}
+                        >
+                          <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-white/15 text-xs font-bold ring-1 ring-white/20">
+                            {c.name.split(" ").map((w) => w[0]).join("").slice(0, 2).toUpperCase()}
+                          </span>
+                          <span className="min-w-0">
+                            <span className="block truncate text-sm font-bold">{c.name}</span>
+                            <span className="block truncate text-xs text-emerald-100/70">
+                              {c.assignedClass || "Unassigned"}
+                            </span>
+                          </span>
+                        </button>
+
+                        {c.fee.pending > 0 && (
+                          <span className="inline-flex items-center gap-1.5 rounded-full bg-amber-400/90 px-2.5 py-1 text-[11px] font-bold text-amber-950">
+                            <Loader2 className="h-3 w-3 animate-spin" />
+                            {naira(c.fee.pending)} pending
+                          </span>
+                        )}
+
+                        {c.receipts?.length > 0 && (
+                          <button
+                            onClick={() => setReceiptChild(c)}
+                            title={`${c.receipts.length} receipt${c.receipts.length === 1 ? "" : "s"} available`}
+                            className="inline-flex items-center gap-1.5 rounded-full bg-white/15 px-2.5 py-1 text-[11px] font-bold text-white ring-1 ring-white/25 transition hover:bg-white/25"
+                          >
+                            <ReceiptText className="h-3 w-3" />
+                            Receipt{c.receipts.length > 1 ? `s (${c.receipts.length})` : ""}
+                          </button>
+                        )}
+
+                        <div className="text-right">
+                          <p className={`text-sm font-extrabold ${c.fee.balance > 0 ? "text-white" : "text-emerald-200"}`}>
+                            {c.fee.balance > 0 ? naira(c.fee.balance) : "Paid ✓"}
+                          </p>
+                          <p className="text-[11px] text-emerald-100/80">
+                            {naira(c.fee.paid)} of {naira(c.fee.amount)}
+                          </p>
+                        </div>
+
+                        <button
+                          onClick={() => openPay(c)}
+                          disabled={c.fee.balance <= 0 || c.fee.pending > 0}
+                          title={c.fee.pending > 0 ? "Awaiting school confirmation" : c.fee.balance <= 0 ? "Fully paid" : "Pay now"}
+                          className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-400 px-3.5 py-2 text-xs font-bold text-emerald-950 shadow-md shadow-black/20 transition hover:bg-emerald-300 disabled:cursor-not-allowed disabled:bg-white/10 disabled:text-emerald-100/40"
+                        >
+                          <CreditCard className="h-3.5 w-3.5" />
+                          Pay
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
               {/* Child selector */}
-              <div className="flex flex-wrap gap-3">
+              <div className="mt-6 flex flex-wrap gap-3">
                 {children.map((c) => (
                   <button
                     key={c.id}
@@ -290,8 +486,9 @@ export default function ParentDashboard() {
                         </p>
                       )}
                       <button
-                        onClick={openPay}
-                        disabled={selected.fee.balance <= 0}
+                        onClick={() => openPay()}
+                        disabled={selected.fee.balance <= 0 || selected.fee.pending > 0}
+                        title={selected.fee.pending > 0 ? "Awaiting school confirmation" : selected.fee.balance <= 0 ? "Fully paid" : "Pay now"}
                         className="mt-5 inline-flex w-full items-center justify-center gap-2 rounded-xl bg-emerald-600 py-3 text-sm font-semibold text-white shadow-lg shadow-emerald-600/30 transition hover:bg-emerald-500 disabled:cursor-not-allowed disabled:opacity-40"
                       >
                         <CreditCard className="h-4 w-4" />
@@ -301,6 +498,29 @@ export default function ParentDashboard() {
                         <p className="mt-2 text-center text-[11px] text-navy-400">
                           Balance updates once the school confirms your payment.
                         </p>
+                      )}
+
+                      {/* Receipt available — the school confirmed the payment */}
+                      {selected.receipts?.length > 0 && (
+                        <div className="mt-4 rounded-xl border border-emerald-200 bg-emerald-50 p-3">
+                          <p className="flex items-center gap-1.5 text-xs font-bold text-emerald-700">
+                            <ReceiptText className="h-4 w-4" />
+                            Receipt available
+                            {selected.receipts.length > 1 && ` (${selected.receipts.length})`}
+                          </p>
+                          <p className="mt-0.5 text-[11px] text-emerald-600/80">
+                            {selected.fee.feePaid
+                              ? "Your payment has been confirmed by the school."
+                              : "Your payment has been confirmed — download the official receipt."}
+                          </p>
+                          <button
+                            onClick={() => setReceiptChild(selected)}
+                            className="mt-2.5 inline-flex w-full items-center justify-center gap-2 rounded-xl bg-emerald-600 py-2.5 text-xs font-bold text-white shadow-md shadow-emerald-600/30 transition hover:bg-emerald-500"
+                          >
+                            <ReceiptText className="h-3.5 w-3.5" />
+                            View receipt
+                          </button>
+                        </div>
                       )}
                     </div>
 
@@ -345,8 +565,24 @@ export default function ParentDashboard() {
         fileName={reportPayload?.student?.name?.toLowerCase().replace(/[^a-z]+/g, "-")}
       />
 
+      {/* Receipt modal — download the official receipt after confirmation */}
+      <ReceiptModal
+        key={receiptChild?.id || "none"}
+        open={receiptChild !== null}
+        onClose={() => setReceiptChild(null)}
+        school={data?.school}
+        student={
+          receiptChild
+            ? { id: receiptChild.id, name: receiptChild.name, assignedClass: receiptChild.assignedClass }
+            : null
+        }
+        receipts={receiptChild?.receipts || []}
+        balance={receiptChild?.fee?.balance ?? 0}
+        fileName={receiptChild?.name?.toLowerCase().replace(/[^a-z]+/g, "-")}
+      />
+
       {/* Pay Now modal */}
-      <Modal open={payOpen} onClose={() => setPayOpen(false)} title={`Pay Now — ${selected?.name || ""}`}>
+      <Modal open={payOpen} onClose={() => setPayOpen(false)} title={`Pay Now — ${payTarget?.name || ""}`}>
         {payResult ? (
           <div className="text-center">
             <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-full bg-amber-100">
@@ -354,11 +590,15 @@ export default function ParentDashboard() {
             </div>
             <h3 className="mt-4 text-lg font-bold text-navy-800">Payment submitted</h3>
             <p className="mt-1 text-sm text-navy-500">
-              {naira(payResult.amount)} sent for {selected?.name} — the school will
+              {naira(payResult.amount)} sent for {payTarget?.name} — the school will
               confirm it before it clears.
             </p>
             <p className="mt-3 inline-flex items-center gap-1.5 rounded-full bg-amber-50 px-3 py-1 text-xs font-bold text-amber-700 ring-1 ring-amber-600/20">
               Receipt: {payResult.receiptNo} · Awaiting confirmation
+            </p>
+            <p className="mt-3 text-xs text-navy-400">
+              Once the school confirms this payment, the official receipt will
+              be available for download right here.
             </p>
             <button
               onClick={() => {
@@ -374,7 +614,7 @@ export default function ParentDashboard() {
           <div className="space-y-4">
             <div className="rounded-xl border border-navy-100 bg-navy-50/60 px-4 py-3">
               <p className="text-xs text-navy-400">Outstanding balance</p>
-              <p className="text-xl font-extrabold text-navy-800">{naira(selected?.fee.balance)}</p>
+              <p className="text-xl font-extrabold text-navy-800">{naira(payTarget?.fee.balance)}</p>
             </div>
             <label className="block">
               <span className="mb-1.5 block text-sm font-medium text-navy-700">Amount (₦)</span>

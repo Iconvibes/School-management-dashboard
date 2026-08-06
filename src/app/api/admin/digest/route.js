@@ -1,0 +1,44 @@
+import { jsonError } from "@/lib/auth";
+import { store } from "@/lib/store";
+import { isDenied, requireAuth } from "@/lib/policy";
+
+/**
+ * GET /api/admin/digest
+ * The calling admin's digest schedule + their digest history (newest first).
+ * Read state is per admin, so prefs and history are scoped to the caller.
+ */
+export async function GET() {
+  const session = await requireAuth(["SUPER_ADMIN"]);
+  if (isDenied(session)) return session;
+
+  const [pref, digests] = await Promise.all([
+    store.getDigestPref(session.schoolId, session.userId),
+    store.listDigests(session.schoolId, session.userId),
+  ]);
+
+  return Response.json({ pref, digests });
+}
+
+/**
+ * PUT /api/admin/digest
+ * Body: { frequency: "off" | "daily" | "weekly" } — the calling admin's
+ * digest schedule. Never affects other admins.
+ */
+export async function PUT(request) {
+  const session = await requireAuth(["SUPER_ADMIN"]);
+  if (isDenied(session)) return session;
+
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    return jsonError("Invalid request body");
+  }
+
+  if (!["off", "daily", "weekly"].includes(body?.frequency)) {
+    return jsonError("frequency must be one of: off, daily, weekly");
+  }
+
+  const pref = await store.setDigestPref(session.schoolId, session.userId, body.frequency);
+  return Response.json({ pref });
+}

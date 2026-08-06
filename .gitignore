@@ -27,6 +27,24 @@ png export.zip
 .vscode/
 .claude/
 .freebuff/
+.agents/
+
+# demo-mode persisted state (see src/lib/demo-store.js)
+.demo-data/
+
+# generated / export artifacts
+.deck-shots/
+*.pdf
+*.pptx
+*.zip
+*.excalidraw
+deck-qa.html
+edutrack-flyer.html
+edutrack-flyer.pdf
+edutrack-pitch-deck.html
+edutrack-pitch-deck.pdf
+edutrack-pitch-deck.pptx
+edutrack-architecture.excalidraw
 
 # debug
 npm-debug.log*

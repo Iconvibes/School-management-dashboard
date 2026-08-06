@@ -5,12 +5,12 @@ import { isDenied, requireAuth, requireClassScope } from "@/lib/policy";
 /**
  * GET /api/reports
  * Search and rank students across the school (or a single class arm).
- * - SUPER_ADMIN: all students in their school
- * - TEACHER:     students in their assigned class only
+ * - SUPER_ADMIN / REGISTRAR: all students in their school
+ * - TEACHER:                 students in their assigned class only
  * Query: ?search=name&classArm=SS1 Science&limit=50
  */
 export async function GET(request) {
-  const session = await requireAuth(["SUPER_ADMIN", "TEACHER"]);
+  const session = await requireAuth(["SUPER_ADMIN", "REGISTRAR", "TEACHER"]);
   if (isDenied(session)) return session;
 
   const { searchParams } = new URL(request.url);
