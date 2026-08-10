@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   Menu,
@@ -26,11 +26,28 @@ import {
   HeartHandshake,
   UserPlus,
   Upload,
+  Download,
   KeyRound,
   Copy,
   Check,
   BellRing,
   Send,
+  UserCog,
+  ArrowLeftRight,
+  BookOpen,
+  ClipboardList,
+  RefreshCw,
+  CalendarDays,
+  ChevronDown,
+  Clock,
+  Save,
+  Pencil,
+  Activity,
+  RotateCcw,
+  CalendarX,
+  UserX,
+  Link2Off,
+  Layers,
 } from "lucide-react";
 import Sidebar from "@/components/Sidebar";
 import MetricCard from "@/components/MetricCard";
@@ -38,10 +55,33 @@ import Modal from "@/components/Modal";
 import Logo from "@/components/Logo";
 import TopStudents from "@/components/TopStudents";
 import ReportCardModal from "@/components/ReportCardModal";
-import { gradeBadgeClasses } from "@/lib/grading";
+import ArmStreamSplitter from "@/components/ArmStreamSplitter";
+import { armAlreadyExists } from "@/lib/arms";
+import { getSubjects, gradeBadgeClasses, ordinal, TERMS } from "@/lib/grading";
+import {
+  DAYS,
+  DEFAULT_PERIOD_TIMES,
+  getBreakTime,
+  getDayTimeline,
+  getPeriodTimes,
+  MAX_PERIOD,
+  PERIODS,
+  slotConflictReasons,
+} from "@/lib/timetable";
+import { can, STAFF_ROLES, summarizeRolePermissions } from "@/lib/permissions";
+import { MANAGED_ROLES, ROLE_LABELS } from "@/lib/roles";
+import { sparklinePoints } from "@/lib/conflict-scan";
 
 const inputCls =
   "w-full rounded-xl border border-navy-200 bg-white px-4 py-2.5 text-sm text-navy-800 outline-none transition focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20";
+
+// Role badge colours for the Roles & Access tab (mirrors ROLE_LABELS).
+const ROLE_BADGES = {
+  SUPER_ADMIN: "bg-navy-900 text-white",
+  BURSAR: "bg-emerald-50 text-emerald-700 ring-emerald-600/20",
+  REGISTRAR: "bg-brand-50 text-brand-700 ring-brand-600/20",
+  TEACHER: "bg-violet-50 text-violet-700 ring-violet-600/20",
+};
 
 function PayrollBadge({ status }) {
   const paid = status === "PAID";
@@ -99,6 +139,22 @@ function AuditBadge({ action }) {
   );
 }
 
+/** "02:00"-style label for the health card's scheduled-scan line. */
+const fmtHour = (h) => `${String(h ?? 2).padStart(2, "0")}:00`;
+
+/** Compact relative time for the health card's "Scanned …" line. */
+function timeAgo(iso) {
+  if (!iso) return "never";
+  const secs = Math.max(1, Math.floor((Date.now() - new Date(iso).getTime()) / 1000));
+  if (secs < 60) return "just now";
+  const mins = Math.floor(secs / 60);
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs}h ago`;
+  const days = Math.floor(hrs / 24);
+  return days === 1 ? "yesterday" : `${days}d ago`;
+}
+
 export default function AdminDashboard() {
   const router = useRouter();
   const [session, setSession] = useState(null);
@@ -118,6 +174,10 @@ export default function AdminDashboard() {
     password: "",
     assignedClass: "",
     staffRole: "BURSAR",
+    // Subject-specialist teaching model: subjects × class arms is a teacher's
+    // classroom scope (one Mathematics teacher covers all twelve classes).
+    subjects: [],
+    assignedClasses: [],
   });
   // Report cards tab state
   const [reportStudents, setReportStudents] = useState([]);
@@ -166,6 +226,85 @@ export default function AdminDashboard() {
   const [resetLoading, setResetLoading] = useState(false);
   const [resetDone, setResetDone] = useState(null); // { newPassword } after success
   const [resetCopied, setResetCopied] = useState(false);
+  // Created-user display — after adding a student the auto-generated password
+  // is shown once (bcrypt means it can never be recovered later).
+  const [createdUserDisplay, setCreatedUserDisplay] = useState(null); // { name, email, password }
+  // Teaching-scope editor state — SUPER_ADMIN assigns a teacher's SUBJECTS ×
+  // ARMS here (the same scope the API enforces on every classroom route).
+  const [scopeTarget, setScopeTarget] = useState(null); // teacher being edited
+  const [scopeDraft, setScopeDraft] = useState({ subjects: [], assignedClasses: [], assignedClass: "" });
+  const [scopeSaving, setScopeSaving] = useState(false);
+  // Roles & Access tab state
+  const [staffList, setStaffList] = useState([]);
+  const [roleAudit, setRoleAudit] = useState([]);
+  const [roleDraft, setRoleDraft] = useState({}); // userId -> selected role
+  const [roleConfirm, setRoleConfirm] = useState(null); // { id, name, from, to }
+  const [roleSaving, setRoleSaving] = useState(false);
+  // Login Details tab state — every non-student account (staff + parents) so
+  // the SUPER_ADMIN can hand out / reset logins. Students are excluded (too
+  // many — their passwords are auto-derived as name+classarm).
+  const [loginUsers, setLoginUsers] = useState([]);
+  // Timetable tab state — SUPER_ADMIN builds the weekly schedule here; the
+  // assigned slots surface instantly in every teacher's portal.
+  const [ttArm, setTtArm] = useState("");
+  const [ttEntries, setTtEntries] = useState([]);
+  const [ttModal, setTtModal] = useState(null); // { day, period } cell being edited
+  const [ttDraft, setTtDraft] = useState({ subject: "", teacherId: "" });
+  const [ttSaving, setTtSaving] = useState(false);
+  // Conflicts checker — scans EVERY arm for double-booked teachers and
+  // duplicated arm slots, including pre-existing data.
+  const [ttConflicts, setTtConflicts] = useState(null); // { teacher: [], arm: [] }
+  const [ttConflictsOpen, setTtConflictsOpen] = useState(false);
+  const [ttConflictsLoading, setTtConflictsLoading] = useState(false);
+  const [ttConflictFixing, setTtConflictFixing] = useState(null); // "arm|day|period"
+  // Schedule Health (Overview) — the daily conflict scan with new-collision flag.
+  const [ttHealth, setTtHealth] = useState(null);
+  const [ttHealthScanning, setTtHealthScanning] = useState(false);
+  // Scope-violation swap — entryId -> chosen substitute teacherId.
+  const [ttSwapDraft, setTtSwapDraft] = useState({});
+  // Period-times editor — the bell schedule that drives the class-alert alarms.
+  const [periodTimesDraft, setPeriodTimesDraft] = useState([]);
+  const [periodTimesSaving, setPeriodTimesSaving] = useState(false);
+  // The school-wide mid-day break (between periods 4 and 5) — editable times.
+  const [breakDraft, setBreakDraft] = useState(getBreakTime(null));
+  // Per-weekday bell schedules — "All days" edits the school-wide schedule;
+  // picking a weekday edits THAT day's own override (e.g. a Friday that ends
+  // at period 6). dailyDrafts holds only days the school has customized.
+  const [bellDay, setBellDay] = useState("ALL");
+  const [dailyDrafts, setDailyDrafts] = useState({});
+  // Classes & Arms — the SUPER_ADMIN arm manager. armsDraft is null until the
+  // tab opens, so a tab switch always re-syncs the draft from the session.
+  const [armsDraft, setArmsDraft] = useState(null);
+  const [armsSlotCounts, setArmsSlotCounts] = useState({});
+  const [armsFeeAmounts, setArmsFeeAmounts] = useState({});
+  const [armsSaving, setArmsSaving] = useState(false);
+  const [newArm, setNewArm] = useState("");
+  // Rename arm modal — renameTarget is the arm being renamed (null = closed).
+  const [renameTarget, setRenameTarget] = useState(null);
+  const [renameValue, setRenameValue] = useState("");
+  const [renameSaving, setRenameSaving] = useState(false);
+  // Term rollover modal — moving the school to a new term archives the old
+  // term's scores/attendance and clones fees + timetable forward.
+  const [rolloverOpen, setRolloverOpen] = useState(false);
+  const [rolloverTermName, setRolloverTermName] = useState("");
+  const [rolloverSession, setRolloverSession] = useState("");
+  const [rolloverPreview, setRolloverPreview] = useState(null); // dry-run counts
+  const [rolloverPreviewing, setRolloverPreviewing] = useState(false);
+  const [rolloverSaving, setRolloverSaving] = useState(false);
+  // Previous Terms — read-only viewer over the term archive (rollover
+  // snapshots of each old term's scores + attendance).
+  const [archTerms, setArchTerms] = useState([]);
+  const [archTerm, setArchTerm] = useState(null); // { session, term }
+  const [archArm, setArchArm] = useState(null); // classArm string
+  const [archDetail, setArchDetail] = useState(null); // per-student payload
+  const [archLoading, setArchLoading] = useState(false);
+  // Alumni — archived-roster students no longer on the live roster.
+  const [archMode, setArchMode] = useState("terms"); // "terms" | "alumni"
+  const [archAlumni, setArchAlumni] = useState([]);
+  const [archAlumniLoading, setArchAlumniLoading] = useState(false);
+  const [archAlumniLoaded, setArchAlumniLoaded] = useState(false);
+
+  const subjects = getSubjects();
 
   const showToast = useCallback((msg) => {
     setToast(msg);
@@ -176,7 +315,7 @@ export default function AdminDashboard() {
   useEffect(() => {
     const applyHash = () => {
       const hash = window.location.hash.replace("#", "");
-      if (["teachers", "students", "fees", "reports"].includes(hash)) setTab(hash);
+      if (["classes", "teachers", "roles", "logins", "students", "fees", "reports", "timetable", "archives"].includes(hash)) setTab(hash);
     };
     applyHash();
     window.addEventListener("hashchange", applyHash);
@@ -210,6 +349,64 @@ export default function AdminDashboard() {
       .catch(() => {});
   }, [tab]);
 
+  // Previous Terms: load the archive summary when the tab opens.
+  useEffect(() => {
+    if (tab !== "archives") return;
+    let cancelled = false;
+    fetch("/api/school/archives")
+      .then((r) => r.json())
+      .then((data) => {
+        if (cancelled) return;
+        setArchTerms(data.terms || []);
+        if (!data.terms?.length) {
+          setArchTerm(null);
+          setArchArm(null);
+          setArchDetail(null);
+        }
+        // Fresh visit — start on the term list and let the alumni list reload.
+        setArchMode("terms");
+        setArchAlumniLoaded(false);
+        setArchAlumni([]);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [tab]);
+
+  // Classes & Arms: when the tab opens, re-read the school's arms from the
+  // server (authoritative — a save elsewhere already mirrored into the
+  // session) and load per-arm stats (timetable slots across ALL arms + fee
+  // structure amounts). All setState calls happen after awaits, never
+  // synchronously inside the effect.
+  useEffect(() => {
+    if (tab !== "classes") return;
+    let cancelled = false;
+    const load = async () => {
+      const [schoolRes, tt, fees] = await Promise.all([
+        fetch("/api/school").then((r) => r.json()).catch(() => null),
+        fetch("/api/timetable").then((r) => r.json()).catch(() => null),
+        fetch("/api/fees/structures").then((r) => r.json()).catch(() => null),
+      ]);
+      if (cancelled) return;
+      setArmsDraft(schoolRes?.school?.activeArms || []);
+      const counts = {};
+      (tt?.entries || []).forEach((e) => {
+        counts[e.classArm] = (counts[e.classArm] || 0) + 1;
+      });
+      setArmsSlotCounts(counts);
+      const amounts = {};
+      (fees?.structures || []).forEach((s) => {
+        amounts[s.classArm] = s.amount;
+      });
+      setArmsFeeAmounts(amounts);
+    };
+    load();
+    return () => {
+      cancelled = true;
+    };
+  }, [tab]);
+
   // Load fee ledger when filters change
   useEffect(() => {
     if (tab !== "fees") return;
@@ -225,6 +422,37 @@ export default function AdminDashboard() {
       })
       .catch(() => {});
   }, [tab, feeClass, feeDefaultersOnly]);
+
+  // Timetable: load the selected arm's schedule when the tab opens, plus the
+  // school's bell schedule for the period-times editor.
+  useEffect(() => {
+    if (tab !== "timetable" || !ttArm) return;
+    fetch(`/api/timetable?classArm=${encodeURIComponent(ttArm)}`)
+      .then((r) => r.json())
+      .then((data) => setTtEntries(data.entries || []))
+      .catch(() => {});
+    fetch("/api/school")
+      .then((r) => r.json())
+      .then((data) => {
+        setPeriodTimesDraft(getPeriodTimes(data.school).map((p) => ({ ...p })));
+        setBreakDraft(getBreakTime(data.school));
+        // Any per-day overrides the school already saved load into their own
+        // drafts, resolved to FULL schedules so the editor shows real values.
+        const ds = data.school?.dailySchedules || {};
+        setDailyDrafts(
+          Object.fromEntries(
+            DAYS.filter((d) => ds[d]).map((d) => [
+              d,
+              {
+                periodTimes: getPeriodTimes(data.school, d).map((p) => ({ ...p })),
+                breakTimes: { ...getBreakTime(data.school, d) },
+              },
+            ])
+          )
+        );
+      })
+      .catch(() => {});
+  }, [tab, ttArm]);
 
   // Load the fee audit trail once per visit to the tab (the trail is global,
   // not filtered by class arm or defaulter state).
@@ -243,6 +471,41 @@ export default function AdminDashboard() {
     fetch("/api/fees/reconcile")
       .then((r) => r.json())
       .then((data) => setPendingReconciles(data.pending || []))
+      .catch(() => {});
+  }, [tab]);
+
+  // Roles & Access: staff directory + role-change audit trail (super admin tab)
+  useEffect(() => {
+    if (tab !== "roles") return;
+    // One query per staff role instead of shipping the whole roster (which can
+    // be hundreds of students) just to filter it client-side.
+    Promise.all(
+      MANAGED_ROLES.map((r) =>
+        fetch(`/api/users?role=${encodeURIComponent(r)}`)
+          .then((res) => res.json())
+          .then((d) => d.users || [])
+      )
+    )
+      .then((groups) => setStaffList(groups.flat()))
+      .catch(() => {});
+    fetch("/api/users/roles/audit")
+      .then((r) => r.json())
+      .then((d) => setRoleAudit(d.entries || []))
+      .catch(() => {});
+  }, [tab]);
+
+  // Login Details: every non-student account (staff + parents) — one query
+  // per role to avoid shipping the whole student roster.
+  useEffect(() => {
+    if (tab !== "logins") return;
+    Promise.all(
+      ["SUPER_ADMIN", "BURSAR", "REGISTRAR", "TEACHER", "PARENT"].map((r) =>
+        fetch(`/api/users?role=${encodeURIComponent(r)}`)
+          .then((res) => res.json())
+          .then((d) => d.users || [])
+      )
+    )
+      .then((groups) => setLoginUsers(groups.flat()))
       .catch(() => {});
   }, [tab]);
 
@@ -297,11 +560,12 @@ export default function AdminDashboard() {
       const meRes = await fetch("/api/auth/me");
       const meData = await meRes.json();
       // Any staff role opens the admin console; everyone else is redirected.
-      if (!meData.user || !["SUPER_ADMIN", "BURSAR", "REGISTRAR"].includes(meData.user.role)) {
+      if (!meData.user || !STAFF_ROLES.includes(meData.user.role)) {
         router.replace("/login");
         return;
       }
       setSession(meData);
+      setTtArm(meData.school?.activeArms?.[0] || "");
 
       const [statsRes, teachersRes, studentsRes, parentsRes] = await Promise.all([
         fetch("/api/admin/stats"),
@@ -313,6 +577,14 @@ export default function AdminDashboard() {
       setTeachers((await teachersRes.json()).users);
       setStudents((await studentsRes.json()).users);
       setParents((await parentsRes.json()).users);
+      // Schedule Health — the daily conflict scan (auto-runs server-side when
+      // stale; the Overview just displays the result). SUPER_ADMIN only.
+      if (meData.user?.role === "SUPER_ADMIN") {
+        fetch("/api/timetable/health")
+          .then((r) => r.json())
+          .then((d) => setTtHealth(d))
+          .catch(() => {});
+      }
       setLoading(false);
     })();
   }, [router]);
@@ -387,9 +659,21 @@ export default function AdminDashboard() {
           },
         }));
       }
-      setModal(null);
-      setForm({ name: "", email: "", password: "", assignedClass: "", staffRole: "BURSAR" });
-      showToast(`${roleEnum === "TEACHER" ? "Teacher" : roleEnum === "BURSAR" ? "Bursar" : roleEnum === "REGISTRAR" ? "Registrar" : "Student"} added successfully`);
+
+      // When a student is created with an auto-generated password (name+class),
+      // show the login details in the modal before closing — the admin needs
+      // to hand the password to the student right away.
+      if (data.generatedPassword) {
+        setCreatedUserDisplay({
+          name: data.user.name,
+          email: data.user.email,
+          password: data.generatedPassword,
+        });
+      } else {
+        setModal(null);
+        setForm({ name: "", email: "", password: "", assignedClass: "", staffRole: "BURSAR", subjects: [], assignedClasses: [] });
+        showToast(`${roleEnum === "TEACHER" ? "Teacher" : roleEnum === "BURSAR" ? "Bursar" : roleEnum === "REGISTRAR" ? "Registrar" : "Student"} added successfully`);
+      }
     } catch (err) {
       showToast(err.message);
     } finally {
@@ -425,6 +709,13 @@ export default function AdminDashboard() {
     setResetCopied(false);
   }
 
+  function closeCreatedUserDisplay() {
+    setCreatedUserDisplay(null);
+    setModal(null);
+    setForm({ name: "", email: "", password: "", assignedClass: "", staffRole: "BURSAR", subjects: [], assignedClasses: [] });
+    showToast("Student added successfully");
+  }
+
   async function copyNewPassword() {
     if (!resetDone) return;
     try {
@@ -432,6 +723,92 @@ export default function AdminDashboard() {
       setResetCopied(true);
       setTimeout(() => setResetCopied(false), 1500);
     } catch {}
+  }
+
+  // Open the teaching-scope editor for a teacher. Seeds the draft from the
+  // teacher's CURRENT scope — multi-arm teachers get their arms, legacy
+  // single-arm teachers get their singular arm pre-selected as an arm chip.
+  function openScope(t) {
+    setScopeDraft({
+      subjects: t.subjects?.length ? [...t.subjects] : [],
+      assignedClasses: t.assignedClasses?.length
+        ? [...t.assignedClasses]
+        : t.assignedClass
+          ? [t.assignedClass]
+          : [],
+      assignedClass: t.assignedClass || "",
+    });
+    setScopeTarget(t);
+  }
+
+  // Save the edited scope through PATCH — the API's SUPER_ADMIN gate (and the
+  // field-level mayEditUser guard) re-validates it, and the store persists the
+  // exact arrays the teacher portal will enforce.
+  async function saveScope() {
+    if (!scopeTarget) return;
+    setScopeSaving(true);
+    try {
+      const res = await fetch(`/api/users/${scopeTarget.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          subjects: scopeDraft.subjects,
+          assignedClasses: scopeDraft.assignedClasses,
+          // Keep the legacy display/default arm in sync with the first pick.
+          assignedClass: scopeDraft.assignedClasses[0] || "",
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to save teaching scope");
+      const u = data.user;
+      setTeachers((ts) =>
+        ts.map((t) =>
+          t.id === u.id
+            ? { ...t, subjects: u.subjects || [], assignedClasses: u.assignedClasses || [], assignedClass: u.assignedClass || "" }
+            : t
+        )
+      );
+      setScopeTarget(null);
+      showToast(
+        `${u.subjects?.length ? u.subjects.join(", ") : "No subjects"} · ${u.assignedClasses?.length ? u.assignedClasses.length + (u.assignedClasses.length === 1 ? " arm" : " arms") : "no arms"} saved for ${u.name.split(" ")[0]}`
+      );
+    } catch (err) {
+      showToast(err.message);
+    } finally {
+      setScopeSaving(false);
+    }
+  }
+
+  function requestRoleChange(user, to) {
+    setRoleConfirm({ id: user.id, name: user.name, from: user.role, to });
+  }
+
+  async function confirmRoleChange() {
+    if (!roleConfirm) return;
+    setRoleSaving(true);
+    try {
+      const res = await fetch(`/api/users/${roleConfirm.id}/role`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ role: roleConfirm.to }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to change role");
+      setStaffList((list) =>
+        list.map((u) => (u.id === roleConfirm.id ? { ...u, role: roleConfirm.to } : u))
+      );
+      showToast(`${roleConfirm.name} is now ${ROLE_LABELS[roleConfirm.to] || roleConfirm.to}`);
+      setRoleConfirm(null);
+      // Refresh the trail — the change was logged server-side.
+      const ar = await fetch("/api/users/roles/audit");
+      setRoleAudit((await ar.json()).entries || []);
+    } catch (err) {
+      // Put the select back — the badge still shows the real (unchanged) role.
+      setRoleDraft((d) => ({ ...d, [roleConfirm.id]: roleConfirm.from }));
+      showToast(err.message);
+    } finally {
+      setRoleSaving(false);
+    }
   }
 
   const filteredTeachers = teachers.filter((t) =>
@@ -620,6 +997,716 @@ export default function AdminDashboard() {
       maximumFractionDigits: 0,
     }).format(Number(n) || 0);
 
+  // ---- Timetable helpers ---------------------------------------------------
+  const ttByKey = useMemo(() => {
+    const m = {};
+    ttEntries.forEach((e) => {
+      m[`${e.day}|${e.period}`] = e;
+    });
+    return m;
+  }, [ttEntries]);
+  const ttFilled = ttEntries.length;
+  // The realistic school day: teaching periods 1-4, the mid-day break, then
+  // periods 5-8 — the grid renders this instead of bare period numbers.
+  const dayTimeline = useMemo(() => getDayTimeline(session?.school), [session?.school]);
+  // Per-weekday timelines: each day column resolves its OWN bell schedule, so
+  // a short day (Friday ends at period 6) shows only its own periods.
+  const dayTimelines = useMemo(
+    () => Object.fromEntries(DAYS.map((d) => [d, getDayTimeline(session?.school, d)])),
+    [session?.school]
+  );
+  const dayPeriodSets = useMemo(
+    () =>
+      Object.fromEntries(
+        DAYS.map((d) => [
+          d,
+          new Set(
+            (dayTimelines[d] || [])
+              .filter((b) => b.type === "teaching")
+              .map((b) => Number(b.period))
+          ),
+        ])
+      ),
+    [dayTimelines]
+  );
+  // The bell editor's active draft — the school-wide schedule for "All days",
+  // or the selected weekday's own override.
+  const bellDraft = useMemo(() => {
+    if (bellDay === "ALL") {
+      return { periodTimes: periodTimesDraft, breakTimes: breakDraft, overridden: false };
+    }
+    const d = dailyDrafts[bellDay] || {
+      periodTimes: getPeriodTimes(session?.school, bellDay).map((p) => ({ ...p })),
+      breakTimes: { ...getBreakTime(session?.school, bellDay) },
+    };
+    return { ...d, overridden: Boolean(dailyDrafts[bellDay]) };
+  }, [bellDay, periodTimesDraft, breakDraft, dailyDrafts, session?.school]);
+  // Slots EVER flagged by a conflict scan (persisted history, unioned across
+  // scans). Reassigning one warns the admin so a resolved conflict can never
+  // silently regress — the history survives clean re-scans on purpose.
+  const ttFlaggedSlots = useMemo(() => new Set(ttHealth?.flaggedSlots || []), [ttHealth?.flaggedSlots]);
+  // The health card's trend sparkline — per-day conflict counts, rendered
+  // only once there are 2+ scan days (a single point is not a trend).
+  const ttSpark = useMemo(() => sparklinePoints(ttHealth?.history), [ttHealth?.history]);
+  // Teachers who can teach the currently selected subject (legacy teachers
+  // without subject assignments count for everything, like the API's check).
+  const ttTeachersForSubject = teachers.filter(
+    (t) => !t.subjects?.length || t.subjects.includes(ttDraft.subject)
+  );
+
+  function openTtCell(day, period) {
+    const existing = ttByKey[`${day}|${period}`];
+    const subject = existing?.subject || subjects[0] || "";
+    setTtDraft({
+      subject,
+      teacherId:
+        existing?.teacherId ||
+        teachers.find((t) => !t.subjects?.length || t.subjects.includes(subject))?.id ||
+        "",
+    });
+    setTtModal({ day, period });
+  }
+
+  async function saveTtSlot() {
+    if (!ttModal || !ttDraft.subject || !ttDraft.teacherId) return;
+    // Regression guard: a slot that an earlier scan flagged (and that is no
+    // longer part of a LIVE conflict — i.e. it was fixed) gets a confirm, so
+    // reassigning it can't silently undo the fix. Live conflicts don't prompt:
+    // the assign API refuses the bad save anyway, and changing the teacher IS
+    // the fix.
+    const slotKey = `${ttArm}|${ttModal.day}|${ttModal.period}`;
+    const liveReasons = slotConflictReasons(ttHealth?.conflicts, ttArm, ttModal.day, ttModal.period);
+    if (ttFlaggedSlots.has(slotKey) && liveReasons.length === 0) {
+      const ok = window.confirm(
+        "This slot was flagged by an earlier conflict scan. Reassigning it could " +
+          "silently reintroduce the issue. Save anyway?"
+      );
+      if (!ok) return;
+    }
+    setTtSaving(true);
+    try {
+      const res = await fetch("/api/timetable", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          classArm: ttArm,
+          day: ttModal.day,
+          period: ttModal.period,
+          subject: ttDraft.subject,
+          teacherId: ttDraft.teacherId,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to save slot");
+      setTtEntries((prev) => {
+        const key = `${data.entry.day}|${data.entry.period}`;
+        return [...prev.filter((e) => `${e.day}|${e.period}` !== key), data.entry];
+      });
+      setTtModal(null);
+      showToast(`Period ${ttModal.period} · ${ttModal.day} set for ${ttArm}`);
+      // Keep the Schedule Health flag state current after the change.
+      fetch("/api/timetable/health")
+        .then((r) => r.json())
+        .then((d) => setTtHealth(d))
+        .catch(() => {});
+      if (ttConflictsOpen) checkTtConflicts(true);
+    } catch (err) {
+      showToast(err.message);
+    } finally {
+      setTtSaving(false);
+    }
+  }
+
+  // The editor edits either the school-wide schedule ("ALL") or one weekday's
+  // own override — same handlers, different draft target.
+  function setPeriodTime(period, field, value) {
+    if (bellDay === "ALL") {
+      setPeriodTimesDraft((prev) =>
+        prev.map((p) => (p.period === period ? { ...p, [field]: value } : p))
+      );
+      return;
+    }
+    setDailyDrafts((prev) => {
+      const cur = prev[bellDay] || {
+        periodTimes: getPeriodTimes(session?.school, bellDay).map((p) => ({ ...p })),
+        breakTimes: { ...getBreakTime(session?.school, bellDay) },
+      };
+      return {
+        ...prev,
+        [bellDay]: {
+          ...cur,
+          periodTimes: cur.periodTimes.map((p) =>
+            p.period === period ? { ...p, [field]: value } : p
+          ),
+        },
+      };
+    });
+  }
+
+  function setBreakTime(field, value) {
+    if (bellDay === "ALL") {
+      setBreakDraft((prev) => ({ ...prev, [field]: value }));
+      return;
+    }
+    setDailyDrafts((prev) => {
+      const cur = prev[bellDay] || {
+        periodTimes: getPeriodTimes(session?.school, bellDay).map((p) => ({ ...p })),
+        breakTimes: { ...getBreakTime(session?.school, bellDay) },
+      };
+      return {
+        ...prev,
+        [bellDay]: { ...cur, breakTimes: { ...cur.breakTimes, [field]: value } },
+      };
+    });
+  }
+
+  // Pick which schedule the editor shows. First touch of a weekday seeds its
+  // draft from the school's CURRENT resolution, so edits start from reality.
+  function selectBellDay(day) {
+    setBellDay(day);
+    if (day !== "ALL" && !dailyDrafts[day]) {
+      setDailyDrafts((prev) => ({
+        ...prev,
+        [day]: {
+          periodTimes: getPeriodTimes(session?.school, day).map((p) => ({ ...p })),
+          breakTimes: { ...getBreakTime(session?.school, day) },
+        },
+      }));
+    }
+  }
+
+  // The short-day affordance: "how many periods run on this day?" Truncating
+  // drops the afternoon periods (a Friday that ends at period 6); extending
+  // pads with the default times for the new periods.
+  function setBellDayPeriodCount(day, n) {
+    setDailyDrafts((prev) => {
+      const cur = prev[day] || {
+        periodTimes: getPeriodTimes(session?.school, day).map((p) => ({ ...p })),
+        breakTimes: { ...getBreakTime(session?.school, day) },
+      };
+      const count = Math.min(MAX_PERIOD, Math.max(1, Number(n) || 1));
+      const periodTimes = Array.from({ length: count }, (_, i) => {
+        const p = i + 1;
+        const existing = cur.periodTimes.find((x) => Number(x.period) === p);
+        const def = DEFAULT_PERIOD_TIMES.find((x) => x.period === p);
+        return existing ? { ...existing } : { ...def };
+      });
+      return { ...prev, [day]: { ...cur, periodTimes } };
+    });
+  }
+
+  // Drop a weekday's override — the day falls back to the school-wide bell.
+  function resetBellDay(day) {
+    setDailyDrafts((prev) => {
+      const next = { ...prev };
+      delete next[day];
+      return next;
+    });
+  }
+
+  async function savePeriodTimes() {
+    setPeriodTimesSaving(true);
+    try {
+      // Per-day overrides: every customized weekday ships its own full
+      // schedule; days absent from dailyDrafts fall back to the school-wide
+      // bell (the reset path removes the day, so it clears on save).
+      const dailySchedules = Object.fromEntries(
+        Object.entries(dailyDrafts).map(([day, d]) => [
+          day,
+          { periodTimes: d.periodTimes, breakTimes: d.breakTimes },
+        ])
+      );
+      const res = await fetch("/api/school", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          periodTimes: periodTimesDraft,
+          breakTimes: breakDraft,
+          dailySchedules,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to save period times");
+      // Mirror the saved bell schedule into the session so the grid's day
+      // timelines (periods + break, per weekday) reflect the edit without a
+      // page reload.
+      setSession((s) =>
+        s
+          ? {
+              ...s,
+              school: {
+                ...s.school,
+                periodTimes: data.school?.periodTimes ?? s.school?.periodTimes,
+                breakTimes: data.school?.breakTimes ?? s.school?.breakTimes,
+                dailySchedules: data.school?.dailySchedules ?? s.school?.dailySchedules,
+              },
+            }
+          : s
+      );
+      showToast("Bell schedule saved — class alerts and timetables now follow it");
+    } catch (err) {
+      showToast(err.message);
+    } finally {
+      setPeriodTimesSaving(false);
+    }
+  }
+
+  // ---- Classes & Arms helpers ---------------------------------------------
+  function addArm() {
+    const arm = newArm.trim();
+    if (!arm) return;
+    if (!armAlreadyExists(armsDraft || [], arm)) {
+      setArmsDraft((d) => [...(d || []), arm]);
+    }
+    setNewArm("");
+  }
+
+  // Merge streamed variants (from ArmStreamSplitter) into the draft, skipping
+  // any that already exist (case-insensitively).
+  function addStreamedArms(names) {
+    setArmsDraft((d) => [
+      ...(d || []),
+      ...names.filter((n) => !armAlreadyExists(d || [], n)),
+    ]);
+  }
+
+  function removeArm(arm) {
+    const studentCount = stats?.classDistribution?.[arm] || 0;
+    const slotCount = armsSlotCounts[arm] || 0;
+    const msg =
+      studentCount > 0 || slotCount > 0
+        ? `${arm} still has ${studentCount} student${studentCount === 1 ? "" : "s"} and ${slotCount} timetable slot${slotCount === 1 ? "" : "s"}. Removing it leaves that data orphaned (the timetable scan flags it). Remove ${arm}?`
+        : `Remove ${arm}?`;
+    if (!window.confirm(msg)) return;
+    setArmsDraft((d) => (d || []).filter((a) => a !== arm));
+  }
+
+  async function saveArms() {
+    setArmsSaving(true);
+    try {
+      const res = await fetch("/api/school", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ activeArms: armsDraft }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to save classes");
+      // Mirror into the session so every arm selector (timetable, teachers,
+      // students…) reflects the change without a page reload.
+      setSession((s) =>
+        s
+          ? {
+              ...s,
+              school: {
+                ...s.school,
+                activeArms: data.school?.activeArms ?? s.school?.activeArms,
+              },
+            }
+          : s
+      );
+      showToast("Classes & arms saved");
+    } catch (err) {
+      showToast(err.message);
+    } finally {
+      setArmsSaving(false);
+    }
+  }
+
+  // Rename an arm: POST the migration, then re-key every local mirror
+  // (armsDraft, session school.activeArms, stats.classDistribution, slot
+  // counts and fee amounts) so the tab reflects the new name without a reload.
+  function openRename(arm) {
+    setRenameTarget(arm);
+    setRenameValue(arm);
+  }
+
+  async function saveRename() {
+    if (!renameTarget) return;
+    const to = renameValue.trim();
+    if (!to || to === renameTarget) return;
+    setRenameSaving(true);
+    try {
+      const res = await fetch("/api/school/rename-arm", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ from: renameTarget, to }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to rename class");
+      const { counts } = data;
+      const from = renameTarget;
+      // Re-key the draft, the session's activeArms and all per-arm stat maps.
+      setArmsDraft((d) => (d || []).map((a) => (a === from ? to : a)));
+      setSession((s) =>
+        s
+          ? {
+              ...s,
+              school: {
+                ...s.school,
+                activeArms: (s.school?.activeArms || []).map((a) => (a === from ? to : a)),
+              },
+            }
+          : s
+      );
+      setStats((st) => ({
+        ...st,
+        classDistribution: Object.fromEntries(
+          Object.entries(st.classDistribution || {}).map(([arm, n]) => [arm === from ? to : arm, n])
+        ),
+      }));
+      setArmsSlotCounts((c) =>
+        Object.fromEntries(Object.entries(c).map(([arm, n]) => [arm === from ? to : arm, n]))
+      );
+      setArmsFeeAmounts((c) =>
+        Object.fromEntries(Object.entries(c).map(([arm, n]) => [arm === from ? to : arm, n]))
+      );
+      const moved = Object.entries(counts || {})
+        .filter(([, n]) => n > 0)
+        .map(([k, n]) => `${n} ${k}`)
+        .join(", ");
+      showToast(moved ? `Renamed ${from} → ${to} · ${moved}` : `Renamed ${from} → ${to}`);
+      setRenameTarget(null);
+    } catch (err) {
+      showToast(err.message);
+    } finally {
+      setRenameSaving(false);
+    }
+  }
+
+  // ---- Term rollover -------------------------------------------------------
+  // Open the modal with the school's current session prefilled; the dry-run
+  // preview (counts only, nothing mutated) is fetched before confirming.
+  function openRollover() {
+    setRolloverTermName("");
+    setRolloverSession(session?.school?.currentSession || "");
+    setRolloverPreview(null);
+    setRolloverOpen(true);
+  }
+
+  async function previewRollover() {
+    if (!rolloverTermName.trim()) return;
+    setRolloverPreviewing(true);
+    try {
+      const res = await fetch("/api/school/rollover", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          newTerm: rolloverTermName.trim(),
+          newSession: rolloverSession.trim() || session?.school?.currentSession,
+          dryRun: true,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Could not preview the rollover");
+      setRolloverPreview(data.counts);
+    } catch (err) {
+      setRolloverPreview(null);
+      showToast(err.message);
+    } finally {
+      setRolloverPreviewing(false);
+    }
+  }
+
+  async function confirmRollover() {
+    if (!rolloverTermName.trim()) return;
+    setRolloverSaving(true);
+    try {
+      const res = await fetch("/api/school/rollover", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          newTerm: rolloverTermName.trim(),
+          newSession: rolloverSession.trim() || session?.school?.currentSession,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Could not start the new term");
+      const c = data.counts || {};
+      // Mirror the new term into the session so every header, selector and
+      // "this term" figure reflects it without a page reload.
+      setSession((s) =>
+        s
+          ? {
+              ...s,
+              school: {
+                ...s.school,
+                currentSession: data.school?.currentSession ?? s.school?.currentSession,
+                currentTerm: data.school?.currentTerm ?? s.school?.currentTerm,
+              },
+            }
+          : s
+      );
+      // Refresh term-scoped figures: overview stats + fee structures.
+      fetch("/api/admin/stats")
+        .then((r) => r.json())
+        .then((d) => d.stats && setStats(d.stats))
+        .catch(() => {});
+      fetch("/api/fees/structures")
+        .then((r) => r.json())
+        .then((d) => {
+          if (d.structures) {
+            setFeeStructures(d.structures);
+            setFeeDraft(Object.fromEntries(d.structures.map((s) => [s.classArm, s.amount])));
+          }
+        })
+        .catch(() => {});
+      showToast(
+        `Started ${data.school?.currentSession} · ${data.school?.currentTerm} — archived ${c.scoresArchived || 0} scores and ${c.attendanceArchived || 0} attendance registers; cloned ${c.feesCloned || 0} fee structures and ${c.timetableCloned || 0} timetable slots`
+      );
+      setRolloverOpen(false);
+      setRolloverPreview(null);
+    } catch (err) {
+      showToast(err.message);
+    } finally {
+      setRolloverSaving(false);
+    }
+  }
+
+  // ---- Previous Terms (term archive viewer) --------------------------------
+  function selectArchTerm(t) {
+    setArchTerm((prev) =>
+      prev && prev.session === t.session && prev.term === t.term
+        ? null
+        : { session: t.session, term: t.term }
+    );
+    setArchArm(null);
+    setArchDetail(null);
+  }
+
+  async function selectArchArm(t, arm) {
+    if (archArm === arm && archDetail) return;
+    setArchArm(arm);
+    setArchDetail(null);
+    setArchLoading(true);
+    try {
+      const params = new URLSearchParams({ session: t.session, term: t.term, classArm: arm });
+      const res = await fetch(`/api/school/archives?${params}`);
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Could not load the archived term");
+      setArchDetail(data);
+    } catch (err) {
+      showToast(err.message);
+      setArchDetail(null);
+    } finally {
+      setArchLoading(false);
+    }
+  }
+
+  // Open the existing report-card modal with the ARCHIVED payload — the
+  // school object is synthesized with the archived session/term, so the
+  // printed card reads the term it belongs to.
+  function openArchReport(st) {
+    setReportPayload({
+      school: archDetail.school,
+      student: { name: st.studentName, assignedClass: st.classArm },
+      scores: st.scores,
+      summary: st.summary,
+      attendance: st.attendance,
+    });
+  }
+
+  // Alumni view — students in an archived roster who are no longer on the
+  // live roster (graduated / deleted), with the term they last appeared in.
+  async function loadAlumni() {
+    setArchMode("alumni");
+    if (archAlumniLoaded) return; // already fetched this visit
+    setArchAlumniLoading(true);
+    try {
+      const res = await fetch("/api/school/archives?alumni=1");
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Could not load alumni");
+      setArchAlumni(data.alumni || []);
+      setArchAlumniLoaded(true);
+    } catch (err) {
+      showToast(err.message);
+    } finally {
+      setArchAlumniLoading(false);
+    }
+  }
+
+  // Download the alumni list as a CSV from the SERVER-side export
+  // (GET /api/school/archives?alumni=1&format=csv) — the same tested
+  // buildAlumniCsv helper runs there, so the file is byte-identical to the
+  // old client-side export but doesn't depend on the browser (works for
+  // large lists and can be reused by scheduled reports).
+  //
+  // The click is intercepted and the CSV is fetched first: an expired
+  // session (the server answers 401 with a JSON body) shows a friendly
+  // toast instead of the browser downloading the error payload as a file.
+  // On success the blob is saved with the server's Content-Disposition
+  // filename (school slug + date), exactly what the anchor navigation
+  // would have produced.
+  async function exportAlumniCsv(e) {
+    if (!archAlumni.length) return;
+    e.preventDefault();
+    try {
+      const res = await fetch("/api/school/archives?alumni=1&format=csv");
+      if (res.status === 401) {
+        showToast("Your session has expired — sign in again to export.");
+        return;
+      }
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        showToast(data.error || "Could not export the CSV");
+        return;
+      }
+      const blob = await res.blob();
+      const disposition = res.headers.get("Content-Disposition") || "";
+      const match = disposition.match(/filename="?([^";]+)"?/);
+      const filename = match ? match[1] : "alumni.csv";
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      showToast(`Exported ${archAlumni.length} alumni to CSV`);
+    } catch (err) {
+      showToast(err.message || "Could not export the CSV");
+    }
+  }
+
+  async function clearTtSlot() {
+    if (!ttModal) return;
+    setTtSaving(true);
+    try {
+      const res = await fetch("/api/timetable", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ classArm: ttArm, day: ttModal.day, period: ttModal.period }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to clear slot");
+      setTtEntries((prev) =>
+        prev.filter((e) => !(e.day === ttModal.day && e.period === ttModal.period))
+      );
+      setTtModal(null);
+      showToast(`Period ${ttModal.period} on ${ttModal.day} freed`);
+      if (ttConflictsOpen) checkTtConflicts(true);
+    } catch (err) {
+      showToast(err.message);
+    } finally {
+      setTtSaving(false);
+    }
+  }
+
+  // ---- Conflicts checker -----------------------------------------------------
+  // Scan every arm (the API resolves teacher names and gates to SUPER_ADMIN).
+  // `silent` suppresses the result toast — used for background re-scans after
+  // a save/clear so an open panel never shows stale data.
+  async function checkTtConflicts(silent = false) {
+    setTtConflictsLoading(true);
+    try {
+      const res = await fetch("/api/timetable?conflicts=1");
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to scan the timetable");
+      setTtConflicts(data.conflicts);
+      // Refresh the Schedule Health state too — the scan just recorded through
+      // the same runner, so the cell-editor warning (live vs. resolved) must
+      // reflect THIS scan, not the Overview's earlier one.
+      fetch("/api/timetable/health")
+        .then((r) => r.json())
+        .then((d) => setTtHealth(d))
+        .catch(() => {});
+      setTtConflictsOpen(true);
+      const total =
+        (data.conflicts.teacher?.length || 0) +
+        (data.conflicts.arm?.length || 0) +
+        (data.conflicts.scope?.length || 0);
+      if (!silent) {
+        showToast(
+          total ? `${total} conflict${total === 1 ? "" : "s"} found — review them below` : "No conflicts — the schedule is clean"
+        );
+      }
+    } catch (err) {
+      if (!silent) showToast(err.message);
+    } finally {
+      setTtConflictsLoading(false);
+    }
+  }
+
+  // Manual "Scan now" from the Overview health card — POST records the scan
+  // and flags collisions that are new since the previous one.
+  async function scanSchedule() {
+    setTtHealthScanning(true);
+    try {
+      const res = await fetch("/api/timetable/scan", { method: "POST" });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Scan failed");
+      setTtHealth(data);
+      showToast(
+        data.conflictCount
+          ? `${data.conflictCount} conflict${data.conflictCount === 1 ? "" : "s"} found${data.newConflictCount ? ` — ${data.newConflictCount} new` : ""}`
+          : "No conflicts — the schedule is clean"
+      );
+    } catch (err) {
+      showToast(err.message);
+    } finally {
+      setTtHealthScanning(false);
+    }
+  }
+
+  // One-click fix: free one of the conflicting slots, then re-scan. The grid
+  // for the currently selected arm updates too, when the freed slot is in it.
+  async function fixTtConflict(slot) {
+    const key = `${slot.classArm}|${slot.day}|${slot.period}`;
+    setTtConflictFixing(key);
+    try {
+      const res = await fetch("/api/timetable", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ classArm: slot.classArm, day: slot.day, period: slot.period }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to free the slot");
+      setTtEntries((prev) =>
+        prev.filter((e) => !(e.classArm === slot.classArm && e.day === slot.day && e.period === slot.period))
+      );
+      showToast(`Freed ${slot.classArm} · ${slot.day}, period ${slot.period}`);
+      await checkTtConflicts(true); // authoritative re-scan
+    } catch (err) {
+      showToast(err.message);
+    } finally {
+      setTtConflictFixing(null);
+    }
+  }
+
+  // One-click fix for a scope violation: assign a VALID teacher to the slot.
+  // The assign API re-validates the substitute (subject, arm, double-booking)
+  // server-side, so a stale candidate can never sneak through.
+  async function swapTtTeacher(violation, teacherId) {
+    if (!teacherId) return;
+    const fixing = `swap|${violation.entryId}`;
+    setTtConflictFixing(fixing);
+    try {
+      const res = await fetch("/api/timetable", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          classArm: violation.classArm,
+          day: violation.day,
+          period: violation.period,
+          subject: violation.subject,
+          teacherId,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Swap failed");
+      setTtEntries((prev) => {
+        const key = `${data.entry.day}|${data.entry.period}`;
+        return [...prev.filter((e) => `${e.day}|${e.period}` !== key), data.entry];
+      });
+      showToast(`Swapped in ${data.entry.teacherName} for ${violation.subject} · ${violation.classArm}`);
+      await checkTtConflicts(true); // authoritative re-scan
+    } catch (err) {
+      showToast(err.message);
+    } finally {
+      setTtConflictFixing(null);
+    }
+  }
+
   if (loading) {
     return (
       <main className="flex flex-1 items-center justify-center bg-navy-50">
@@ -628,14 +1715,16 @@ export default function AdminDashboard() {
     );
   }
 
-  // Role gates for the shared admin console (mirrors ROLE_PERMISSIONS in
-  // src/lib/policy.js — the API enforces these too, the UI just hides what a
-  // role can't do).
+  // Role gates for the shared admin console — permission-driven so the UI
+  // tracks ROLE_PERMISSIONS (the single source of truth). Every action here
+  // is enforced server-side by requirePermission on the same action string,
+  // so the menu cannot drift from what the API actually allows.
   const myRole = session.user?.role;
-  const isSuper = myRole === "SUPER_ADMIN";
-  const canFees = ["SUPER_ADMIN", "BURSAR"].includes(myRole);
-  const canRoster = ["SUPER_ADMIN", "REGISTRAR"].includes(myRole);
-  const canReports = ["SUPER_ADMIN", "REGISTRAR"].includes(myRole);
+  const isSuper = can(myRole, "users.manage");
+  const canFees = can(myRole, "fees.view");
+  const canRoster = can(myRole, "students.manage");
+  const canReports = can(myRole, "reports.view");
+  const canSchoolEdit = can(myRole, "school.edit");
   const ROLE_LABEL = {
     SUPER_ADMIN: "Super Admin",
     BURSAR: "Bursar",
@@ -646,10 +1735,16 @@ export default function AdminDashboard() {
   // report cards with admin+registrar; payroll is admin-only).
   const visibleTabs = [
     { key: "overview", label: "Overview" },
+    ...(canSchoolEdit ? [{ key: "classes", label: "Classes & Arms" }] : []),
     ...(isSuper ? [{ key: "teachers", label: "Teachers & Payroll" }] : []),
+    ...(isSuper ? [{ key: "roles", label: "Roles & Access" }] : []),
+    ...(isSuper ? [{ key: "logins", label: "Login Details" }] : []),
+    ...(isSuper ? [{ key: "timetable", label: "Timetable" }] : []),
     ...(canRoster ? [{ key: "students", label: "Students & Fees" }] : []),
     ...(canFees ? [{ key: "fees", label: "Fee Management" }] : []),
     ...(canReports ? [{ key: "reports", label: "Report Cards" }] : []),
+    // Historical scores/attendance live with the staff who own report cards.
+    ...(isSuper || myRole === "REGISTRAR" ? [{ key: "archives", label: "Previous Terms" }] : []),
   ];
   // A role-specific hash (e.g. /admin/dashboard#fees as a BURSAR) must not
   // land on a tab they can't see — fall back to the first visible tab.
@@ -690,7 +1785,7 @@ export default function AdminDashboard() {
 
         <div className="mx-auto max-w-7xl px-5 py-8">
           {/* Metric cards */}
-          <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+          <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
             <MetricCard
               icon={Users}
               label="Total Students"
@@ -719,6 +1814,144 @@ export default function AdminDashboard() {
               sub={`${stats.payrollPending} teachers awaiting payment`}
               accent="amber"
             />
+            {/* Schedule Health — the daily timetable integrity scan. The
+                background job (src/instrumentation.js) runs it at a fixed
+                hour; flags collisions AND the other integrity checks (arms
+                with unassigned days, unscheduled teachers, orphaned entries)
+                new since last scan. */}
+            {isSuper && (
+              <div
+                className={`rounded-2xl border bg-white p-5 shadow-sm transition ${
+                  ttHealth?.issueCount
+                    ? "border-rose-200 hover:shadow-lg hover:shadow-rose-900/5"
+                    : "border-navy-200/70 hover:shadow-lg hover:shadow-navy-900/5"
+                }`}
+              >
+                <div className="flex items-start justify-between">
+                  <div>
+                    <p className="text-sm font-medium text-navy-500">Schedule Health</p>
+                    <p
+                      className={`mt-2 text-3xl font-bold tracking-tight ${
+                        ttHealth?.issueCount ? "text-rose-600" : "text-navy-800"
+                      }`}
+                    >
+                      {!ttHealth ? (
+                        <Loader2 className="inline h-7 w-7 animate-spin text-navy-300" />
+                      ) : ttHealth.neverScanned ? (
+                        "Pending"
+                      ) : (ttHealth.issueCount ?? 0) === 0 ? (
+                        "Clear"
+                      ) : (
+                        `${ttHealth.issueCount} issue${ttHealth.issueCount === 1 ? "" : "s"}`
+                      )}
+                    </p>
+                    <p className="mt-1.5 text-xs font-medium text-navy-400">
+                      {ttHealth
+                        ? ttHealth.neverScanned
+                          ? `First scan scheduled ${fmtHour(ttHealth.scanHour)}`
+                          : `Scanned ${timeAgo(ttHealth.scannedAt)} · daily scan ${fmtHour(ttHealth.scanHour)}`
+                        : "Scanning…"}
+                    </p>
+                  </div>
+                  <div
+                    className={`rounded-xl p-2.5 ring-1 ${
+                      ttHealth?.issueCount
+                        ? "bg-rose-50 text-rose-600 ring-rose-600/10"
+                        : "bg-emerald-50 text-emerald-600 ring-emerald-600/10"
+                    }`}
+                  >
+                    <Activity className="h-5 w-5" />
+                  </div>
+                </div>
+                {ttHealth?.newConflictCount > 0 && (
+                  <div className="mt-3 flex items-center gap-1.5 rounded-lg bg-amber-50 px-3 py-2 text-xs font-bold text-amber-700 ring-1 ring-amber-600/20">
+                    <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
+                    {ttHealth.newConflictCount} new collision{ttHealth.newConflictCount === 1 ? "" : "s"} since last scan
+                  </div>
+                )}
+                {ttSpark && (
+                  <div className="mt-3">
+                    <svg
+                      viewBox="0 0 120 28"
+                      preserveAspectRatio="none"
+                      className="h-7 w-full"
+                      aria-hidden="true"
+                    >
+                      <polyline
+                        points={ttSpark}
+                        fill="none"
+                        stroke={ttHealth?.issueCount ? "#f43f5e" : "#10b981"}
+                        strokeWidth={2}
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      />
+                    </svg>
+                    <p className="mt-1 text-[10px] font-medium text-navy-400">
+                      Conflict trend · last {ttHealth.history.length} scan day
+                      {ttHealth.history.length === 1 ? "" : "s"}
+                    </p>
+                  </div>
+                )}
+                {/* The other integrity checks, surfaced as compact chips —
+                    details live in the scan panel (Review in Timetable). */}
+                {(ttHealth?.unassignedPeriodCount || 0) +
+                  (ttHealth?.unstaffedTeacherCount || 0) +
+                  (ttHealth?.orphanedEntryCount || 0) >
+                  0 && (
+                  <div className="mt-3 flex flex-wrap gap-1.5">
+                    {ttHealth.unassignedPeriodCount > 0 && (
+                      <span className="inline-flex items-center gap-1 rounded-full bg-amber-50 px-2.5 py-1 text-[11px] font-semibold text-amber-700 ring-1 ring-amber-600/20">
+                        <CalendarX className="h-3 w-3" />
+                        {ttHealth.unassignedPeriodCount} unassigned day
+                        {ttHealth.unassignedPeriodCount === 1 ? "" : "s"}
+                      </span>
+                    )}
+                    {ttHealth.unstaffedTeacherCount > 0 && (
+                      <span className="inline-flex items-center gap-1 rounded-full bg-sky-50 px-2.5 py-1 text-[11px] font-semibold text-sky-700 ring-1 ring-sky-600/20">
+                        <UserX className="h-3 w-3" />
+                        {ttHealth.unstaffedTeacherCount} teacher
+                        {ttHealth.unstaffedTeacherCount === 1 ? "" : "s"} unscheduled
+                      </span>
+                    )}
+                    {ttHealth.orphanedEntryCount > 0 && (
+                      <span className="inline-flex items-center gap-1 rounded-full bg-violet-50 px-2.5 py-1 text-[11px] font-semibold text-violet-700 ring-1 ring-violet-600/20">
+                        <Link2Off className="h-3 w-3" />
+                        {ttHealth.orphanedEntryCount} orphaned entr
+                        {ttHealth.orphanedEntryCount === 1 ? "y" : "ies"}
+                      </span>
+                    )}
+                  </div>
+                )}
+                <div className="mt-3 flex items-center gap-2">
+                  <button
+                    onClick={scanSchedule}
+                    disabled={ttHealthScanning}
+                    className="inline-flex items-center gap-1.5 rounded-lg bg-navy-800 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-navy-700 disabled:opacity-50"
+                  >
+                    {ttHealthScanning ? (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <RefreshCw className="h-3.5 w-3.5" />
+                    )}
+                    {ttHealthScanning ? "Scanning…" : "Scan now"}
+                  </button>
+                  {ttHealth?.issueCount > 0 && (
+                    <button
+                      onClick={() => {
+                        setTab("timetable");
+                        // checkTtConflicts scans AND opens the panel, so the
+                        // Review link lands on the real conflicts, not the
+                        // un-scanned "No conflicts" default.
+                        checkTtConflicts(true);
+                      }}
+                      className="inline-flex items-center gap-1 rounded-lg bg-rose-50 px-3 py-1.5 text-xs font-semibold text-rose-700 ring-1 ring-rose-600/20 transition hover:bg-rose-100"
+                    >
+                      Review in Timetable <ChevronRight className="h-3.5 w-3.5" />
+                    </button>
+                  )}
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Pending payment notification — a parent paid and is awaiting confirmation.
@@ -822,6 +2055,7 @@ export default function AdminDashboard() {
 
           {/* Overview */}
           {activeTab === "overview" && (
+            <>
             <div className="mt-5 grid gap-5 lg:grid-cols-3">
               <div className="rounded-2xl border border-navy-200/70 bg-white p-6 shadow-sm lg:col-span-2">
                 <div className="flex items-center gap-2">
@@ -895,6 +2129,393 @@ export default function AdminDashboard() {
                 </div>
               </div>
             </div>
+
+            {/* Term rollover — SUPER_ADMIN moves the school to a new term */}
+            {isSuper && (
+              <div className="mt-5 overflow-hidden rounded-2xl border border-navy-200/70 bg-white shadow-sm">
+                <div className="flex flex-col gap-4 p-6 sm:flex-row sm:items-center sm:justify-between">
+                  <div className="flex items-start gap-3">
+                    <div className="rounded-xl bg-brand-50 p-2.5 text-brand-600">
+                      <CalendarDays className="h-5 w-5" />
+                    </div>
+                    <div>
+                      <h3 className="text-sm font-bold text-navy-800">Term rollover</h3>
+                      <p className="mt-0.5 text-sm text-navy-400">
+                        Currently on{" "}
+                        <strong className="text-navy-600">
+                          {session?.school?.currentSession} · {session?.school?.currentTerm}
+                        </strong>
+                        . Starting a new term archives this term&apos;s scores &amp; attendance and carries
+                        your fee structures and timetable forward.
+                      </p>
+                    </div>
+                  </div>
+                  <button
+                    onClick={openRollover}
+                    className="inline-flex shrink-0 items-center gap-2 rounded-xl bg-navy-800 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-navy-700"
+                  >
+                    <CalendarDays className="h-4 w-4" />
+                    Start a new term
+                  </button>
+                </div>
+              </div>
+            )}
+            </>
+          )}
+
+          {/* Previous Terms */}
+          {activeTab === "archives" && (
+            <div className="mt-5 space-y-4">
+              <div className="rounded-2xl border border-navy-200/70 bg-white shadow-sm">
+                <div className="border-b border-navy-100 px-6 py-4">
+                  <h2 className="text-lg font-bold text-navy-800">Previous terms</h2>
+                  <p className="text-sm text-navy-400">
+                    Archived when you started a new term: each old term&apos;s scores &amp; attendance are
+                    kept here per class arm. Open an arm to view its students and print report cards.
+                  </p>
+                  <div className="mt-3 flex w-fit gap-1 rounded-xl bg-navy-100 p-1">
+                    <button
+                      onClick={() => setArchMode("terms")}
+                      className={`rounded-lg px-4 py-2 text-sm font-semibold transition ${
+                        archMode === "terms" ? "bg-white text-navy-800 shadow-sm" : "text-navy-500 hover:text-navy-700"
+                      }`}
+                    >
+                      Archived terms
+                    </button>
+                    <button
+                      onClick={loadAlumni}
+                      className={`rounded-lg px-4 py-2 text-sm font-semibold transition ${
+                        archMode === "alumni" ? "bg-white text-navy-800 shadow-sm" : "text-navy-500 hover:text-navy-700"
+                      }`}
+                    >
+                      Alumni
+                    </button>
+                  </div>
+                </div>
+
+                <div className="p-6">
+                  {archMode === "alumni" ? (
+                    archAlumniLoading ? (
+                      <div className="flex items-center justify-center gap-2 py-10 text-sm text-navy-400">
+                        <Loader2 className="h-4 w-4 animate-spin" /> Loading alumni…
+                      </div>
+                    ) : archAlumni.length === 0 ? (
+                      <div className="rounded-xl border border-dashed border-navy-200 bg-navy-50/40 p-10 text-center">
+                        <GraduationCap className="mx-auto h-8 w-8 text-navy-300" />
+                        <p className="mt-3 text-sm font-medium text-navy-600">No alumni yet</p>
+                        <p className="mt-1 text-xs text-navy-400">
+                          Students who appear in an archived term but are no longer on the live roster
+                          show up here — including the term they last attended.
+                        </p>
+                      </div>
+                    ) : (
+                      <div>
+                        <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+                          <p className="text-xs text-navy-400">
+                            {archAlumni.length} student{archAlumni.length === 1 ? "" : "s"} no longer on
+                            the live roster
+                          </p>
+                          <a
+                            href="/api/school/archives?alumni=1&format=csv"
+                            download
+                            onClick={exportAlumniCsv}
+                            className="inline-flex items-center gap-1.5 rounded-lg border border-navy-200 bg-white px-3 py-1.5 text-xs font-semibold text-navy-700 transition hover:border-brand-400 hover:text-brand-600"
+                          >
+                            <Download className="h-3.5 w-3.5" /> Export CSV
+                          </a>
+                        </div>
+                        <div className="overflow-x-auto">
+                        <table className="w-full text-sm">
+                          <thead>
+                            <tr className="bg-navy-50 text-left text-xs uppercase tracking-wide text-navy-400">
+                              <th className="px-6 py-3">Student</th>
+                              <th className="px-6 py-3">Last class arm</th>
+                              <th className="px-6 py-3">Last term</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {archAlumni.map((a) => (
+                              <tr key={a.studentId} className="border-t border-navy-100 hover:bg-navy-50/40">
+                                <td className="px-6 py-3 font-semibold text-navy-800">{a.studentName}</td>
+                                <td className="px-6 py-3 text-navy-500">{a.classArm || "—"}</td>
+                                <td className="px-6 py-3 text-navy-500">
+                                  {a.lastSession} · {a.lastTerm}
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                        <p className="mt-3 text-xs text-navy-400">
+                          The term shown is the last one each student appears in across the archives.
+                        </p>
+                        </div>
+                      </div>
+                    )
+                  ) : archTerms.length === 0 ? (
+                    <div className="rounded-xl border border-dashed border-navy-200 bg-navy-50/40 p-10 text-center">
+                      <History className="mx-auto h-8 w-8 text-navy-300" />
+                      <p className="mt-3 text-sm font-medium text-navy-600">No archived terms yet</p>
+                      <p className="mt-1 text-xs text-navy-400">
+                        The term rollover on the Overview archives each old term here automatically.
+                      </p>
+                    </div>
+                  ) : (
+                    <div className="space-y-4">
+                      {archTerms.map((t) => {
+                        const selected = archTerm && archTerm.session === t.session && archTerm.term === t.term;
+                        return (
+                          <div
+                            key={`${t.session}|${t.term}`}
+                            className={`rounded-xl border p-4 transition ${
+                              selected
+                                ? "border-brand-400 bg-brand-50/40"
+                                : "border-navy-200/70 bg-white hover:border-brand-300"
+                            }`}
+                          >
+                            <button
+                              onClick={() => selectArchTerm(t)}
+                              className="flex w-full items-center justify-between gap-3 text-left"
+                            >
+                              <div>
+                                <p className="text-sm font-bold text-navy-800">
+                                  {t.session} · {t.term}
+                                </p>
+                                <p className="mt-0.5 text-xs text-navy-400">
+                                  {t.scoreCount} score records · {t.attendanceCount} attendance registers
+                                </p>
+                              </div>
+                              <ChevronRight
+                                className={`h-4 w-4 text-navy-300 transition ${selected ? "rotate-90" : ""}`}
+                              />
+                            </button>
+
+                            {selected && (
+                              <div className="mt-4 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+                                {t.arms.map((arm) => (
+                                  <button
+                                    key={arm.classArm}
+                                    onClick={() => selectArchArm(t, arm.classArm)}
+                                    className={`rounded-xl border px-4 py-3 text-left text-sm transition ${
+                                      archArm === arm.classArm
+                                        ? "border-brand-600 bg-brand-600 text-white"
+                                        : "border-navy-200 bg-navy-50/40 hover:border-brand-400"
+                                    }`}
+                                  >
+                                    <p className="font-bold">{arm.classArm}</p>
+                                    <p
+                                      className={`mt-1 text-xs ${
+                                        archArm === arm.classArm ? "text-white/80" : "text-navy-400"
+                                      }`}
+                                    >
+                                      {arm.scoreCount} scores · {arm.attendanceCount} registers
+                                    </p>
+                                  </button>
+                                ))}
+                                {t.arms.length === 0 && (
+                                  <p className="col-span-full text-xs text-navy-400">
+                                    No class arms in this archived term.
+                                  </p>
+                                )}
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Per-arm detail */}
+              {archMode === "terms" && archDetail && (
+                <div className="overflow-hidden rounded-2xl border border-navy-200/70 bg-white shadow-sm">
+                  <div className="flex flex-wrap items-center justify-between gap-3 border-b border-navy-100 px-6 py-4">
+                    <div>
+                      <h3 className="text-lg font-bold text-navy-800">
+                        {archDetail.classArm} · {archDetail.term}
+                      </h3>
+                      <p className="text-sm text-navy-400">
+                        {archDetail.students.length} students in the archived {archDetail.session} cohort
+                      </p>
+                    </div>
+                    <button
+                      onClick={() => setArchDetail(null)}
+                      className="rounded-lg px-3 py-1.5 text-sm font-semibold text-navy-500 transition hover:bg-navy-50"
+                    >
+                      Close arm
+                    </button>
+                  </div>
+                  {archLoading ? (
+                    <div className="flex items-center justify-center gap-2 py-10 text-sm text-navy-400">
+                      <Loader2 className="h-4 w-4 animate-spin" /> Loading archived scores…
+                    </div>
+                  ) : (
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-sm">
+                        <thead>
+                          <tr className="bg-navy-50 text-left text-xs uppercase tracking-wide text-navy-400">
+                            <th className="px-6 py-3">Student</th>
+                            <th className="px-6 py-3">Subjects</th>
+                            <th className="px-6 py-3">Average</th>
+                            <th className="px-6 py-3">Position</th>
+                            <th className="px-6 py-3">Attendance</th>
+                            <th className="px-6 py-3" />
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {archDetail.students.map((st) => (
+                            <tr key={st.studentId} className="border-t border-navy-100 hover:bg-navy-50/40">
+                              <td className="px-6 py-3 font-semibold text-navy-800">{st.studentName}</td>
+                              <td className="px-6 py-3 text-navy-500">{st.summary.subjects}</td>
+                              <td className="px-6 py-3 font-bold text-navy-800">{st.summary.average}%</td>
+                              <td className="px-6 py-3 text-navy-500">
+                                {st.summary.position ? `${ordinal(st.summary.position)} of ${st.summary.outOf}` : "—"}
+                              </td>
+                              <td className="px-6 py-3 text-navy-500">
+                                {st.attendance.present} of {st.attendance.total} days
+                              </td>
+                              <td className="px-6 py-3 text-right">
+                                <button
+                                  onClick={() => openArchReport(st)}
+                                  className="inline-flex items-center gap-1.5 rounded-lg bg-navy-800 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-navy-700"
+                                >
+                                  <FileText className="h-3.5 w-3.5" /> Report card
+                                </button>
+                              </td>
+                            </tr>
+                          ))}
+                          {archDetail.students.length === 0 && (
+                            <tr>
+                              <td colSpan={6} className="px-6 py-10 text-center text-navy-400">
+                                No scores or attendance were archived for this arm.
+                              </td>
+                            </tr>
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Classes & Arms */}
+          {activeTab === "classes" && (
+            <div className="mt-5 space-y-4">
+              <div className="rounded-2xl border border-navy-200/70 bg-white shadow-sm">
+                <div className="border-b border-navy-100 px-6 py-4">
+                  <h2 className="text-lg font-bold text-navy-800">Classes & arms</h2>
+                  <p className="text-sm text-navy-400">
+                    Class arms are free-form — name them however your school does
+                    (&quot;JSS1 A&quot;, &quot;JSS1 Blue&quot;, &quot;SS1 Science&quot;…). Every feature keys off
+                    these names: timetables, teacher scopes, fees, attendance and report cards.
+                  </p>
+                </div>
+
+                <div className="p-6">
+                  {armsDraft === null ? (
+                    <div className="flex items-center gap-2 py-10 text-sm text-navy-400">
+                      <Loader2 className="h-4 w-4 animate-spin" /> Loading classes…
+                    </div>
+                  ) : armsDraft.length === 0 ? (
+                    <div className="rounded-xl border border-dashed border-navy-200 bg-navy-50/40 p-10 text-center">
+                      <Layers className="mx-auto h-8 w-8 text-navy-300" />
+                      <p className="mt-3 text-sm font-medium text-navy-600">No classes yet</p>
+                      <p className="mt-1 text-xs text-navy-400">
+                        Add your first arm below, or split a class into streams.
+                      </p>
+                    </div>
+                  ) : (
+                    <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                      {armsDraft.map((arm) => {
+                        const students = stats?.classDistribution?.[arm] || 0;
+                        const slots = armsSlotCounts[arm] || 0;
+                        const fee = armsFeeAmounts[arm];
+                        return (
+                          <div
+                            key={arm}
+                            className="rounded-xl border border-navy-200/70 bg-white p-4 transition hover:border-brand-300"
+                          >
+                            <div className="flex items-start justify-between gap-2">
+                              <p className="text-sm font-bold text-navy-800">{arm}</p>
+                              <div className="flex items-center gap-1">
+                                <button
+                                  onClick={() => openRename(arm)}
+                                  className="rounded-lg p-1 text-navy-300 transition hover:bg-brand-50 hover:text-brand-600"
+                                  title={`Rename ${arm}`}
+                                >
+                                  <Pencil className="h-4 w-4" />
+                                </button>
+                                <button
+                                  onClick={() => removeArm(arm)}
+                                  className="rounded-lg p-1 text-navy-300 transition hover:bg-rose-50 hover:text-rose-600"
+                                  title={`Remove ${arm}`}
+                                >
+                                  <X className="h-4 w-4" />
+                                </button>
+                              </div>
+                            </div>
+                            <div className="mt-3 grid grid-cols-3 gap-2 text-center">
+                              <div className="rounded-lg bg-navy-50 py-2">
+                                <p className="text-sm font-bold text-navy-800">{students}</p>
+                                <p className="text-[10px] uppercase tracking-wide text-navy-400">Students</p>
+                              </div>
+                              <div className="rounded-lg bg-navy-50 py-2">
+                                <p className="text-sm font-bold text-navy-800">{slots}</p>
+                                <p className="text-[10px] uppercase tracking-wide text-navy-400">Timetable</p>
+                              </div>
+                              <div className="rounded-lg bg-navy-50 py-2">
+                                <p className="text-sm font-bold text-navy-800">{fee ? naira(fee) : "—"}</p>
+                                <p className="text-[10px] uppercase tracking-wide text-navy-400">Term fee</p>
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+
+                  {/* Add a custom arm */}
+                  <div className="mt-5 flex gap-2">
+                    <input
+                      value={newArm}
+                      onChange={(e) => setNewArm(e.target.value)}
+                      onKeyDown={(e) => e.key === "Enter" && addArm()}
+                      placeholder="Custom arm, e.g. JSS1 Blue"
+                      className="flex-1 rounded-xl border border-navy-200 px-4 py-2.5 text-sm outline-none transition focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20"
+                    />
+                    <button
+                      onClick={addArm}
+                      className="inline-flex items-center gap-1.5 rounded-xl bg-navy-800 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-navy-700"
+                    >
+                      <Plus className="h-4 w-4" /> Add arm
+                    </button>
+                  </div>
+
+                  <div className="mt-4">
+                    <ArmStreamSplitter onAdd={addStreamedArms} />
+                  </div>
+
+                  <div className="mt-5 flex items-center justify-end gap-3">
+                    <span className="text-xs text-navy-400">
+                      {armsDraft !== null &&
+                      JSON.stringify(armsDraft) !== JSON.stringify(session?.school?.activeArms || [])
+                        ? "Unsaved changes"
+                        : "Saved"}
+                    </span>
+                    <button
+                      onClick={saveArms}
+                      disabled={armsSaving || armsDraft === null}
+                      className="inline-flex items-center gap-2 rounded-xl bg-brand-600 px-5 py-2.5 text-sm font-semibold text-white shadow-lg shadow-brand-600/30 transition hover:bg-brand-500 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {armsSaving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+                      Save changes
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
           )}
 
           {/* Teachers */}
@@ -912,7 +2533,7 @@ export default function AdminDashboard() {
                     <tr className="border-b border-navy-100 bg-navy-50/60 text-xs font-semibold uppercase tracking-wider text-navy-400">
                       <th className="px-6 py-3">Teacher</th>
                       <th className="px-6 py-3">Email</th>
-                      <th className="px-6 py-3">Class Arm</th>
+                      <th className="px-6 py-3">Teaches</th>
                       <th className="px-6 py-3">Payroll</th>
                     </tr>
                   </thead>
@@ -932,13 +2553,36 @@ export default function AdminDashboard() {
                             >
                               <KeyRound className="h-4 w-4" />
                             </button>
+                            {isSuper && (
+                              <button
+                                onClick={() => openScope(t)}
+                                title={`Assign ${t.name}'s subjects & arms`}
+                                className="rounded-lg p-1.5 text-navy-300 transition hover:bg-violet-50 hover:text-violet-600"
+                              >
+                                <Pencil className="h-4 w-4" />
+                              </button>
+                            )}
                           </div>
                         </td>
                         <td className="px-6 py-4 text-navy-500">{t.email}</td>
                         <td className="px-6 py-4">
-                          <span className="rounded-md bg-navy-100 px-2 py-1 text-xs font-semibold text-navy-600">
-                            {t.assignedClass || "Unassigned"}
-                          </span>
+                          <div className="flex flex-col gap-1">
+                            <div className="flex flex-wrap gap-1">
+                              {(t.subjects?.length ? t.subjects : [t.assignedClass || "Unassigned"]).map((s) => (
+                                <span
+                                  key={s}
+                                  className="rounded-md bg-brand-50 px-2 py-0.5 text-[11px] font-bold text-brand-700 ring-1 ring-brand-600/20"
+                                >
+                                  {s}
+                                </span>
+                              ))}
+                            </div>
+                            <span className="text-[11px] font-medium text-navy-400">
+                              {t.assignedClasses?.length
+                                ? `${t.assignedClasses.length} arm${t.assignedClasses.length === 1 ? "" : "s"}: ${t.assignedClasses.join(", ")}`
+                                : t.assignedClass || "No arms assigned"}
+                            </span>
+                          </div>
                         </td>
                         <td className="px-6 py-4">
                           <button
@@ -959,6 +2603,859 @@ export default function AdminDashboard() {
                     )}
                   </tbody>
                 </table>
+              </div>
+            </div>
+          )}
+
+          {/* Roles & Access */}
+          {activeTab === "roles" && (
+            <div className="mt-5 space-y-5 animate-fade-up">
+              {/* What each role can do — rendered straight from ROLE_PERMISSIONS
+                  (the single source of truth), so what the admin sees here is
+                  exactly what the API enforces on every request. */}
+              <div className="overflow-hidden rounded-2xl border border-navy-200/70 bg-white shadow-sm">
+                <div className="border-b border-navy-100 px-6 py-4">
+                  <h2 className="flex items-center gap-2 text-lg font-bold text-navy-800">
+                    <ShieldCheck className="h-5 w-5 text-brand-600" />
+                    What each role can do
+                  </h2>
+                  <p className="mt-0.5 text-sm text-navy-400">
+                    The exact action list from <code className="rounded bg-navy-100 px-1 py-0.5 font-mono text-xs text-navy-600">ROLE_PERMISSIONS</code> —
+                    a promotion grants exactly this, nothing more.
+                  </p>
+                </div>
+                <div className="grid gap-4 p-5 md:grid-cols-2 xl:grid-cols-4">
+                  {MANAGED_ROLES.map((role) => {
+                    const summary = summarizeRolePermissions(role);
+                    return (
+                      <div
+                        key={role}
+                        className="rounded-xl border border-navy-100 bg-navy-50/40 p-4 transition hover:border-brand-200 hover:bg-brand-50/30"
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <span
+                            className={`inline-flex items-center rounded-full px-2.5 py-1 text-xs font-bold ring-1 ${ROLE_BADGES[role] || "bg-navy-100 text-navy-600"}`}
+                          >
+                            {ROLE_LABELS[role] || role}
+                          </span>
+                          <span className="rounded-full bg-white px-2 py-0.5 text-[11px] font-bold text-navy-500 ring-1 ring-navy-200/70">
+                            {summary.count} action{summary.count === 1 ? "" : "s"}
+                          </span>
+                        </div>
+                        <div className="mt-3 space-y-3">
+                          {summary.domains.map((d) => (
+                            <div key={d.key}>
+                              <p className="text-[10px] font-bold uppercase tracking-wider text-navy-400">
+                                {d.label}
+                              </p>
+                              <ul className="mt-1 space-y-1">
+                                {d.actions.map((a) => (
+                                  <li
+                                    key={a.action}
+                                    className="flex items-start gap-1.5 text-xs text-navy-700"
+                                    title={a.action}
+                                  >
+                                    <Check className="mt-0.5 h-3.5 w-3.5 shrink-0 text-emerald-500" />
+                                    {a.label}
+                                  </li>
+                                ))}
+                              </ul>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+                <div className="border-t border-navy-100 bg-navy-50/40 px-6 py-3 text-xs text-navy-500">
+                  Row-level scoping applies on top of this list — a teacher&apos;s actions cover
+                  only their assigned class arm, a parent only their own children.
+                </div>
+              </div>
+
+              {/* Staff directory */}
+              <div className="overflow-hidden rounded-2xl border border-navy-200/70 bg-white shadow-sm">
+                <div className="border-b border-navy-100 px-6 py-4">
+                  <h2 className="flex items-center gap-2 text-lg font-bold text-navy-800">
+                    <UserCog className="h-5 w-5 text-brand-600" />
+                    Staff roles &amp; access
+                  </h2>
+                  <p className="mt-0.5 text-sm text-navy-400">
+                    Promote or demote staff between Super Admin, Bursar, Registrar and Teacher.
+                    Changes apply immediately — the staff member will need to sign in again.
+                  </p>
+                </div>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left text-sm">
+                    <thead>
+                      <tr className="border-b border-navy-100 bg-navy-50/60 text-xs font-semibold uppercase tracking-wider text-navy-400">
+                        <th className="px-6 py-3">Staff</th>
+                        <th className="px-6 py-3">Current role</th>
+                        <th className="px-6 py-3">New role</th>
+                        <th className="px-6 py-3 text-right">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {staffList.map((u) => {
+                        const isYou = u.id === session.user.id;
+                        const draft = roleDraft[u.id] ?? u.role;
+                        const dirty = draft !== u.role;
+                        return (
+                          <tr key={u.id} className="border-b border-navy-50 transition hover:bg-navy-50/40">
+                            <td className="px-6 py-3.5">
+                              <div className="flex items-center gap-3">
+                                <div className="flex h-9 w-9 items-center justify-center rounded-full bg-navy-800 text-sm font-bold text-white">
+                                  {u.name.split(" ").map((w) => w[0]).join("").slice(0, 2).toUpperCase()}
+                                </div>
+                                <div>
+                                  <p className="flex items-center gap-2 font-semibold text-navy-800">
+                                    {u.name}
+                                    {isYou && (
+                                      <span className="rounded-full bg-navy-100 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-navy-500">
+                                        You
+                                      </span>
+                                    )}
+                                  </p>
+                                  <p className="text-xs text-navy-400">{u.email}</p>
+                                </div>
+                              </div>
+                            </td>
+                            <td className="px-6 py-3.5">
+                              <span className={`inline-flex items-center rounded-full px-2.5 py-1 text-xs font-bold ring-1 ${ROLE_BADGES[u.role] || "bg-navy-100 text-navy-600"}`}>
+                                {ROLE_LABELS[u.role] || u.role}
+                              </span>
+                            </td>
+                            <td className="px-6 py-3.5">
+                              {isYou ? (
+                                <span className="text-xs text-navy-300">—</span>
+                              ) : (
+                                <select
+                                  value={draft}
+                                  onChange={(e) => setRoleDraft((d) => ({ ...d, [u.id]: e.target.value }))}
+                                  className="rounded-lg border border-navy-200 bg-white px-3 py-1.5 text-sm font-medium text-navy-700 outline-none transition focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20"
+                                >
+                                  {Object.keys(ROLE_LABELS).map((r) => (
+                                    <option key={r} value={r}>
+                                      {ROLE_LABELS[r]}
+                                    </option>
+                                  ))}
+                                </select>
+                              )}
+                            </td>
+                            <td className="px-6 py-3.5 text-right">
+                              <div className="flex items-center justify-end gap-2">
+                                <button
+                                  onClick={() => openReset(u)}
+                                  title={`Reset ${u.name}'s password`}
+                                  className="rounded-lg p-1.5 text-navy-300 transition hover:bg-brand-50 hover:text-brand-600"
+                                >
+                                  <KeyRound className="h-4 w-4" />
+                                </button>
+                                {!isYou && (
+                                  <button
+                                    onClick={() => requestRoleChange(u, draft)}
+                                    disabled={!dirty || roleSaving}
+                                    className="inline-flex items-center gap-1.5 rounded-lg bg-navy-800 px-3.5 py-2 text-xs font-semibold text-white transition hover:bg-navy-700 disabled:cursor-not-allowed disabled:opacity-40"
+                                  >
+                                    <ArrowLeftRight className="h-3.5 w-3.5" />
+                                    Change role
+                                  </button>
+                                )}
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                      {staffList.length === 0 && (
+                        <tr>
+                          <td colSpan={4} className="px-6 py-10 text-center text-navy-400">
+                            No staff accounts yet.
+                          </td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              {/* Audit trail */}
+              <div className="overflow-hidden rounded-2xl border border-navy-200/70 bg-white shadow-sm">
+                <div className="border-b border-navy-100 px-6 py-4">
+                  <h2 className="flex items-center gap-2 text-lg font-bold text-navy-800">
+                    <History className="h-5 w-5 text-brand-600" />
+                    Role change audit trail
+                  </h2>
+                  <p className="text-sm text-navy-400">
+                    Every promotion or demotion — who did it, and when.
+                  </p>
+                </div>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left text-sm">
+                    <thead>
+                      <tr className="border-b border-navy-100 bg-navy-50/60 text-xs font-semibold uppercase tracking-wider text-navy-400">
+                        <th className="px-6 py-3">When</th>
+                        <th className="px-6 py-3">Change</th>
+                        <th className="px-6 py-3">By</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {roleAudit.map((e) => (
+                        <tr key={e.id} className="border-b border-navy-50 transition hover:bg-navy-50/40">
+                          <td className="whitespace-nowrap px-6 py-3.5 text-xs text-navy-500">
+                            {new Date(e.createdAt).toLocaleString()}
+                          </td>
+                          <td className="px-6 py-3.5">
+                            <div className="flex flex-wrap items-center gap-1.5">
+                              <span className="font-semibold text-navy-800">{e.targetName}</span>
+                              <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-bold ring-1 ${ROLE_BADGES[e.fromRole] || "bg-navy-100 text-navy-600"}`}>
+                                {ROLE_LABELS[e.fromRole] || e.fromRole}
+                              </span>
+                              <ArrowLeftRight className="h-3.5 w-3.5 text-navy-300" />
+                              <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-bold ring-1 ${ROLE_BADGES[e.toRole] || "bg-navy-100 text-navy-600"}`}>
+                                {ROLE_LABELS[e.toRole] || e.toRole}
+                              </span>
+                            </div>
+                          </td>
+                          <td className="px-6 py-3.5">
+                            <p className="font-semibold text-navy-800">{e.actorName}</p>
+                            <p className="text-xs text-navy-400">{ROLE_LABELS[e.actorRole] || e.actorRole}</p>
+                          </td>
+                        </tr>
+                      ))}
+                      {roleAudit.length === 0 && (
+                        <tr>
+                          <td colSpan={3} className="px-6 py-10 text-center text-navy-400">
+                            No role changes yet — the first promotion or demotion will appear here.
+                          </td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Login Details */}
+          {activeTab === "logins" && (
+            <div className="mt-5 space-y-5 animate-fade-up">
+              <div className="overflow-hidden rounded-2xl border border-navy-200/70 bg-white shadow-sm">
+                <div className="border-b border-navy-100 px-6 py-4">
+                  <h2 className="flex items-center gap-2 text-lg font-bold text-navy-800">
+                    <KeyRound className="h-5 w-5 text-brand-600" />
+                    Login Details
+                  </h2>
+                  <p className="text-sm text-navy-400">
+                    Every staff account and parent — with email and password reset.
+                    Students are excluded (their password is auto-derived as their
+                    name + class arm and the list would be long).
+                  </p>
+                </div>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="border-b border-navy-100 bg-navy-50/60 text-left text-xs font-semibold uppercase tracking-wider text-navy-400">
+                        <th className="px-6 py-3">User</th>
+                        <th className="px-6 py-3">Role</th>
+                        <th className="px-6 py-3">Class</th>
+                        <th className="px-6 py-3 text-right">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {loginUsers.map((u) => (
+                        <tr key={u.id} className="border-b border-navy-50 transition hover:bg-navy-50/40">
+                          <td className="px-6 py-3.5">
+                            <div className="flex items-center gap-3">
+                              <div className="flex h-9 w-9 items-center justify-center rounded-full bg-navy-800 text-sm font-bold text-white">
+                                {u.name.split(" ").map((w) => w[0]).join("").slice(0, 2).toUpperCase()}
+                              </div>
+                              <div>
+                                <p className="font-semibold text-navy-800">{u.name}</p>
+                                <p className="text-xs text-navy-400">{u.email}</p>
+                              </div>
+                            </div>
+                          </td>
+                          <td className="px-6 py-3.5">
+                            <span className={`inline-flex items-center rounded-full px-2.5 py-1 text-xs font-bold ring-1 ${ROLE_BADGES[u.role] || "bg-navy-100 text-navy-600"}`}>
+                              {ROLE_LABELS[u.role] || u.role}
+                            </span>
+                          </td>
+                          <td className="px-6 py-3.5 text-xs text-navy-500">
+                            {u.assignedClass || (u.assignedClasses?.length ? u.assignedClasses.join(", ") : "—")}
+                          </td>
+                          <td className="px-6 py-3.5 text-right">
+                            <button
+                              onClick={() => openReset(u)}
+                              title={`Reset ${u.name}'s password`}
+                              className="inline-flex items-center gap-1.5 rounded-lg bg-navy-800 px-3.5 py-2 text-xs font-semibold text-white transition hover:bg-navy-700"
+                            >
+                              <KeyRound className="h-3.5 w-3.5" />
+                              Reset password
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                      {loginUsers.length === 0 && (
+                        <tr>
+                          <td colSpan={4} className="px-6 py-10 text-center text-navy-400">
+                            No accounts yet beyond the super admin.
+                          </td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Timetable */}
+          {activeTab === "timetable" && (
+            <div className="mt-5 space-y-5 animate-fade-up">
+              <div className="overflow-hidden rounded-2xl border border-navy-200/70 bg-white shadow-sm">
+                <div className="flex flex-wrap items-center justify-between gap-3 border-b border-navy-100 px-6 py-4">
+                  <div>
+                    <h2 className="flex items-center gap-2 text-lg font-bold text-navy-800">
+                      <CalendarDays className="h-5 w-5 text-brand-600" />
+                      Weekly timetable
+                    </h2>
+                    <p className="mt-0.5 text-sm text-navy-400">
+                      Set the schedule for each class arm — click any cell to assign a subject and teacher.
+                      Teachers see their own slots the moment you save.
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => checkTtConflicts()}
+                      disabled={ttConflictsLoading}
+                      title="Scan every arm for teachers double-booked at the same day + period (including pre-existing data)"
+                      className="inline-flex items-center gap-2 rounded-xl border border-navy-200 bg-white px-4 py-2.5 text-sm font-semibold text-navy-700 transition hover:border-rose-300 hover:bg-rose-50 hover:text-rose-700 disabled:opacity-60"
+                    >
+                      {ttConflictsLoading ? (
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                      ) : (
+                        <AlertTriangle className="h-4 w-4" />
+                      )}
+                      Check conflicts
+                      {ttConflicts &&
+                        (ttConflicts.teacher?.length || 0) +
+                          (ttConflicts.arm?.length || 0) +
+                          (ttConflicts.scope?.length || 0) >
+                          0 && (
+                          <span className="rounded-full bg-rose-600 px-2 py-0.5 text-[11px] font-bold text-white">
+                            {(ttConflicts.teacher?.length || 0) +
+                              (ttConflicts.arm?.length || 0) +
+                              (ttConflicts.scope?.length || 0)}
+                          </span>
+                        )}
+                    </button>
+                    <div className="relative w-64">
+                      <select
+                        value={ttArm}
+                        onChange={(e) => setTtArm(e.target.value)}
+                        className={`${inputCls} appearance-none pr-9`}
+                      >
+                        {(session.school?.activeArms || []).map((arm) => (
+                          <option key={arm}>{arm}</option>
+                        ))}
+                      </select>
+                      <ChevronDown className="pointer-events-none absolute right-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-navy-300" />
+                    </div>
+                  </div>
+                </div>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left text-sm">
+                    <thead>
+                      <tr className="border-b border-navy-100 bg-navy-50/60 text-xs font-semibold uppercase tracking-wider text-navy-400">
+                        <th className="px-4 py-3">Period</th>
+                        {DAYS.map((d) => {
+                          const count = (dayTimelines[d] || []).filter((b) => b.type === "teaching").length;
+                          return (
+                            <th key={d} className="px-4 py-3 text-center">
+                              {d}
+                              {count < MAX_PERIOD && (
+                                <span className="ml-1 rounded-full bg-amber-100 px-1.5 py-0.5 text-[10px] font-bold text-amber-700">
+                                  {count} periods
+                                </span>
+                              )}
+                            </th>
+                          );
+                        })}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {dayTimeline.map((block) =>
+                        block.type === "break" ? (
+                          <tr key="break" className="border-b border-navy-50">
+                            <td className="bg-violet-50/60 px-4 py-3">
+                              <p className="text-xs font-bold text-violet-700">Break</p>
+                              <p className="text-[10px] font-medium text-violet-500">
+                                {block.start}–{block.end}
+                              </p>
+                            </td>
+                            {DAYS.map((d) => {
+                              const br = (dayTimelines[d] || []).find((b) => b.type === "break");
+                              return (
+                                <td key={d} className="bg-violet-50/40 px-2 py-2 text-center">
+                                  <span className="inline-flex items-center gap-1 rounded-full bg-violet-100 px-3 py-1 text-[10px] font-bold uppercase tracking-wider text-violet-500">
+                                    {br ? `${br.start}–${br.end}` : "No break"}
+                                  </span>
+                                </td>
+                              );
+                            })}
+                          </tr>
+                        ) : (
+                          <tr key={block.period} className="border-b border-navy-50">
+                            <td className="px-4 py-3">
+                              <p className="text-xs font-bold text-navy-500">Period {block.period}</p>
+                              <p className="text-[10px] font-medium text-navy-400">
+                                {block.start}–{block.end}
+                              </p>
+                            </td>
+                            {DAYS.map((d) => {
+                              // A period that isn't on this day's bell (e.g.
+                              // Friday ends at period 6) is not schedulable.
+                              if (!(dayPeriodSets[d] || new Set()).has(Number(block.period))) {
+                                return (
+                                  <td key={d} className="px-2 py-2 text-center">
+                                    <span className="text-[10px] font-medium text-navy-300">
+                                      not scheduled
+                                    </span>
+                                  </td>
+                                );
+                              }
+                              const entry = ttByKey[`${d}|${block.period}`];
+                              return (
+                                <td key={d} className="px-2 py-2 text-center">
+                                  <button
+                                    onClick={() => openTtCell(d, block.period)}
+                                    className={`w-full min-w-[7.5rem] rounded-xl border px-2 py-2 text-left transition ${
+                                      entry
+                                        ? "border-brand-200 bg-brand-50/70 hover:border-brand-400 hover:bg-brand-50"
+                                        : "border-dashed border-navy-200 bg-navy-50/40 text-navy-400 hover:border-brand-300 hover:bg-brand-50/40"
+                                    }`}
+                                  >
+                                    {entry ? (
+                                      <span className="flex flex-col items-center gap-0.5">
+                                        <span className="text-xs font-bold text-brand-800">{entry.subject}</span>
+                                        <span className="text-[10px] font-medium text-navy-500">
+                                          {entry.teacherName || "—"}
+                                        </span>
+                                      </span>
+                                    ) : (
+                                      <span className="flex items-center justify-center gap-1 text-[11px] font-semibold">
+                                        <Plus className="h-3 w-3" /> Assign
+                                      </span>
+                                    )}
+                                  </button>
+                                </td>
+                              );
+                            })}
+                          </tr>
+                        )
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+                <div className="border-t border-navy-100 bg-navy-50/40 px-6 py-3 text-xs text-navy-500">
+                  {ttFilled} of {DAYS.length * PERIODS.length} slots assigned for {ttArm}. Assigning a period
+                  replaces what was there; the API refuses a teacher who is already booked in another arm at the
+                  same day and period.
+                </div>
+              </div>
+
+              {/* Conflicts checker — scans EVERY arm, including pre-existing data */}
+              {ttConflictsOpen && (
+                <div className="overflow-hidden rounded-2xl border border-navy-200/70 bg-white shadow-sm">
+                  <div className="flex flex-wrap items-center justify-between gap-3 border-b border-navy-100 px-6 py-4">
+                    <div>
+                      <h2 className="flex items-center gap-2 text-lg font-bold text-navy-800">
+                        <AlertTriangle className="h-5 w-5 text-rose-600" /> Timetable scan
+                      </h2>
+                      <p className="mt-0.5 text-sm text-navy-400">
+                        Every class arm, including pre-existing data — double-bookings, scope violations, and the
+                        other integrity checks (unassigned days, unscheduled teachers, orphaned entries).
+                      </p>
+                    </div>
+                    <button
+                      onClick={() => checkTtConflicts()}
+                      disabled={ttConflictsLoading}
+                      className="inline-flex items-center gap-2 rounded-xl border border-navy-200 px-4 py-2 text-sm font-semibold text-navy-600 transition hover:bg-navy-50 disabled:opacity-60"
+                    >
+                      {ttConflictsLoading ? (
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                      ) : (
+                        <RefreshCw className="h-4 w-4" />
+                      )}
+                      Re-scan
+                    </button>
+                  </div>
+                  <div className="p-5">
+                    {ttConflictsLoading ? (
+                      <div className="flex items-center justify-center gap-2 py-8 text-sm text-navy-400">
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                        Scanning all {(session.school?.activeArms || []).length} arms…
+                      </div>
+                    ) : (ttConflicts?.teacher?.length || 0) +
+                      (ttConflicts?.arm?.length || 0) +
+                      (ttConflicts?.scope?.length || 0) +
+                      (ttConflicts?.unassignedPeriods?.length || 0) +
+                      (ttConflicts?.unstaffedTeachers?.length || 0) +
+                      (ttConflicts?.orphanedEntries?.length || 0) ===
+                      0 ? (
+                      <div className="flex items-center gap-2 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-medium text-emerald-800">
+                        <CheckCircle2 className="h-4 w-4 shrink-0" />
+                        No issues — no double-bookings, every teacher has slots, and every arm is scheduled.
+                      </div>
+                    ) : (
+                      <div className="space-y-4">
+                        {(ttConflicts?.teacher || []).map((c) => (
+                          <div
+                            key={`t|${c.teacherId}|${c.day}|${c.period}`}
+                            className="rounded-xl border border-rose-200 bg-rose-50/50 p-4"
+                          >
+                            <p className="text-sm font-bold text-navy-800">
+                              <span className="text-rose-700">{c.teacherName || "Unknown teacher"}</span> is booked
+                              in {c.slots.length} classes on <strong>{c.day}</strong>, period{" "}
+                              <strong>{c.period}</strong>
+                            </p>
+                            <div className="mt-2 flex flex-wrap gap-2">
+                              {c.slots.map((s) => (
+                                <div
+                                  key={s.id}
+                                  className="flex items-center gap-2 rounded-lg border border-navy-200 bg-white px-3 py-2 text-xs"
+                                >
+                                  <span className="font-bold text-navy-700">{s.classArm}</span>
+                                  <span className="text-navy-400">·</span>
+                                  <span className="text-navy-500">{s.subject}</span>
+                                  <button
+                                    onClick={() => fixTtConflict(s)}
+                                    disabled={
+                                      ttConflictFixing === `${s.classArm}|${s.day}|${s.period}`
+                                    }
+                                    className="ml-1 inline-flex items-center gap-1 rounded-md bg-rose-600 px-2 py-1 text-[11px] font-semibold text-white transition hover:bg-rose-500 disabled:opacity-60"
+                                  >
+                                    {ttConflictFixing === `${s.classArm}|${s.day}|${s.period}` ? (
+                                      <Loader2 className="h-3 w-3 animate-spin" />
+                                    ) : (
+                                      <X className="h-3 w-3" />
+                                    )}
+                                    Clear slot
+                                  </button>
+                                </div>
+                              ))}
+                            </div>
+                            <p className="mt-2 text-[11px] text-navy-400">
+                              Clearing a slot frees the teacher for that period — reassign it from the grid if
+                              the arm should keep the subject.
+                            </p>
+                          </div>
+                        ))}
+                        {(ttConflicts?.arm || []).map((c) => (
+                          <div
+                            key={`a|${c.classArm}|${c.day}|${c.period}`}
+                            className="rounded-xl border border-amber-200 bg-amber-50/50 p-4"
+                          >
+                            <p className="text-sm font-bold text-navy-800">
+                              <span className="text-amber-700">{c.classArm}</span> has {c.slots.length} entries
+                              on <strong>{c.day}</strong>, period <strong>{c.period}</strong> — keep one, clear
+                              the rest.
+                            </p>
+                            <div className="mt-2 flex flex-wrap gap-2">
+                              {c.slots.map((s) => (
+                                <div
+                                  key={s.id}
+                                  className="flex items-center gap-2 rounded-lg border border-navy-200 bg-white px-3 py-2 text-xs"
+                                >
+                                  <span className="font-bold text-navy-700">{s.subject}</span>
+                                  <span className="text-navy-400">·</span>
+                                  <span className="text-navy-500">{s.teacherName || "—"}</span>
+                                  <button
+                                    onClick={() => fixTtConflict(s)}
+                                    disabled={
+                                      ttConflictFixing === `${s.classArm}|${s.day}|${s.period}`
+                                    }
+                                    className="ml-1 inline-flex items-center gap-1 rounded-md bg-amber-600 px-2 py-1 text-[11px] font-semibold text-white transition hover:bg-amber-500 disabled:opacity-60"
+                                  >
+                                    {ttConflictFixing === `${s.classArm}|${s.day}|${s.period}` ? (
+                                      <Loader2 className="h-3 w-3 animate-spin" />
+                                    ) : (
+                                      <X className="h-3 w-3" />
+                                    )}
+                                    Clear slot
+                                  </button>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        ))}
+                        {/* Scope violations — a teacher scheduled for a subject/arm
+                            they don't teach (or no longer in the roster). Offer a
+                            one-click swap to a valid, free teacher. */}
+                        {(ttConflicts?.scope || []).map((v) => {
+                          const chosen =
+                            ttSwapDraft[v.entryId] || v.candidates?.[0]?.id || "";
+                          const problemText = v.problems.includes("teacher")
+                            ? "but is no longer in the roster"
+                            : v.problems.includes("subject") && v.problems.includes("arm")
+                              ? `but does not teach ${v.subject} nor is assigned to ${v.classArm}`
+                              : v.problems.includes("subject")
+                                ? `but does not teach ${v.subject}`
+                                : `but is not assigned to ${v.classArm}`;
+                          return (
+                            <div
+                              key={`s|${v.entryId}`}
+                              className="rounded-xl border border-sky-200 bg-sky-50/50 p-4"
+                            >
+                              <p className="text-sm font-bold text-navy-800">
+                                <span className="text-sky-700">{v.teacherName || "Unknown teacher"}</span> is
+                                scheduled for <strong>{v.subject}</strong> in <strong>{v.classArm}</strong> on{" "}
+                                <strong>{v.day}</strong>, period <strong>{v.period}</strong> — {problemText}.
+                              </p>
+                              <div className="mt-2 flex flex-wrap items-center gap-2">
+                                {v.candidates?.length > 0 ? (
+                                  <>
+                                    <select
+                                      value={chosen}
+                                      onChange={(e) =>
+                                        setTtSwapDraft((d) => ({ ...d, [v.entryId]: e.target.value }))
+                                      }
+                                      className="rounded-lg border border-navy-200 bg-white px-2 py-1.5 text-xs font-semibold text-navy-700 outline-none transition focus:border-brand-500"
+                                      title="Pick a teacher who teaches this subject in this arm and is free that period"
+                                    >
+                                      {v.candidates.map((c) => (
+                                        <option key={c.id} value={c.id}>
+                                          {c.name}
+                                        </option>
+                                      ))}
+                                    </select>
+                                    <button
+                                      onClick={() => swapTtTeacher(v, chosen)}
+                                      disabled={!chosen || ttConflictFixing === `swap|${v.entryId}`}
+                                      className="inline-flex items-center gap-1 rounded-md bg-sky-600 px-2.5 py-1.5 text-[11px] font-semibold text-white transition hover:bg-sky-500 disabled:opacity-60"
+                                    >
+                                      {ttConflictFixing === `swap|${v.entryId}` ? (
+                                        <Loader2 className="h-3 w-3 animate-spin" />
+                                      ) : (
+                                        <ArrowLeftRight className="h-3 w-3" />
+                                      )}
+                                      Swap in valid teacher
+                                    </button>
+                                  </>
+                                ) : (
+                                  <span className="text-xs font-medium text-sky-600">
+                                    No valid substitute is free that period — clear the slot instead.
+                                  </span>
+                                )}
+                                <button
+                                  onClick={() => fixTtConflict(v)}
+                                  disabled={ttConflictFixing === `${v.classArm}|${v.day}|${v.period}`}
+                                  className="inline-flex items-center gap-1 rounded-md border border-navy-200 bg-white px-2 py-1.5 text-[11px] font-semibold text-navy-600 transition hover:bg-navy-50 disabled:opacity-60"
+                                >
+                                  {ttConflictFixing === `${v.classArm}|${v.day}|${v.period}` ? (
+                                    <Loader2 className="h-3 w-3 animate-spin" />
+                                  ) : (
+                                    <X className="h-3 w-3" />
+                                  )}
+                                  Clear slot
+                                </button>
+                              </div>
+                            </div>
+                          );
+                        })}
+                        {/* Integrity checks — beyond collisions: an arm with an
+                            entirely unassigned day, roster teachers with no
+                            slots at all, entries left in deactivated arms. */}
+                        {(ttConflicts?.unassignedPeriods?.length ||
+                          ttConflicts?.unstaffedTeachers?.length ||
+                          ttConflicts?.orphanedEntries?.length) > 0 && (
+                          <div className="rounded-xl border border-violet-200 bg-violet-50/40 p-4">
+                            <p className="text-sm font-bold text-navy-800">
+                              <ShieldCheck className="mr-1.5 inline h-4 w-4 text-violet-600" />
+                              Integrity checks
+                            </p>
+                            <div className="mt-3 space-y-2 text-xs text-navy-600">
+                              {(ttConflicts?.unassignedPeriods || []).map((u) => (
+                                <p key={`u|${u.classArm}|${u.day}`} className="flex items-start gap-2">
+                                  <CalendarX className="mt-0.5 h-3.5 w-3.5 shrink-0 text-violet-500" />
+                                  <span>
+                                    <strong>{u.classArm}</strong> has no classes on <strong>{u.day}</strong> —
+                                    assign at least one period from the grid.
+                                  </span>
+                                </p>
+                              ))}
+                              {(ttConflicts?.unstaffedTeachers || []).map((t) => (
+                                <p key={`ut|${t.teacherId}`} className="flex items-start gap-2">
+                                  <UserX className="mt-0.5 h-3.5 w-3.5 shrink-0 text-violet-500" />
+                                  <span>
+                                    <strong>{t.teacherName || "Unknown teacher"}</strong> has no timetable
+                                    slots — schedule them or remove them from the roster.
+                                  </span>
+                                </p>
+                              ))}
+                              {(ttConflicts?.orphanedEntries || []).map((o) => (
+                                <p key={`or|${o.entryId}`} className="flex items-start gap-2">
+                                  <Link2Off className="mt-0.5 h-3.5 w-3.5 shrink-0 text-violet-500" />
+                                  <span>
+                                    <strong>{o.subject}</strong> in <strong>{o.classArm}</strong> ({o.day},
+                                    period {o.period})
+                                    {o.teacherName ? ` — ${o.teacherName}` : ""} — the arm is no longer
+                                    active. Delete or reassign the slot.
+                                  </span>
+                                </p>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* Period times — the bell schedule behind the class-alert alarms */}
+              <div className="overflow-hidden rounded-2xl border border-navy-200/70 bg-white shadow-sm">
+                <div className="flex flex-wrap items-center justify-between gap-3 border-b border-navy-100 px-6 py-4">
+                  <div>
+                    <h2 className="flex items-center gap-2 text-lg font-bold text-navy-800">
+                      <Clock className="h-5 w-5 text-brand-600" /> Period times
+                    </h2>
+                    <p className="mt-0.5 text-sm text-navy-400">
+                      The bell schedule drives the class-alert alarms teachers receive — edit when each period
+                      starts and ends, then save.
+                    </p>
+                  </div>
+                  <button
+                    onClick={savePeriodTimes}
+                    disabled={periodTimesSaving}
+                    className="inline-flex items-center gap-2 rounded-xl bg-brand-600 px-5 py-2.5 text-sm font-semibold text-white shadow-lg shadow-brand-600/30 transition hover:bg-brand-500 disabled:opacity-60"
+                  >
+                    {periodTimesSaving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+                    Save times
+                  </button>
+                </div>
+                <div className="flex flex-wrap items-center gap-2 border-b border-navy-100 px-6 py-3">
+                  {["ALL", ...DAYS].map((d) => {
+                    const active = bellDay === d;
+                    const custom = d !== "ALL" && Boolean(dailyDrafts[d]);
+                    return (
+                      <button
+                        key={d}
+                        onClick={() => selectBellDay(d)}
+                        className={`inline-flex items-center gap-1.5 rounded-full px-3.5 py-1.5 text-xs font-semibold transition ${
+                          active
+                            ? "bg-brand-600 text-white shadow"
+                            : "bg-navy-50 text-navy-600 hover:bg-navy-100"
+                        }`}
+                      >
+                        {d === "ALL" ? "All days" : d}
+                        {custom && (
+                          <span
+                            className={`rounded-full px-1.5 py-0.5 text-[10px] font-bold ${
+                              active ? "bg-white/20 text-white" : "bg-amber-100 text-amber-700"
+                            }`}
+                          >
+                            custom
+                          </span>
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
+                <div className="grid gap-3 p-5 sm:grid-cols-2 lg:grid-cols-4">
+                  {bellDay !== "ALL" && (
+                    <div className="col-span-full flex flex-wrap items-center gap-3 rounded-xl border border-navy-100 bg-navy-50/40 p-3">
+                      <label className="flex items-center gap-2 text-xs font-semibold text-navy-600">
+                        Periods on this day
+                        <select
+                          value={bellDraft.periodTimes.length}
+                          onChange={(e) => setBellDayPeriodCount(bellDay, Number(e.target.value))}
+                          className={`${inputCls} !px-2 !py-1 text-xs`}
+                        >
+                          {PERIODS.map((n) => (
+                            <option key={n} value={n}>
+                              {n}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <span className="text-[11px] text-navy-400">
+                        A shorter day (e.g. Friday ends at period 6) simply drops the later periods.
+                      </span>
+                      <button
+                        onClick={() => resetBellDay(bellDay)}
+                        disabled={!bellDraft.overridden}
+                        className="ml-auto inline-flex items-center gap-1.5 rounded-xl border border-navy-200 bg-white px-3 py-1.5 text-xs font-semibold text-navy-600 transition hover:bg-navy-50 disabled:opacity-50"
+                      >
+                        <RotateCcw className="h-3.5 w-3.5" /> Use school default
+                      </button>
+                    </div>
+                  )}
+                  {bellDraft.periodTimes.map((pt) => (
+                    <div key={pt.period} className="rounded-xl border border-navy-100 bg-navy-50/40 p-3">
+                      <p className="text-[10px] font-bold uppercase tracking-wider text-navy-400">
+                        Period {pt.period}
+                      </p>
+                      <div className="mt-2 grid grid-cols-2 gap-2">
+                        <label className="block">
+                          <span className="mb-0.5 block text-[10px] font-medium text-navy-400">Start</span>
+                          <input
+                            type="time"
+                            value={pt.start}
+                            onChange={(e) => setPeriodTime(pt.period, "start", e.target.value)}
+                            className={`${inputCls} !px-2 !py-1.5 text-xs`}
+                          />
+                        </label>
+                        <label className="block">
+                          <span className="mb-0.5 block text-[10px] font-medium text-navy-400">End</span>
+                          <input
+                            type="time"
+                            value={pt.end}
+                            onChange={(e) => setPeriodTime(pt.period, "end", e.target.value)}
+                            className={`${inputCls} !px-2 !py-1.5 text-xs`}
+                          />
+                        </label>
+                      </div>
+                    </div>
+                  ))}
+                  {/* The school-wide mid-day break — a display/alert concept,
+                      never a timetable entry, so no teacher is ever assigned. */}
+                  <div className="rounded-xl border border-violet-200 bg-violet-50/50 p-3">
+                    <p className="text-[10px] font-bold uppercase tracking-wider text-violet-600">
+                      Break · between periods 4 &amp; 5
+                    </p>
+                    <div className="mt-2 grid grid-cols-2 gap-2">
+                      <label className="block">
+                        <span className="mb-0.5 block text-[10px] font-medium text-navy-400">Start</span>
+                        <input
+                          type="time"
+                          value={bellDraft.breakTimes.start}
+                          onChange={(e) => setBreakTime("start", e.target.value)}
+                          className={`${inputCls} !px-2 !py-1.5 text-xs`}
+                        />
+                      </label>
+                      <label className="block">
+                        <span className="mb-0.5 block text-[10px] font-medium text-navy-400">End</span>
+                        <input
+                          type="time"
+                          value={bellDraft.breakTimes.end}
+                          onChange={(e) => setBreakTime("end", e.target.value)}
+                          className={`${inputCls} !px-2 !py-1.5 text-xs`}
+                        />
+                      </label>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex items-start gap-2 rounded-xl border border-brand-200 bg-brand-50 p-4 text-sm text-brand-800">
+                <CalendarDays className="mt-0.5 h-4 w-4 shrink-0" />
+                <p>
+                  <strong>Teachers see this instantly.</strong> Every assignment flows straight into the teacher
+                  portal&apos;s weekly timetable — a Mathematics teacher covering all twelve classes gets twelve
+                  separate schedules, one per class, with today&apos;s column highlighted — and, when alerts are
+                  enabled, an alarm rings as each period approaches.
+                </p>
               </div>
             </div>
           )}
@@ -2063,15 +4560,58 @@ export default function AdminDashboard() {
       {/* Add user modal — teacher | student | staff (bursar/registrar) */}
       <Modal
         open={modal !== null}
-        onClose={() => setModal(null)}
+        onClose={() => {
+          if (createdUserDisplay) closeCreatedUserDisplay();
+          else setModal(null);
+        }}
         title={
-          modal === "teacher"
-            ? "Add teacher"
-            : modal === "staff"
-              ? "Add staff account"
-              : "Add student"
+          createdUserDisplay
+            ? "Student login details"
+            : modal === "teacher"
+              ? "Add teacher"
+              : modal === "staff"
+                ? "Add staff account"
+                : "Add student"
         }
       >
+        {createdUserDisplay ? (
+          <div className="animate-fade-up space-y-4">
+            <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4">
+              <p className="flex items-center gap-1.5 text-sm font-bold text-emerald-800">
+                <CheckCircle2 className="h-4 w-4" />
+                Student added
+              </p>
+              <p className="mt-1 text-xs text-emerald-700">
+                The auto-generated password is shown below. Hand it to the student
+                — they can change it after logging in.
+              </p>
+            </div>
+
+            <div className="flex items-center gap-3 rounded-xl border border-navy-100 bg-navy-50/60 px-4 py-3">
+              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-brand-50 text-sm font-bold text-brand-600">
+                {createdUserDisplay.name.split(" ").map((w) => w[0]).join("").slice(0, 2).toUpperCase()}
+              </div>
+              <div className="min-w-0">
+                <p className="truncate font-bold text-navy-800">{createdUserDisplay.name}</p>
+                <p className="truncate text-xs text-navy-400">{createdUserDisplay.email}</p>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2 rounded-xl border border-navy-200 bg-navy-900 px-4 py-3">
+              <KeyRound className="h-5 w-5 shrink-0 text-brand-300" />
+              <code className="min-w-0 flex-1 select-all break-all font-mono text-lg font-bold tracking-wide text-white">
+                {createdUserDisplay.password}
+              </code>
+            </div>
+
+            <button
+              onClick={closeCreatedUserDisplay}
+              className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-navy-800 py-3 font-semibold text-white transition hover:bg-navy-700"
+            >
+              Done
+            </button>
+          </div>
+        ) : (
         <div className="space-y-4">
           <label className="block">
             <span className="mb-1.5 block text-sm font-medium text-navy-700">Full name</span>
@@ -2092,16 +4632,29 @@ export default function AdminDashboard() {
               className={inputCls}
             />
           </label>
-          <label className="block">
-            <span className="mb-1.5 block text-sm font-medium text-navy-700">Temporary password</span>
-            <input
-              type="text"
-              value={form.password}
-              onChange={(e) => setForm({ ...form, password: e.target.value })}
-              placeholder="At least 6 characters"
-              className={inputCls}
-            />
-          </label>
+          {modal === "student" ? (
+            <div className="rounded-xl border border-brand-200 bg-brand-50/50 p-3.5">
+              <span className="mb-1 block text-sm font-medium text-navy-700">
+                Auto-generated password
+              </span>
+              <p className="text-xs text-navy-500">
+                The password is <strong className="text-navy-700">name + class arm</strong>, all lowercase and
+                unspaced — e.g. <code className="rounded bg-white px-1 py-0.5 font-mono text-[11px] text-navy-700">
+                  {form.name || "adamtope"}{form.assignedClass || "jss1"}</code>
+              </p>
+            </div>
+          ) : (
+            <label className="block">
+              <span className="mb-1.5 block text-sm font-medium text-navy-700">Temporary password</span>
+              <input
+                type="text"
+                value={form.password}
+                onChange={(e) => setForm({ ...form, password: e.target.value })}
+                placeholder="At least 6 characters"
+                className={inputCls}
+              />
+            </label>
+          )}
           {modal === "staff" ? (
             <label className="block">
               <span className="mb-1.5 block text-sm font-medium text-navy-700">Role</span>
@@ -2114,6 +4667,75 @@ export default function AdminDashboard() {
                 <option value="REGISTRAR">Registrar — roster, imports & report cards</option>
               </select>
             </label>
+          ) : modal === "teacher" ? (
+            <>
+              {/* Subject-specialist teaching model: a teacher teaches SUBJECTS
+                  across MULTIPLE arms — one Mathematics teacher covers all twelve
+                  classes. What's picked here is exactly the scope the API enforces. */}
+              <div className="rounded-xl border border-violet-200 bg-violet-50/50 p-3.5">
+                <span className="mb-2 flex items-center gap-1.5 text-sm font-medium text-navy-700">
+                  <BookOpen className="h-4 w-4 text-violet-600" /> Subjects they teach
+                </span>
+                <div className="flex flex-wrap gap-1.5">
+                  {subjects.map((s) => {
+                    const on = form.subjects.includes(s);
+                    return (
+                      <button
+                        key={s}
+                        type="button"
+                        onClick={() =>
+                          setForm((f) => ({
+                            ...f,
+                            subjects: on ? f.subjects.filter((x) => x !== s) : [...f.subjects, s],
+                          }))
+                        }
+                        className={`rounded-full px-2.5 py-1 text-xs font-semibold transition ${
+                          on
+                            ? "bg-violet-600 text-white shadow-sm"
+                            : "bg-white text-navy-600 ring-1 ring-navy-200 hover:ring-violet-300"
+                        }`}
+                      >
+                        {s}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+              <div className="rounded-xl border border-brand-200 bg-brand-50/50 p-3.5">
+                <span className="mb-2 flex items-center gap-1.5 text-sm font-medium text-navy-700">
+                  <ClipboardList className="h-4 w-4 text-brand-600" /> Class arms they teach
+                </span>
+                <div className="flex flex-wrap gap-1.5">
+                  {(session.school?.activeArms || []).map((arm) => {
+                    const on = form.assignedClasses.includes(arm);
+                    return (
+                      <button
+                        key={arm}
+                        type="button"
+                        onClick={() =>
+                          setForm((f) => ({
+                            ...f,
+                            assignedClasses: on ? f.assignedClasses.filter((x) => x !== arm) : [...f.assignedClasses, arm],
+                            // Keep the legacy default arm in sync with the first pick.
+                            assignedClass: on && f.assignedClass === arm ? "" : f.assignedClass || arm,
+                          }))
+                        }
+                        className={`rounded-full px-2.5 py-1 text-xs font-semibold transition ${
+                          on
+                            ? "bg-brand-600 text-white shadow-sm"
+                            : "bg-white text-navy-600 ring-1 ring-navy-200 hover:ring-brand-300"
+                        }`}
+                      >
+                        {arm}
+                      </button>
+                    );
+                  })}
+                </div>
+                <p className="mt-2 text-[11px] text-navy-400">
+                  A teacher can cover every arm of a subject — e.g. one Mathematics teacher for all twelve classes.
+                </p>
+              </div>
+            </>
           ) : (
             <label className="block">
               <span className="mb-1.5 block text-sm font-medium text-navy-700">Class arm</span>
@@ -2138,6 +4760,7 @@ export default function AdminDashboard() {
             Add {modal === "teacher" ? "teacher" : modal === "staff" ? "staff account" : "student"}
           </button>
         </div>
+        )}
       </Modal>
 
       {/* Reset password modal */}
@@ -2221,6 +4844,466 @@ export default function AdminDashboard() {
             )}
           </div>
         )}
+      </Modal>
+
+      {/* Change-role confirmation modal */}
+      <Modal
+        open={roleConfirm !== null}
+        onClose={() => setRoleConfirm(null)}
+        title="Change staff role"
+      >
+        {roleConfirm && (
+          <div className="space-y-4">
+            <div className="flex items-center gap-2 rounded-xl border border-navy-100 bg-navy-50/60 px-4 py-3">
+              <span className={`inline-flex items-center rounded-full px-2.5 py-1 text-xs font-bold ring-1 ${ROLE_BADGES[roleConfirm.from] || "bg-navy-100 text-navy-600"}`}>
+                {ROLE_LABELS[roleConfirm.from] || roleConfirm.from}
+              </span>
+              <ArrowLeftRight className="h-4 w-4 text-navy-400" />
+              <span className={`inline-flex items-center rounded-full px-2.5 py-1 text-xs font-bold ring-1 ${ROLE_BADGES[roleConfirm.to] || "bg-navy-100 text-navy-600"}`}>
+                {ROLE_LABELS[roleConfirm.to] || roleConfirm.to}
+              </span>
+            </div>
+            <p className="text-sm text-navy-600">
+              Change <strong className="text-navy-800">{roleConfirm.name}</strong>&apos;s role from{" "}
+              <strong>{ROLE_LABELS[roleConfirm.from] || roleConfirm.from}</strong> to{" "}
+              <strong>{ROLE_LABELS[roleConfirm.to] || roleConfirm.to}</strong>?
+            </p>
+            {roleConfirm.to === "TEACHER" && (
+              <p className="flex items-start gap-2 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs font-medium text-amber-800">
+                <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+                They will lose access to the admin console. Classroom tools (grading, attendance, report cards) still work.
+              </p>
+            )}
+            <p className="text-xs text-navy-400">
+              Takes effect immediately — their current session will be signed out and they must log in again.
+            </p>
+            <div className="flex gap-2">
+              <button
+                onClick={() => setRoleConfirm(null)}
+                className="inline-flex flex-1 items-center justify-center gap-1.5 rounded-xl border border-navy-200 px-4 py-2.5 text-sm font-semibold text-navy-600 transition hover:bg-navy-50"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={confirmRoleChange}
+                disabled={roleSaving}
+                className="inline-flex flex-1 items-center justify-center gap-1.5 rounded-xl bg-navy-800 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-navy-700 disabled:opacity-60"
+              >
+                {roleSaving ? <Loader2 className="h-4 w-4 animate-spin" /> : <ArrowLeftRight className="h-4 w-4" />}
+                Change role
+              </button>
+            </div>
+          </div>
+        )}
+      </Modal>
+
+      {/* Assign subjects & arms — edit a teacher's teaching scope (subjects ×
+          class arms). Saves through PATCH; the SUPER_ADMIN gate + field-level
+          mayEditUser guard re-validate, and the teacher portal enforces the
+          new scope on their next request (bouncing a stale selection). */}
+      <Modal
+        open={scopeTarget !== null}
+        onClose={() => setScopeTarget(null)}
+        title="Assign subjects & arms"
+      >
+        {scopeTarget && (
+          <div className="space-y-4">
+            <div className="flex items-center gap-3 rounded-xl border border-navy-100 bg-navy-50/60 px-4 py-3">
+              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-brand-50 text-sm font-bold text-brand-600">
+                {scopeTarget.name.split(" ").map((w) => w[0]).join("").slice(0, 2).toUpperCase()}
+              </div>
+              <div className="min-w-0">
+                <p className="truncate font-bold text-navy-800">{scopeTarget.name}</p>
+                <p className="truncate text-xs text-navy-400">{scopeTarget.email}</p>
+              </div>
+            </div>
+
+            <div className="rounded-xl border border-violet-200 bg-violet-50/50 p-3.5">
+              <span className="mb-2 flex items-center gap-1.5 text-sm font-medium text-navy-700">
+                <BookOpen className="h-4 w-4 text-violet-600" /> Subjects they teach
+              </span>
+              <div className="flex flex-wrap gap-1.5">
+                {subjects.map((s) => {
+                  const on = scopeDraft.subjects.includes(s);
+                  return (
+                    <button
+                      key={s}
+                      type="button"
+                      onClick={() =>
+                        setScopeDraft((d) => ({
+                          ...d,
+                          subjects: on ? d.subjects.filter((x) => x !== s) : [...d.subjects, s],
+                        }))
+                      }
+                      className={`rounded-full px-2.5 py-1 text-xs font-semibold transition ${
+                        on
+                          ? "bg-violet-600 text-white shadow-sm"
+                          : "bg-white text-navy-600 ring-1 ring-navy-200 hover:ring-violet-300"
+                      }`}
+                    >
+                      {s}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            <div className="rounded-xl border border-brand-200 bg-brand-50/50 p-3.5">
+              <div className="mb-2 flex items-center justify-between gap-2">
+                <span className="flex items-center gap-1.5 text-sm font-medium text-navy-700">
+                  <ClipboardList className="h-4 w-4 text-brand-600" /> Class arms they teach
+                </span>
+                <span className="flex gap-1">
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setScopeDraft((d) => ({
+                        ...d,
+                        assignedClasses: [...(session.school?.activeArms || [])],
+                        assignedClass: (session.school?.activeArms || [])[0] || "",
+                      }))
+                    }
+                    className="rounded-full px-2.5 py-1 text-[11px] font-semibold text-brand-700 ring-1 ring-brand-200 transition hover:bg-brand-100"
+                  >
+                    All arms
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setScopeDraft((d) => ({ ...d, assignedClasses: [], assignedClass: "" }))
+                    }
+                    className="rounded-full px-2.5 py-1 text-[11px] font-semibold text-navy-500 ring-1 ring-navy-200 transition hover:bg-navy-50"
+                  >
+                    Clear
+                  </button>
+                </span>
+              </div>
+              <div className="flex flex-wrap gap-1.5">
+                {(session.school?.activeArms || []).map((arm) => {
+                  const on = scopeDraft.assignedClasses.includes(arm);
+                  return (
+                    <button
+                      key={arm}
+                      type="button"
+                      onClick={() =>
+                        setScopeDraft((d) => {
+                          const onArm = d.assignedClasses.includes(arm);
+                          return {
+                            ...d,
+                            assignedClasses: onArm
+                              ? d.assignedClasses.filter((x) => x !== arm)
+                              : [...d.assignedClasses, arm],
+                            // Keep the legacy display/default arm in sync with the first pick.
+                            assignedClass:
+                              onArm && d.assignedClass === arm ? "" : d.assignedClass || arm,
+                          };
+                        })
+                      }
+                      className={`rounded-full px-2.5 py-1 text-xs font-semibold transition ${
+                        on
+                          ? "bg-brand-600 text-white shadow-sm"
+                          : "bg-white text-navy-600 ring-1 ring-navy-200 hover:ring-brand-300"
+                      }`}
+                    >
+                      {arm}
+                    </button>
+                  );
+                })}
+              </div>
+              <p className="mt-2 text-[11px] text-navy-400">
+                {scopeDraft.subjects.length} subject{scopeDraft.subjects.length === 1 ? "" : "s"} ×{" "}
+                {scopeDraft.assignedClasses.length} arm{scopeDraft.assignedClasses.length === 1 ? "" : "s"} selected.
+              </p>
+            </div>
+
+            <p className="flex items-start gap-2 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs font-medium text-amber-800">
+              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+              Takes effect instantly — if a teacher is currently viewing a class arm you remove, their dashboard
+              switches them to a valid arm on the next request.
+            </p>
+
+            <div className="flex gap-2">
+              <button
+                onClick={() => setScopeTarget(null)}
+                className="inline-flex flex-1 items-center justify-center gap-1.5 rounded-xl border border-navy-200 px-4 py-2.5 text-sm font-semibold text-navy-600 transition hover:bg-navy-50"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={saveScope}
+                disabled={scopeSaving}
+                className="inline-flex flex-1 items-center justify-center gap-1.5 rounded-xl bg-brand-600 px-4 py-2.5 text-sm font-semibold text-white shadow-lg shadow-brand-600/30 transition hover:bg-brand-500 disabled:opacity-60"
+              >
+                {scopeSaving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />}
+                Save scope
+              </button>
+            </div>
+          </div>
+        )}
+      </Modal>
+
+      {/* Term rollover — archive the old term, clone fees + timetable forward */}
+      <Modal
+        open={rolloverOpen}
+        onClose={() => !rolloverSaving && setRolloverOpen(false)}
+        title="Start a new term"
+      >
+        <div className="space-y-4">
+          <p className="text-sm text-navy-500">
+            Moving from{" "}
+            <strong className="text-navy-800">
+              {session?.school?.currentSession} · {session?.school?.currentTerm}
+            </strong>{" "}
+            to the new term:
+          </p>
+          <div className="rounded-xl bg-navy-50 p-4 text-sm text-navy-600">
+            <ul className="list-disc space-y-1 pl-4">
+              <li>
+                Scores &amp; attendance are <strong>archived</strong> per arm (kept in the term archive,
+                then cleared) — the new term starts fresh.
+              </li>
+              <li>
+                Fee structures and the weekly timetable <strong>carry over</strong> to the new term.
+              </li>
+              <li>Every student&apos;s fee status resets — nothing is paid for the new term yet.</li>
+            </ul>
+          </div>
+          <div>
+            <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-navy-400">
+              New term
+            </label>
+            <div className="grid grid-cols-3 gap-2">
+              {TERMS.map((t) => (
+                <button
+                  key={t}
+                  type="button"
+                  disabled={t === session?.school?.currentTerm}
+                  onClick={() => {
+                    setRolloverTermName(t);
+                    setRolloverPreview(null);
+                  }}
+                  className={`rounded-xl border px-3 py-2.5 text-sm font-semibold transition disabled:cursor-not-allowed disabled:opacity-40 ${
+                    rolloverTermName === t
+                      ? "border-brand-600 bg-brand-600 text-white"
+                      : "border-navy-200 bg-white text-navy-700 hover:border-brand-400"
+                  }`}
+                >
+                  {t}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div>
+            <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-navy-400">
+              Session
+            </label>
+            <input
+              value={rolloverSession}
+              onChange={(e) => {
+                setRolloverSession(e.target.value);
+                setRolloverPreview(null);
+              }}
+              placeholder="e.g. 2026/2027"
+              className={inputCls}
+            />
+            <p className="mt-1 text-xs text-navy-400">
+              Leave as-is for a mid-session term change (First → Second → Third).
+            </p>
+          </div>
+          {rolloverPreview && (
+            <div className="rounded-xl border border-brand-100 bg-brand-50 p-4 text-sm text-navy-700">
+              <p className="font-semibold text-navy-800">Rollover preview</p>
+              <ul className="mt-2 space-y-1">
+                <li>📦 {rolloverPreview.scoresArchived || 0} score records archived</li>
+                <li>📋 {rolloverPreview.attendanceArchived || 0} attendance registers archived</li>
+                <li>💰 {rolloverPreview.feesCloned || 0} fee structures cloned</li>
+                <li>🗓 {rolloverPreview.timetableCloned || 0} timetable slots carried over</li>
+                <li>👥 {rolloverPreview.studentsReset || 0} students reset to unpaid</li>
+              </ul>
+            </div>
+          )}
+          {rolloverPreview === null && (
+            <button
+              onClick={previewRollover}
+              disabled={rolloverPreviewing || !rolloverTermName.trim()}
+              className="w-full rounded-xl border border-navy-200 bg-white px-4 py-2.5 text-sm font-semibold text-navy-700 transition hover:border-brand-400 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {rolloverPreviewing ? (
+                <Loader2 className="mx-auto h-4 w-4 animate-spin" />
+              ) : (
+                "Preview what will happen"
+              )}
+            </button>
+          )}
+          <div className="flex items-center justify-end gap-3 pt-1">
+            <button
+              onClick={() => setRolloverOpen(false)}
+              disabled={rolloverSaving}
+              className="rounded-xl px-4 py-2.5 text-sm font-semibold text-navy-500 transition hover:bg-navy-50 disabled:opacity-50"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={confirmRollover}
+              disabled={rolloverSaving || !rolloverTermName.trim() || !rolloverPreview}
+              className="inline-flex items-center gap-2 rounded-xl bg-brand-600 px-5 py-2.5 text-sm font-semibold text-white shadow-lg shadow-brand-600/30 transition hover:bg-brand-500 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {rolloverSaving ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-4 w-4" />}
+              Archive &amp; start {rolloverTermName || "new term"}
+            </button>
+          </div>
+        </div>
+      </Modal>
+
+      {/* Rename arm — a migration, so every reference moves with it */}
+      <Modal
+        open={renameTarget !== null}
+        onClose={() => setRenameTarget(null)}
+        title={renameTarget ? `Rename ${renameTarget}` : ""}
+      >
+        {renameTarget !== null && (
+          <div className="space-y-4">
+            <p className="text-sm text-navy-500">
+              Renaming re-points <span className="font-semibold text-navy-800">{renameTarget}</span> everywhere:
+              students, teacher scopes, fees, scores, attendance and timetable entries all move to the new
+              name in one go. A collision with an existing arm is rejected.
+            </p>
+            <label className="block">
+              <span className="mb-1.5 block text-sm font-medium text-navy-700">New name</span>
+              <input
+                value={renameValue}
+                onChange={(e) => setRenameValue(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && saveRename()}
+                placeholder="e.g. JSS1 Blue"
+                autoFocus
+                className="w-full rounded-xl border border-navy-200 px-4 py-2.5 text-sm outline-none transition focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20"
+              />
+            </label>
+            <div className="flex gap-2">
+              <button
+                onClick={() => setRenameTarget(null)}
+                className="inline-flex flex-1 items-center justify-center gap-1.5 rounded-xl border border-navy-200 px-4 py-2.5 text-sm font-semibold text-navy-600 transition hover:bg-navy-50"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={saveRename}
+                disabled={renameSaving || !renameValue.trim() || renameValue.trim() === renameTarget}
+                className="inline-flex flex-1 items-center justify-center gap-1.5 rounded-xl bg-brand-600 px-4 py-2.5 text-sm font-semibold text-white shadow-lg shadow-brand-600/30 transition hover:bg-brand-500 disabled:opacity-60"
+              >
+                {renameSaving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Pencil className="h-4 w-4" />}
+                Rename
+              </button>
+            </div>
+          </div>
+        )}
+      </Modal>
+
+      {/* Timetable cell editor — pick a subject + teacher for one period */}
+      <Modal
+        open={ttModal !== null}
+        onClose={() => setTtModal(null)}
+        title={ttModal ? `Period ${ttModal.period} · ${ttModal.day} · ${ttArm}` : ""}
+      >
+        <div className="space-y-4">
+          <label className="block">
+            <span className="mb-1.5 block text-sm font-medium text-navy-700">Subject</span>
+            <select
+              value={ttDraft.subject}
+              onChange={(e) => {
+                const subject = e.target.value;
+                // Reset the teacher when the subject changes — only teachers
+                // who teach the new subject may be picked.
+                setTtDraft({
+                  subject,
+                  teacherId:
+                    teachers.find((t) => !t.subjects?.length || t.subjects.includes(subject))?.id || "",
+                });
+              }}
+              className={inputCls}
+            >
+              {subjects.map((s) => (
+                <option key={s}>{s}</option>
+              ))}
+            </select>
+          </label>
+          <label className="block">
+            <span className="mb-1.5 block text-sm font-medium text-navy-700">Teacher</span>
+            <select
+              value={ttDraft.teacherId}
+              onChange={(e) => setTtDraft({ ...ttDraft, teacherId: e.target.value })}
+              className={inputCls}
+            >
+              <option value="">Choose a teacher…</option>
+              {ttTeachersForSubject.map((t) => (
+                <option key={t.id} value={t.id}>
+                  {t.name}
+                </option>
+              ))}
+            </select>
+          </label>
+          <p className="flex items-start gap-2 rounded-xl border border-navy-100 bg-navy-50/60 px-4 py-3 text-xs text-navy-600">
+            <BookOpen className="mt-0.5 h-4 w-4 shrink-0 text-brand-600" />
+            Only teachers who teach <strong>{ttDraft.subject || "the chosen subject"}</strong> are listed — the API
+            also refuses a teacher already booked in another arm at the same day and period.
+          </p>
+          {ttModal && (() => {
+            const slotKey = `${ttArm}|${ttModal.day}|${ttModal.period}`;
+            const liveReasons = slotConflictReasons(ttHealth?.conflicts, ttArm, ttModal.day, ttModal.period);
+            if (!ttFlaggedSlots.has(slotKey) && liveReasons.length === 0) return null;
+            return (
+              <div className="flex items-start gap-2 rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 text-xs font-medium text-amber-900">
+                <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />
+                <div className="space-y-1">
+                  {liveReasons.length > 0 ? (
+                    <>
+                      <p>This slot is part of a live conflict flagged by the last scan:</p>
+                      <ul className="list-inside list-disc space-y-0.5 text-amber-800">
+                        {liveReasons.map((r, i) => (
+                          <li key={i}>{r}</li>
+                        ))}
+                      </ul>
+                    </>
+                  ) : (
+                    <p>
+                      This slot was flagged by an earlier conflict scan. Reassigning it could
+                      silently reintroduce the issue — saving here asks for confirmation.
+                    </p>
+                  )}
+                </div>
+              </div>
+            );
+          })()}
+          {ttByKey[`${ttModal?.day}|${ttModal?.period}`] && (() => {
+            const existing = ttByKey[`${ttModal?.day}|${ttModal?.period}`];
+            return (
+              <p className="flex items-start gap-2 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs font-medium text-amber-800">
+                <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+                Saving replaces the current slot: <strong>{existing.subject}</strong> ·{" "}
+                {existing.teacherName || "Unassigned"}.
+              </p>
+            );
+          })()}
+          <div className="flex gap-2">
+            <button
+              onClick={saveTtSlot}
+              disabled={ttSaving || !ttDraft.subject || !ttDraft.teacherId}
+              className="inline-flex flex-1 items-center justify-center gap-1.5 rounded-xl bg-brand-600 px-4 py-2.5 text-sm font-semibold text-white shadow-lg shadow-brand-600/30 transition hover:bg-brand-500 disabled:opacity-60"
+            >
+              {ttSaving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />}
+              Save slot
+            </button>
+            {ttByKey[`${ttModal?.day}|${ttModal?.period}`] && (
+              <button
+                onClick={clearTtSlot}
+                disabled={ttSaving}
+                className="inline-flex items-center justify-center gap-1.5 rounded-xl border border-rose-200 bg-rose-50 px-4 py-2.5 text-sm font-semibold text-rose-700 transition hover:bg-rose-100 disabled:opacity-60"
+              >
+                <X className="h-4 w-4" /> Free period
+              </button>
+            )}
+          </div>
+        </div>
       </Modal>
 
       {/* Toast */}

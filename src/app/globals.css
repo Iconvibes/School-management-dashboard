@@ -264,3 +264,124 @@ input[type="number"] {
     scroll-behavior: auto;
   }
 }
+
+/* ---- Printable weekly timetable ---- */
+/* The sheet is rendered twice (on-screen preview + a portal'd print node);
+   the same classes style both so what you preview is exactly what prints. */
+.print-sheet {
+  font-size: 11px;
+  color: #0f172a;
+}
+.print-sheet table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+}
+.print-sheet th,
+.print-sheet td {
+  border: 1px solid #cbd5e1;
+  padding: 6px 8px;
+  text-align: center;
+  vertical-align: middle;
+}
+.print-sheet th {
+  background: #f1f5f9;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #334155;
+}
+.print-sheet .print-col-period {
+  width: 15%;
+  text-align: left;
+  background: #f8fafc;
+  font-size: 10px;
+  color: #334155;
+}
+.print-sheet .print-col-period span {
+  display: block;
+}
+.print-sheet .print-slot-main {
+  display: block;
+  font-weight: 700;
+  font-size: 11px;
+}
+.print-sheet .print-slot-sub {
+  display: block;
+  font-size: 9.5px;
+  color: #475569;
+}
+.print-sheet .print-break-cell {
+  background: #faf5ff;
+  color: #6d28d9;
+  font-size: 10px;
+  font-weight: 600;
+}
+.print-sheet td.print-break-label {
+  background: #faf5ff;
+  color: #6d28d9;
+}
+.print-sheet .print-empty {
+  color: #94a3b8;
+}
+.print-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+.print-school {
+  font-size: 16px;
+  font-weight: 800;
+  margin: 0;
+}
+.print-title {
+  font-size: 13px;
+  font-weight: 700;
+  margin: 0;
+}
+.print-sub {
+  font-size: 10.5px;
+  color: #475569;
+  margin: 2px 0 0;
+}
+.print-foot {
+  margin-top: 8px;
+  font-size: 9px;
+  color: #64748b;
+  text-align: center;
+}
+
+/* Printing: A4 landscape, and ONLY the .print-area sheet reaches paper — the
+   sidebar, buttons and app chrome stay off the page. Visibility is the one
+   property children can override on hidden ancestors, which is what makes the
+   isolation technique work. */
+@page {
+  size: A4 landscape;
+  margin: 10mm;
+}
+
+@media print {
+  body {
+    background: #fff !important;
+  }
+  body * {
+    visibility: hidden !important;
+  }
+  .print-area,
+  .print-area * {
+    visibility: visible !important;
+  }
+  .print-area {
+    position: absolute !important;
+    left: 0 !important;
+    top: 0 !important;
+    width: 100% !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    box-shadow: none !important;
+    background: #fff !important;
+  }
+}

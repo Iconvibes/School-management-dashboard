@@ -27,7 +27,7 @@ Edutrack is a **Next.js 16 (App Router)** app in pure JavaScript. It has two ver
 
 The app runs in **two modes** decided by one thing — whether `MONGODB_URI` is set:
 
-- **No `MONGODB_URI`** → **demo mode**: an in-memory store seeded with a fake school ("Greenfield International School"), 5 teachers, 20+ students, scores, attendance, fee structures, a parent and payment history. Data resets whenever the server restarts.
+- **No `MONGODB_URI`** → **demo mode**: an in-memory store seeded with a fake school ("Greenfield International School") covering the real Nigerian secondary structure — JSS1–JSS3 as PLAIN classes (streaming starts at SSS) plus SS1–SS3 × Science/Arts/Commercial (12 class arms in total) — 16 subject-specialist teachers (one English and one Mathematics teacher span ALL 12 classes), 16 students, scores, attendance, fee structures, a parent, payment history and a generated collision-free weekly timetable. Data resets whenever the server restarts.
 - **`MONGODB_URI` set** (in `.env.local`) → **Mongo mode**: real Mongoose persistence, true multi-tenant.
 
 You do **not** need a database to develop — just run it and use the demo accounts.
@@ -140,7 +140,8 @@ Used only in Mongo mode. Each is a schema + `toJSON` transformer that strips sen
 | `Score.js` | `schoolId`, `studentId`, `classArm`, `subject`, `caScore`, `examScore`, `totalScore`, `grade`, `session`, `term` |
 | `Attendance.js` | `schoolId`, `classArm`, `date`, `records[]` (per student: status) |
 | `FeeStructure.js` | `schoolId`, `classArm`, `amount`, `session`, `term` |
-| `FeePayment.js` | `schoolId`, `studentId`, `amount`, `method`, `note`, `receiptNo`, `status` (`PENDING`/`CONFIRMED`) |
+| `FeePayment.js` | `schoolId`, `studentId`, `amount`, `method`, `note`, `receiptNo`, `status` (`PENDING`/`CONFIRMED`), `session`, `term` |
+| `TermArchive.js` | rolled-over term snapshots: `schoolId`, `session`, `term`, `kind` (`score`/`attendance`/`student`), `classArm` + per-kind payload rows (the `student` roster rows snapshot each enrolled student's name so archived report cards survive deletions) |
 | `Lead.js` | contact/demo form submissions |
 
 **Adding a field to a model?** You must also: (1) add it to `demo-store.js`'s seed/objects, (2) add it to `mongo-store.js`'s queries/creates, (3) surface it in the API route + UI. All four layers.
@@ -167,7 +168,7 @@ Demo (from `seed()`):
   name: "Greenfield International School",
   logoUrl: "",
   brandColor: "#2563EB",
-  activeArms: ["SS1 Science", "SS1 Arts", "SS2 Science", "SS2 Arts", "SS3 Science", "SS3 Arts"],
+  activeArms: ["JSS1", "JSS2", "JSS3", "SS1 Science", "SS1 Arts", "SS1 Commercial", "SS2 Science", "SS2 Arts", "SS2 Commercial", "SS3 Science", "SS3 Arts", "SS3 Commercial"],
   currentSession: "2025/2026",
   currentTerm: "First Term",
   createdAt: "2026-08-05T…Z",

@@ -136,7 +136,7 @@ describe("demo-store persistence", () => {
 
     demoStore.__reloadDemoStore();
     const students = await demoStore.listUsers({ schoolId: school.id, role: "STUDENT" });
-    assert.equal(students.length, 10 + 100, "all 100 burst users made it into the snapshot");
+    assert.equal(students.length, 16 + 100, "all 100 burst users made it into the snapshot");
   });
 
   it("reset wipes the disk state too — the next boot is a fresh seed", async () => {
@@ -154,7 +154,9 @@ describe("demo-store persistence", () => {
     demoStore.__resetDemoStore();
     assert.ok(!fs.existsSync(file), "reset deletes the persisted snapshot");
 
+    process.env.SEED_DEMO_SCHOOL = "1";
     demoStore.__reloadDemoStore();
+    delete process.env.SEED_DEMO_SCHOOL;
     const gone = await demoStore.findUserByEmail("gone@edutrack.app");
     assert.equal(gone, undefined, "the pre-reset user is gone after reload");
     const [match] = await demoStore.searchSchools("Greenfield");
@@ -162,21 +164,25 @@ describe("demo-store persistence", () => {
   });
 
   it("a corrupt snapshot file falls back to a fresh seed", async () => {
+    process.env.SEED_DEMO_SCHOOL = "1";
     fs.writeFileSync(file, "{ this is not valid json !!!");
     demoStore.__reloadDemoStore();
+    delete process.env.SEED_DEMO_SCHOOL;
     const [match] = await demoStore.searchSchools("Greenfield");
     assert.equal(match.name, "Greenfield International School", "fell back to seed");
     const students = await demoStore.listUsers({ schoolId: match.id, role: "STUDENT" });
-    assert.equal(students.length, 10);
+    assert.equal(students.length, 16);
   });
 
   it("an unknown snapshot version falls back to a fresh seed", async () => {
+    process.env.SEED_DEMO_SCHOOL = "1";
     fs.writeFileSync(file, JSON.stringify({ version: 99, users: [] }));
     demoStore.__reloadDemoStore();
+    delete process.env.SEED_DEMO_SCHOOL;
     const [match] = await demoStore.searchSchools("Greenfield");
     assert.ok(match, "fell back to seed on version mismatch");
     const students = await demoStore.listUsers({ schoolId: match.id, role: "STUDENT" });
-    assert.equal(students.length, 10);
+    assert.equal(students.length, 16);
   });
 
   it("a snapshot from before a collection existed loads as empty (backward-compatible)", async () => {
@@ -204,7 +210,7 @@ describe("demo-store persistence", () => {
     const [match] = await demoStore.searchSchools("Greenfield");
     assert.equal(match.name, "Greenfield International School", "state restored, not re-seeded");
     const students = await demoStore.listUsers({ schoolId: school.id, role: "STUDENT" });
-    assert.equal(students.length, 11, "existing students survived");
+    assert.equal(students.length, 17, "existing students survived");
     assert.ok(
       await demoStore.findUserByEmail("pre-notif@edutrack.app"),
       "the pre-collection user survived"

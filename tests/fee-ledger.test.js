@@ -29,7 +29,7 @@ async function ledgerFor(email) {
 describe("fee ledger (seeded state)", () => {
   it("has one row per student with the structure amount for their arm", async () => {
     const ledger = await demoStore.getFeeLedger(schoolId);
-    assert.equal(ledger.length, 10);
+    assert.equal(ledger.length, 16);
 
     // SS1 Science bills 185,000; the seed paid Kunle 40% and Chidinma in full.
     assert.equal((await ledgerFor("k.adebayo@edutrack.app")).amount, 185000);
@@ -157,16 +157,14 @@ describe("tenant isolation", () => {
 
   it("fee structures are scoped to the school and sorted by arm", async () => {
     const structures = await demoStore.getFeeStructures(schoolId);
-    assert.equal(structures.length, 6);
+    assert.equal(structures.length, 12);
     assert.deepEqual(
       structures.map((s) => s.classArm),
       [
-        "SS1 Arts",
-        "SS1 Science",
-        "SS2 Arts",
-        "SS2 Science",
-        "SS3 Arts",
-        "SS3 Science",
+        "JSS1", "JSS2", "JSS3",
+        "SS1 Arts", "SS1 Commercial", "SS1 Science",
+        "SS2 Arts", "SS2 Commercial", "SS2 Science",
+        "SS3 Arts", "SS3 Commercial", "SS3 Science",
       ]
     );
   });

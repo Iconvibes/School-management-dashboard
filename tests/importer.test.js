@@ -17,6 +17,7 @@ import {
   planImport,
   applyImport,
   buildCredentials,
+  splitList,
   emailSlug,
   schoolDomain,
   uniqueEmail,
@@ -302,6 +303,79 @@ describe("planImport (teachers)", () => {
     assert.equal(p.parentRefs.length, 0);
     assert.equal(p.plans[0].email, `ada.obi@${DOMAIN}`);
   });
+
+  it("plans subject-specialist scope: subjects × multiple arms", () => {
+    const { rows } = parseRows(
+      "TEACHER",
+      "name,email,assigned class,subjects,assigned classes\n" +
+        "Mrs. Ada Obi,,SS2 Science,Mathematics; Further Mathematics,SS1 Science; SS2 Science; SS3 Science\n" +
+        "Mr. Yemi Lawal,,,English Language,SS1 Arts|SS2 Arts\n" // pipe separator, no display arm
+    );
+    const p = planImport({
+      role: "TEACHER",
+      rows,
+      schoolName: school.name,
+      activeArms: school.activeArms,
+      existingUsers,
+      existingParents,
+      defaultPassword: "edutrack123",
+      createArms: true,
+    });
+    assert.equal(p.summary.ok, 2);
+
+    const ada = p.plans.find((r) => r.name === "Mrs. Ada Obi");
+    assert.deepEqual(ada.subjects, ["Mathematics", "Further Mathematics"]);
+    assert.deepEqual(ada.assignedClasses, ["SS1 Science", "SS2 Science", "SS3 Science"]);
+    assert.equal(ada.assignedClass, "SS2 Science", "singular column stays the display arm");
+
+    const yemi = p.plans.find((r) => r.name === "Mr. Yemi Lawal");
+    assert.deepEqual(yemi.assignedClasses, ["SS1 Arts", "SS2 Arts"], "pipe separator splits");
+    assert.equal(yemi.assignedClass, "SS1 Arts", "no display arm -> first assigned arm");
+    assert.deepEqual(yemi.subjects, ["English Language"]);
+  });
+
+  it("unknown arms in the multi-arm column get the same create/deny treatment", () => {
+    const { rows } = parseRows(
+      "TEACHER",
+      "name,subjects,assigned classes\nMrs. Ada Obi,Mathematics,SS1 Science; JSS1 Blue\n"
+    );
+    const on = planImport({
+      role: "TEACHER",
+      rows,
+      schoolName: school.name,
+      activeArms: school.activeArms,
+      existingUsers,
+      existingParents,
+      defaultPassword: "edutrack123",
+      createArms: true,
+    });
+    assert.deepEqual(on.newArms, ["JSS1 Blue"]);
+    assert.equal(on.plans[0].status, "ok");
+
+    const off = planImport({
+      role: "TEACHER",
+      rows,
+      schoolName: school.name,
+      activeArms: school.activeArms,
+      existingUsers,
+      existingParents,
+      defaultPassword: "edutrack123",
+      createArms: false,
+    });
+    assert.deepEqual(off.newArms, []);
+    assert.equal(off.plans[0].status, "error");
+    assert.ok(off.plans[0].error.includes("JSS1 Blue"));
+  });
+});
+
+describe("splitList", () => {
+  it("splits ; and | separators, trims and de-dupes", () => {
+    assert.deepEqual(splitList("Mathematics; Further Mathematics"), ["Mathematics", "Further Mathematics"]);
+    assert.deepEqual(splitList("SS1 Science|SS2 Science"), ["SS1 Science", "SS2 Science"]);
+    assert.deepEqual(splitList("A; A; B"), ["A", "B"]);
+    assert.deepEqual(splitList(""), []);
+    assert.deepEqual(splitList("   ; "), []);
+  });
 });
 
 describe("buildCredentials", () => {
@@ -399,5 +473,46 @@ describe("applyImport (demo store)", () => {
     assert.ok(ada);
     assert.equal(ada.payrollStatus, "PENDING");
     assert.ok(ada.email.endsWith(`@${DOMAIN}`));
+  });
+
+  it("imports a subject-specialist teacher with subjects × arms intact", async () => {
+    const { rows } = parseRows(
+      "TEACHER",
+      "name,email,assigned class,subjects,assigned classes\n" +
+        "Mrs. Ada Obi,,SS2 Science,Mathematics; Further Mathematics,SS1 Science; SS2 Science\n"
+    );
+    const p = planImport({
+      role: "TEACHER",
+      rows,
+      schoolName: school.name,
+      activeArms: school.activeArms,
+      existingUsers,
+      existingParents,
+      defaultPassword: "edutrack123",
+      createArms: true,
+    });
+    assert.equal(p.summary.ok, 1);
+
+    const applied = await applyImport({
+      store: demoStore,
+      schoolId: school.id,
+      role: "TEACHER",
+      plans: p.plans,
+      parentRefs: p.parentRefs,
+      newArms: p.newArms,
+    });
+    assert.equal(applied.created.teachers, 1);
+    assert.deepEqual(applied.failed, []);
+
+    const teachers = await demoStore.listUsers({ schoolId: school.id, role: "TEACHER" });
+    const ada = teachers.find((t) => t.name === "Mrs. Ada Obi");
+    assert.ok(ada);
+    assert.deepEqual(ada.subjects, ["Mathematics", "Further Mathematics"]);
+    assert.deepEqual(ada.assignedClasses, ["SS1 Science", "SS2 Science"]);
+    assert.equal(ada.assignedClass, "SS2 Science");
+    // The scope is immediately enforceable (subject-specialist model).
+    const snap = await demoStore.findAuthSnapshot(ada.id);
+    assert.deepEqual(snap.subjects, ["Mathematics", "Further Mathematics"]);
+    assert.deepEqual(snap.assignedClasses, ["SS1 Science", "SS2 Science"]);
   });
 });

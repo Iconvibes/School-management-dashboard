@@ -13,13 +13,15 @@
 import { toCSV } from "./csv.js";
 import { TEMPLATES } from "./importer.js";
 
+// The real Nigerian secondary structure — JSS1–JSS3 are PLAIN classes (no
+// Science / Arts / Commercial streams; streaming starts at SSS), and only
+// SS1–SS3 split into the three streams — 12 class arms, matching the demo
+// school's arms.
 export const DEFAULT_SAMPLE_ARMS = [
-  "SS1 Science",
-  "SS1 Arts",
-  "SS2 Science",
-  "SS2 Arts",
-  "SS3 Science",
-  "SS3 Arts",
+  "JSS1", "JSS2", "JSS3",
+  "SS1 Science", "SS1 Arts", "SS1 Commercial",
+  "SS2 Science", "SS2 Arts", "SS2 Commercial",
+  "SS3 Science", "SS3 Arts", "SS3 Commercial",
 ];
 
 const FIRST_NAMES = [
@@ -82,12 +84,48 @@ const pickParentName = (rand) =>
 /** Deterministic 11-digit Nigerian mobile number (0 + 10 digits), unique per index. */
 const phone = (base, index) => `0${String(base + index)}`;
 
+// JSS arms are plain classes; SS arms split into the three streams. Stream
+// groupings of the full arm list — the subject-specialist profiles below
+// assign teachers to every arm of their group (mirrors the seed).
+const JSS_ARMS = DEFAULT_SAMPLE_ARMS.filter((a) => !a.includes(" "));
+const SCIENCE_ARMS = DEFAULT_SAMPLE_ARMS.filter((a) => a.endsWith(" Science"));
+const ARTS_ARMS = DEFAULT_SAMPLE_ARMS.filter((a) => a.endsWith(" Arts"));
+const COMMERCIAL_ARMS = DEFAULT_SAMPLE_ARMS.filter((a) => a.endsWith(" Commercial"));
+
+// Subject-specialist teaching profiles (the Nigerian reality): a Mathematics
+// teacher covers ALL arms, a Physics teacher only the Science arms, a Basic
+// Science / Social Studies teacher the JSS classes (plus the related SSS
+// stream), and so on. The roster round-robins through these so the sample
+// demonstrates the subjects × arms scope the import now captures.
+const TEACHER_PROFILES = [
+  { subjects: ["Mathematics"], arms: DEFAULT_SAMPLE_ARMS },
+  { subjects: ["English Language"], arms: DEFAULT_SAMPLE_ARMS },
+  { subjects: ["Civic Education"], arms: DEFAULT_SAMPLE_ARMS },
+  { subjects: ["Physics"], arms: SCIENCE_ARMS },
+  { subjects: ["Chemistry"], arms: SCIENCE_ARMS },
+  { subjects: ["Biology"], arms: SCIENCE_ARMS },
+  { subjects: ["Literature in English"], arms: ARTS_ARMS },
+  { subjects: ["Government"], arms: ARTS_ARMS },
+  { subjects: ["French"], arms: ARTS_ARMS },
+  { subjects: ["Accounting"], arms: COMMERCIAL_ARMS },
+  { subjects: ["Commerce"], arms: COMMERCIAL_ARMS },
+  { subjects: ["Economics"], arms: [...ARTS_ARMS, ...COMMERCIAL_ARMS] },
+  // JSS junior curriculum — plain classes, taught by the JSS specialists
+  // (some of whom also take the related SSS subject, like the seed).
+  { subjects: ["Basic Science", "Biology"], arms: [...JSS_ARMS, ...SCIENCE_ARMS] },
+  { subjects: ["Social Studies", "Government"], arms: [...JSS_ARMS, ...ARTS_ARMS] },
+  { subjects: ["Business Studies"], arms: [...JSS_ARMS, ...COMMERCIAL_ARMS] },
+  { subjects: ["Agricultural Science"], arms: [...JSS_ARMS, ...SCIENCE_ARMS] },
+  { subjects: ["Basic Technology"], arms: JSS_ARMS },
+  { subjects: ["Computer Studies"], arms: JSS_ARMS },
+];
+
 /**
  * Build a sample roster CSV for the import wizard.
  * @param {Object} opts
  * @param {"STUDENT"|"TEACHER"} opts.role
  * @param {string[]} [opts.arms]     class arms to distribute students across
- * @param {number} [opts.studentsPerArm]   default 150 (6 arms -> 900 students)
+ * @param {number} [opts.studentsPerArm]   default 150 (12 arms -> 1800 students)
  * @param {number} [opts.teacherCount]      default 50
  * @param {number} [opts.seed]              default 2025 (reproducible)
  * @returns {string} CSV text with a template header row
@@ -104,10 +142,15 @@ export function generateRosterCsv({
   if (role === "TEACHER") {
     const rows = [TEMPLATES.TEACHER.headers];
     for (let i = 0; i < teacherCount; i++) {
+      // Round-robin the profiles (like the seed: one Math + one English
+      // teacher for every arm, stream specialists for their own streams).
+      const profile = TEACHER_PROFILES[i % TEACHER_PROFILES.length];
       rows.push([
         pickName(rand),
         "", // email -> auto-generated on import
-        arms[i % arms.length],
+        profile.arms[0], // display/default arm
+        profile.subjects.join("; "),
+        profile.arms.join("; "),
         phone(8200000000, i),
         "", // password -> default
       ]);

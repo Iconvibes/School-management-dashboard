@@ -1,6 +1,6 @@
 import { store } from "@/lib/store";
 import { buildDigestEmail } from "@/lib/digest";
-import { isDenied, requireAuth } from "@/lib/policy";
+import { isDenied, requirePermission } from "@/lib/policy";
 
 /**
  * POST /api/admin/digest/send
@@ -14,7 +14,7 @@ import { isDenied, requireAuth } from "@/lib/policy";
  * Returns the digest record so the UI can render the email immediately.
  */
 export async function POST(request) {
-  const session = await requireAuth(["SUPER_ADMIN"]);
+  const session = await requirePermission(["SUPER_ADMIN"], "digest.manage");
   if (isDenied(session)) return session;
 
   let body = {};

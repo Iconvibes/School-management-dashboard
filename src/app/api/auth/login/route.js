@@ -1,17 +1,11 @@
 import { NextResponse } from "next/server";
 import bcrypt from "bcryptjs";
 import { store } from "@/lib/store";
-import { setAuthCookie, jsonError } from "@/lib/auth";
+import { setAuthCookie, setMfaCookie, jsonError } from "@/lib/auth";
 import { checkRateLimit } from "@/lib/rate-limit";
-
-const ROLE_HOME = {
-  SUPER_ADMIN: "/admin/dashboard",
-  BURSAR: "/admin/dashboard",
-  REGISTRAR: "/admin/dashboard",
-  TEACHER: "/teacher/dashboard",
-  STUDENT: "/student/dashboard",
-  PARENT: "/parent/dashboard",
-};
+import { resolvePostLoginRedirect } from "@/lib/portal-guard";
+import { MFA_ROLES } from "@/lib/permissions";
+import { signMfaToken } from "@/lib/token";
 
 export async function POST(request) {
   // Brute-force guard: 10 login attempts per IP per 15 minutes.
@@ -30,7 +24,7 @@ export async function POST(request) {
     return jsonError("Invalid request body");
   }
 
-  const { email, password, role, schoolId } = body;
+  const { email, password, role, schoolId, next } = body;
   if (!schoolId) {
     return jsonError("Please select your school first");
   }
@@ -57,6 +51,38 @@ export async function POST(request) {
     return jsonError("Invalid credentials for this school", 401);
   }
 
+  // Staff must complete a second factor (or enroll) before ANY session is
+  // issued — the password alone never grants a staff session. The pending
+  // ticket is 10 minutes and proves only the first factor in this browser.
+  if (MFA_ROLES.includes(user.role)) {
+    const hasMfa = !!user.mfaSecret;
+    const res = NextResponse.json({
+      success: true,
+      mfaRequired: hasMfa,
+      mfaSetupRequired: !hasMfa,
+      // Echoed so the client can carry the deep link through the MFA step
+      // (the final verify/confirm re-validates it against the role).
+      next: resolvePostLoginRedirect(user.role, next),
+      user: {
+        id: user.id,
+        name: user.name,
+        email: user.email,
+        role: user.role,
+        schoolId: user.schoolId,
+      },
+    });
+    setMfaCookie(
+      res,
+      signMfaToken({
+        userId: user.id,
+        purpose: hasMfa ? "challenge" : "enroll",
+        attempts: 0,
+      })
+    );
+    return res;
+  }
+
+  // Students and parents stay password-only (self-service portals).
   const school = await store.getSchoolById(schoolId);
 
   const res = NextResponse.json({
@@ -75,7 +101,7 @@ export async function POST(request) {
       name: school?.name || "",
       brandColor: school?.brandColor || "#2563EB",
     },
-    redirect: ROLE_HOME[user.role] || "/",
+    redirect: resolvePostLoginRedirect(user.role, next),
   });
 
   setAuthCookie(res, {

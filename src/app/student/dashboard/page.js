@@ -13,12 +13,17 @@ import {
   Layers,
   Wallet,
   CalendarCheck,
+  CalendarDays,
   Trophy,
   BellRing,
+  Clock,
+  Printer,
 } from "lucide-react";
 import Sidebar from "@/components/Sidebar";
 import ReportCardModal from "@/components/ReportCardModal";
+import PrintableTimetable from "@/components/PrintableTimetable";
 import { gradeBadgeClasses, standingFromAverage, standingRemark, ordinal } from "@/lib/grading";
+import { DAYS, getDayTimeline, getPeriodTimes, MAX_PERIOD, PERIODS, schoolDayOf } from "@/lib/timetable";
 
 const naira = (n) =>
   new Intl.NumberFormat("en-NG", {
@@ -43,7 +48,14 @@ export default function StudentDashboard() {
   const [loading, setLoading] = useState(true);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [previewOpen, setPreviewOpen] = useState(false);
+  const [printTtOpen, setPrintTtOpen] = useState(false);
   const [reminders, setReminders] = useState([]);
+  // View state: "report" (default) | "timetable" — the sidebar links to
+  // /student/dashboard#timetable, so the hash drives the active view.
+  const [view, setView] = useState("report");
+  const [ttMode, setTtMode] = useState("week"); // "week" | "today"
+  const [ttEntries, setTtEntries] = useState([]);
+  const [ttLoaded, setTtLoaded] = useState(false);
 
   useEffect(() => {
     (async () => {
@@ -65,6 +77,38 @@ export default function StudentDashboard() {
     })();
   }, [router]);
 
+  // Sidebar hash links: /student/dashboard#timetable opens the class schedule.
+  // The tab buttons keep the hash in sync (clearing it when leaving), so the
+  // URL and the visible view can never disagree.
+  useEffect(() => {
+    const applyHash = () => {
+      const hash = window.location.hash.replace("#", "");
+      if (hash === "timetable") {
+        setView("timetable");
+        window.scrollTo({ top: 0 });
+      }
+    };
+    applyHash();
+    window.addEventListener("hashchange", applyHash);
+    return () => window.removeEventListener("hashchange", applyHash);
+  }, []);
+
+  // Load the class-arm timetable (the shared schedule for ALL of the student's
+  // arm — one timetable for every SS1 Science student) + the school's bell
+  // schedule when the Timetable view opens.
+  useEffect(() => {
+    if (view !== "timetable" || !session) return;
+    Promise.all([
+      fetch("/api/timetable").then((r) => r.json()),
+      fetch("/api/school").then((r) => r.json()),
+    ])
+      .then(([tt]) => {
+        setTtEntries(tt.entries || []);
+        setTtLoaded(true);
+      })
+      .catch(() => setTtLoaded(true));
+  }, [view, session]);
+
   const summary = useMemo(() => {
     if (!data)
       return { hasScores: false, subjects: 0, average: 0, standing: null, best: null, position: null, outOf: 0 };
@@ -85,6 +129,64 @@ export default function StudentDashboard() {
       best,
     };
   }, [data]);
+
+  // Timetable view — the arm-wide schedule keyed by day|period, with the
+  // teacher's name on every slot so students know who takes each subject.
+  const ttByDayPeriod = useMemo(() => {
+    const m = {};
+    ttEntries.forEach((e) => {
+      m[`${e.day}|${e.period}`] = e;
+    });
+    return m;
+  }, [ttEntries]);
+
+  // The realistic school day: periods 1-4, the mid-day break, then 5-8.
+  const dayTimeline = useMemo(() => getDayTimeline(session?.school), [session?.school]);
+  // Per-weekday timelines: each day column resolves its OWN bell schedule, so
+  // a short day (Friday ends at period 6) shows only its own periods.
+  const dayTimelines = useMemo(
+    () => Object.fromEntries(DAYS.map((d) => [d, getDayTimeline(session?.school, d)])),
+    [session?.school]
+  );
+  const dayPeriodSets = useMemo(
+    () =>
+      Object.fromEntries(
+        DAYS.map((d) => [
+          d,
+          new Set(
+            (dayTimelines[d] || [])
+              .filter((b) => b.type === "teaching")
+              .map((b) => Number(b.period))
+          ),
+        ])
+      ),
+    [dayTimelines]
+  );
+
+  const todayName = schoolDayOf(new Date());
+  const isToday = (day) => todayName === day;
+  // Today's bell — which periods actually run today (a short Friday has no
+  // period 7/8), with their real times.
+  const todayTimes = useMemo(
+    () => (todayName ? getPeriodTimes(session?.school, todayName) : []),
+    [session?.school, todayName]
+  );
+  const todayPeriods = useMemo(
+    () => new Set(todayTimes.map((p) => Number(p.period))),
+    [todayTimes]
+  );
+  const todaySlots = todayName
+    ? todayTimes
+        .map((p) => ({
+          period: p.period,
+          entry: ttByDayPeriod[`${todayName}|${p.period}`],
+        }))
+        .filter((s) => s.entry)
+    : [];
+  const timeFor = (period) => {
+    const pt = todayTimes.find((p) => Number(p.period) === Number(period));
+    return pt ? `${pt.start}–${pt.end}` : "";
+  };
 
   if (loading) {
     return (
@@ -110,7 +212,9 @@ export default function StudentDashboard() {
               <Menu className="h-5 w-5" />
             </button>
             <div>
-              <p className="text-sm font-bold text-navy-800">My Report Card</p>
+              <p className="text-sm font-bold text-navy-800">
+                {view === "timetable" ? "My Timetable" : "My Report Card"}
+              </p>
               <p className="text-xs text-navy-400">
                 {session.school?.currentSession} · {session.school?.currentTerm}
               </p>
@@ -130,6 +234,213 @@ export default function StudentDashboard() {
         </header>
 
         <div className="mx-auto max-w-7xl px-5 py-8">
+          {/* View tabs — My Report Card (default) / My Timetable (hash-linked) */}
+          <div className="mb-6 inline-flex rounded-xl bg-navy-100 p-1">
+            <button
+              onClick={() => {
+                setView("report");
+                if (location.hash) history.replaceState(null, "", location.pathname);
+                window.scrollTo({ top: 0 });
+              }}
+              className={`rounded-lg px-4 py-2 text-sm font-semibold transition ${
+                view === "report" ? "bg-white text-navy-800 shadow-sm" : "text-navy-500 hover:text-navy-700"
+              }`}
+            >
+              My Report Card
+            </button>
+            <button
+              onClick={() => {
+                setView("timetable");
+                if (!location.hash) history.replaceState(null, "", "#timetable");
+                window.scrollTo({ top: 0 });
+              }}
+              className={`flex items-center gap-1.5 rounded-lg px-4 py-2 text-sm font-semibold transition ${
+                view === "timetable" ? "bg-white text-navy-800 shadow-sm" : "text-navy-500 hover:text-navy-700"
+              }`}
+            >
+              <CalendarDays className="h-4 w-4" /> My Timetable
+            </button>
+          </div>
+
+          {view === "timetable" && (
+            <div className="animate-fade-up">
+              <div className="overflow-hidden rounded-2xl border border-navy-200/70 bg-white shadow-sm">
+                <div className="flex flex-wrap items-start justify-between gap-4 border-b border-navy-100 px-6 py-4">
+                  <div>
+                    <h2 className="text-lg font-bold text-navy-800">
+                      {session.user.assignedClass || "My class"} — weekly timetable
+                    </h2>
+                    <p className="text-sm text-navy-400">
+                      Set by your school. Every student in{" "}
+                      <strong className="font-semibold text-navy-600">{session.user.assignedClass || "your class"}</strong>{" "}
+                      follows this same schedule — one timetable per class arm.
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => setPrintTtOpen(true)}
+                      className="inline-flex items-center gap-1.5 rounded-xl border border-navy-200 bg-white px-3.5 py-2 text-xs font-semibold text-navy-600 shadow-sm transition hover:border-brand-300 hover:text-brand-700"
+                    >
+                      <Printer className="h-3.5 w-3.5" /> Print
+                    </button>
+                    <div className="inline-flex rounded-xl bg-navy-100 p-1">
+                    <button
+                      onClick={() => setTtMode("week")}
+                      className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition ${
+                        ttMode === "week" ? "bg-white text-navy-800 shadow-sm" : "text-navy-500 hover:text-navy-700"
+                      }`}
+                    >
+                      This week
+                    </button>
+                    <button
+                      onClick={() => setTtMode("today")}
+                      className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition ${
+                        ttMode === "today" ? "bg-white text-navy-800 shadow-sm" : "text-navy-500 hover:text-navy-700"
+                      }`}
+                    >
+                      Today
+                    </button>
+                    </div>
+                  </div>
+                </div>
+
+                {ttMode === "week" ? (
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left text-sm">
+                      <thead>
+                        <tr className="border-b border-navy-100 bg-navy-50/60 text-xs font-semibold uppercase tracking-wider text-navy-400">
+                          <th className="px-4 py-3">Period</th>
+                          {DAYS.map((d) => {
+                            const count = (dayTimelines[d] || []).filter((b) => b.type === "teaching").length;
+                            return (
+                              <th key={d} className={`px-4 py-3 text-center ${isToday(d) ? "text-brand-600" : ""}`}>
+                                {d}
+                                {count < MAX_PERIOD && (
+                                  <span className="ml-1 rounded-full bg-amber-100 px-1.5 py-0.5 text-[10px] font-bold text-amber-700">
+                                    {count} periods
+                                  </span>
+                                )}
+                                {isToday(d) && (
+                                  <span className="ml-1 rounded-full bg-brand-600 px-1.5 py-0.5 text-[10px] font-bold text-white">
+                                    Today
+                                  </span>
+                                )}
+                              </th>
+                            );
+                          })}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {dayTimeline.map((block) =>
+                          block.type === "break" ? (
+                            <tr key="break" className="border-b border-navy-50">
+                              <td className="bg-violet-50/60 px-4 py-3">
+                                <p className="text-xs font-bold text-violet-700">Break</p>
+                                <p className="text-[10px] font-medium text-violet-500">
+                                  {block.start}–{block.end}
+                                </p>
+                              </td>
+                              {DAYS.map((d) => {
+                                const br = (dayTimelines[d] || []).find((b) => b.type === "break");
+                                return (
+                                  <td key={d} className="bg-violet-50/40 px-2 py-2 text-center">
+                                    <span className="inline-flex items-center gap-1 rounded-full bg-violet-100 px-3 py-1 text-[10px] font-bold uppercase tracking-wider text-violet-500">
+                                      {br ? `${br.start}–${br.end}` : "No break"}
+                                    </span>
+                                  </td>
+                                );
+                              })}
+                            </tr>
+                          ) : (
+                            <tr key={block.period} className="border-b border-navy-50">
+                              <td className="px-4 py-3">
+                                <p className="text-xs font-bold text-navy-500">Period {block.period}</p>
+                                <p className="text-[10px] text-navy-400">{timeFor(block.period)}</p>
+                              </td>
+                              {DAYS.map((d) => {
+                                // A period that isn't on this day's bell (e.g.
+                                // Friday ends at period 6) never shows.
+                                if (!(dayPeriodSets[d] || new Set()).has(Number(block.period))) {
+                                  return (
+                                    <td key={d} className={`px-2 py-2 text-center ${isToday(d) ? "bg-brand-50/40" : ""}`}>
+                                      <span className="text-[10px] font-medium text-navy-300">not scheduled</span>
+                                    </td>
+                                  );
+                                }
+                                const slot = ttByDayPeriod[`${d}|${block.period}`];
+                                return (
+                                  <td key={d} className={`px-2 py-2 text-center ${isToday(d) ? "bg-brand-50/40" : ""}`}>
+                                    {slot ? (
+                                      <div className="inline-flex flex-col items-center gap-0.5 rounded-xl border border-brand-200 bg-brand-50 px-2.5 py-1.5 shadow-sm">
+                                        <span className="text-xs font-bold text-brand-800">{slot.subject}</span>
+                                        <span className="text-[10px] font-medium text-brand-600">
+                                          {slot.teacherName || "Staff"}
+                                        </span>
+                                      </div>
+                                    ) : (
+                                      <span className="text-navy-200">—</span>
+                                    )}
+                                  </td>
+                                );
+                              })}
+                            </tr>
+                          )
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                ) : (
+                  <div className="divide-y divide-navy-50">
+                    {todayName ? (
+                      todaySlots.length ? (
+                        todaySlots.map(({ period, entry }) => (
+                          <div
+                            key={period}
+                            className="flex flex-wrap items-center gap-4 px-6 py-4"
+                          >
+                            <div className="w-20 shrink-0">
+                              <p className="text-sm font-bold text-navy-700">Period {period}</p>
+                              <p className="flex items-center gap-1 text-[11px] text-navy-400">
+                                <Clock className="h-3 w-3" /> {timeFor(period)}
+                              </p>
+                            </div>
+                            <div className="rounded-xl border border-brand-200 bg-brand-50 px-3.5 py-2 shadow-sm">
+                              <p className="text-sm font-bold text-brand-800">{entry.subject}</p>
+                              <p className="text-xs font-medium text-brand-600">
+                                {entry.teacherName || "Staff"}
+                              </p>
+                            </div>
+                          </div>
+                        ))
+                      ) : (
+                        <p className="px-6 py-10 text-center text-sm text-navy-400">
+                          No classes scheduled for {todayName}. Enjoy the break!
+                        </p>
+                      )
+                    ) : (
+                      <p className="px-6 py-10 text-center text-sm text-navy-400">
+                        School is closed on weekends — see you Monday.
+                      </p>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              <div className="mt-4 flex flex-wrap items-center gap-4 text-xs text-navy-500">
+                <span className="flex items-center gap-1.5">
+                  <span className="h-2.5 w-2.5 rounded-full bg-brand-500" /> Your class schedule
+                </span>
+                <span className="text-navy-400">
+                  {ttLoaded
+                    ? `${Object.keys(ttByDayPeriod).length} slots this week · shared by everyone in ${session.user.assignedClass || "your class"}`
+                    : "Loading your schedule…"}
+                </span>
+              </div>
+            </div>
+          )}
+
+          {view === "report" && (
+            <>
           {/* Fee reminders — shown when the school reminded the student directly
               (no linked parent on file, so the parent portal couldn't carry it). */}
           {reminders.length > 0 && (
@@ -340,8 +651,21 @@ export default function StudentDashboard() {
               </div>
             )}
           </div>
+            </>
+          )}
         </div>
       </div>
+
+      {/* Print-friendly weekly timetable modal */}
+      <PrintableTimetable
+        open={printTtOpen}
+        onClose={() => setPrintTtOpen(false)}
+        school={session.school}
+        mode="student"
+        personName={session.user.name}
+        personLabel={session.user.assignedClass}
+        entries={ttEntries}
+      />
 
       {/* Report card preview + PDF export modal */}
       <ReportCardModal

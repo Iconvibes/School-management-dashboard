@@ -25,6 +25,7 @@ import Logo from "@/components/Logo";
 import { TEMPLATES } from "@/lib/importer";
 import { toCSV, withBOM } from "@/lib/csv";
 import { generateRosterCsv, DEFAULT_SAMPLE_ARMS } from "@/lib/sample-roster";
+import { can } from "@/lib/permissions";
 
 const inputCls =
   "w-full rounded-xl border border-navy-200 bg-white px-4 py-2.5 text-sm text-navy-800 outline-none transition focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20";
@@ -100,12 +101,13 @@ export default function ImportPage() {
   const [schoolArms, setSchoolArms] = useState([]);
   const fileInputRef = useRef(null);
 
-  // Safety net: leave if not a super admin (the API enforces this too).
+  // Safety net: leave if this role can't run roster tools (the API enforces
+  // this too).
   useEffect(() => {
     fetch("/api/auth/me")
       .then((r) => r.json())
       .then((d) => {
-        if (!d.user || !["SUPER_ADMIN", "REGISTRAR"].includes(d.user.role)) {
+        if (!d.user || !can(d.user.role, "students.manage")) {
           router.replace("/login");
           return;
         }
@@ -145,7 +147,7 @@ export default function ImportPage() {
   }
 
   // Demo mode only: pre-fill the wizard with a realistic roster at real-school
-  // scale (e.g. 900 students across the school's arms) and jump to Review.
+  // scale (e.g. 1,800 students across the school's arms) and jump to Review.
   function loadSample(sampleRole) {
     const csv = generateRosterCsv({
       role: sampleRole,
@@ -402,7 +404,7 @@ export default function ImportPage() {
                   placeholder={
                     role === "STUDENT"
                       ? "name,email,class,phone,password,parent name,parent phone\nKunle Adebayo,kunle@gmail.com,SS1 Science,08031234567,,Mrs. Folake Adebayo,08031234567\nChidinma Obi,,SS1 Science,08079876543,,,"
-                      : "name,email,assigned class,phone,password\nMrs. Adaeze Okafor,a.okafor@school.edu.ng,SS1 Science,08051112222,"
+                      : "name,email,assigned class,subjects,assigned classes,phone,password\nMrs. Adaeze Okafor,a.okafor@school.edu.ng,SS1 Science,Mathematics,SS1 Science; SS2 Science; SS3 Science,08051112222,\nMr. Tunde Bakare,,JSS1,English Language,JSS1; JSS2; JSS3,08053334444,"
                   }
                   rows={8}
                   className={`${inputCls} font-mono text-xs leading-relaxed`}
@@ -553,8 +555,8 @@ export default function ImportPage() {
                 <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
                 <span>
                   Ignored columns: <strong>{preview.unknownColumns.join(", ")}</strong>. They
-                  aren&apos;t needed — only name, email, class, phone, password and parent
-                  fields are used.
+                  aren&apos;t needed — only name, email, class, phone, password, parent
+                  fields{role === "TEACHER" ? ", subjects and assigned classes" : ""} are used.
                 </span>
               </div>
             )}
@@ -609,7 +611,11 @@ export default function ImportPage() {
                       <th className="px-4 py-3">Name</th>
                       <th className="px-4 py-3">Email</th>
                       <th className="px-4 py-3">Class</th>
-                      <th className="hidden px-4 py-3 md:table-cell">Parent</th>
+                      {role === "TEACHER" ? (
+                        <th className="hidden px-4 py-3 md:table-cell">Teaches</th>
+                      ) : (
+                        <th className="hidden px-4 py-3 md:table-cell">Parent</th>
+                      )}
                       <th className="px-4 py-3">Status</th>
                     </tr>
                   </thead>
@@ -635,9 +641,30 @@ export default function ImportPage() {
                             {r.assignedClass || "Unassigned"}
                           </span>
                         </td>
-                        <td className="hidden max-w-[12rem] truncate px-4 py-2.5 text-navy-500 md:table-cell">
-                          {r.parentName || <span className="text-navy-300">—</span>}
-                        </td>
+                        {role === "TEACHER" ? (
+                          <td className="hidden px-4 py-2.5 md:table-cell">
+                            <div className="flex flex-wrap items-center gap-1">
+                              {(r.subjects || []).map((s) => (
+                                <span
+                                  key={s}
+                                  className="rounded-md bg-brand-50 px-2 py-0.5 text-[11px] font-bold text-brand-700 ring-1 ring-brand-600/20"
+                                >
+                                  {s}
+                                </span>
+                              ))}
+                              {(r.assignedClasses || []).length > 0 && (
+                                <span className="text-[11px] font-medium text-navy-400">
+                                  {r.assignedClasses.length} arm{r.assignedClasses.length === 1 ? "" : "s"}
+                                  <span className="hidden lg:inline">: {r.assignedClasses.join(", ")}</span>
+                                </span>
+                              )}
+                            </div>
+                          </td>
+                        ) : (
+                          <td className="hidden max-w-[12rem] truncate px-4 py-2.5 text-navy-500 md:table-cell">
+                            {r.parentName || <span className="text-navy-300">—</span>}
+                          </td>
+                        )}
                         <td className="px-4 py-2.5">
                           <div className="flex flex-col items-start gap-0.5">
                             <StatusBadge status={r.status} />

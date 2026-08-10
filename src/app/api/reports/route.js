@@ -1,6 +1,6 @@
 import { store } from "@/lib/store";
 import { rankStudents } from "@/lib/ranking";
-import { isDenied, requireAuth, requireClassScope } from "@/lib/policy";
+import { isDenied, requirePermission, requireClassScope } from "@/lib/policy";
 
 /**
  * GET /api/reports
@@ -10,7 +10,7 @@ import { isDenied, requireAuth, requireClassScope } from "@/lib/policy";
  * Query: ?search=name&classArm=SS1 Science&limit=50
  */
 export async function GET(request) {
-  const session = await requireAuth(["SUPER_ADMIN", "REGISTRAR", "TEACHER"]);
+  const session = await requirePermission(["SUPER_ADMIN", "REGISTRAR", "TEACHER"], "reports.view");
   if (isDenied(session)) return session;
 
   const { searchParams } = new URL(request.url);
@@ -24,9 +24,14 @@ export async function GET(request) {
   if (isDenied(scope)) return scope;
   classArm = scope.classArm;
 
+  // When scoped to one arm, load only that arm's scores — not the whole
+  // school's score table (10k students × ~5 subjects ≈ 50k docs otherwise).
+  // The all-school view (no classArm) is inherently whole-school.
   const [students, allScores] = await Promise.all([
     store.listUsers({ schoolId: session.schoolId, role: "STUDENT", classArm }),
-    store.getScoresBySchool(session.schoolId),
+    classArm
+      ? store.getScoresByClassArm(session.schoolId, classArm)
+      : store.getScoresBySchool(session.schoolId),
   ]);
 
   const scoreMap = {};

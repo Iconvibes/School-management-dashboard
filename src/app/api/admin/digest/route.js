@@ -1,14 +1,15 @@
 import { jsonError } from "@/lib/auth";
 import { store } from "@/lib/store";
-import { isDenied, requireAuth } from "@/lib/policy";
+import { isDenied, requirePermission } from "@/lib/policy";
 
 /**
  * GET /api/admin/digest
  * The calling admin's digest schedule + their digest history (newest first).
- * Read state is per admin, so prefs and history are scoped to the caller.
+ * digest.manage (SUPER_ADMIN). Read state is per admin, so prefs and history
+ * are scoped to the caller.
  */
 export async function GET() {
-  const session = await requireAuth(["SUPER_ADMIN"]);
+  const session = await requirePermission(["SUPER_ADMIN"], "digest.manage");
   if (isDenied(session)) return session;
 
   const [pref, digests] = await Promise.all([
@@ -25,7 +26,7 @@ export async function GET() {
  * digest schedule. Never affects other admins.
  */
 export async function PUT(request) {
-  const session = await requireAuth(["SUPER_ADMIN"]);
+  const session = await requirePermission(["SUPER_ADMIN"], "digest.manage");
   if (isDenied(session)) return session;
 
   let body;

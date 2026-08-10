@@ -1,5 +1,17 @@
 import mongoose from "mongoose";
 
+// One row of the school day — when period N actually starts and ends. The
+// class-alert scheduler (and the admin period-times editor) read these; a
+// school without one falls back to DEFAULT_PERIOD_TIMES.
+const periodTimeSchema = new mongoose.Schema(
+  {
+    period: { type: Number, required: true, min: 1, max: 8 },
+    start: { type: String, required: true }, // "HH:MM"
+    end: { type: String, required: true }, // "HH:MM"
+  },
+  { _id: false }
+);
+
 const schoolSchema = new mongoose.Schema(
   {
     name: { type: String, required: true, trim: true },
@@ -8,6 +20,22 @@ const schoolSchema = new mongoose.Schema(
     activeArms: { type: [String], default: [] },
     currentSession: { type: String, default: "2025/2026" },
     currentTerm: { type: String, default: "First Term" },
+    // Optional override of the default school day (see getPeriodTimes).
+    periodTimes: { type: [periodTimeSchema], default: undefined },
+    // The school-wide mid-day break between period 4 and 5 ({ start, end }
+    // "HH:MM", default 10:40-11:00 — see getBreakTime / getDayTimeline).
+    // It is a display/alert concept, not a timetable entry.
+    breakTimes: { type: { start: String, end: String }, default: undefined },
+    // Per-weekday bell-schedule overrides: { [day]: { periodTimes?: […],
+    // breakTimes?: {start,end} } }. A day with an override runs its OWN
+    // schedule (e.g. Friday ends at period 6); days without one fall back to
+    // the school-wide periodTimes/breakTimes. See getPeriodTimes(school, day)
+    // and getDayTimeline(school, day).
+    dailySchedules: { type: mongoose.Schema.Types.Mixed, default: undefined },
+    // First-run wizard state: false until the founding SUPER_ADMIN saves the
+    // onboarding steps (classes, session/term, branding). Once true, visiting
+    // /onboarding sends them straight to the admin dashboard instead.
+    onboardingComplete: { type: Boolean, default: false },
   },
   {
     timestamps: true,

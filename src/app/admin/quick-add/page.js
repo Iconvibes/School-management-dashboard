@@ -19,6 +19,7 @@ import {
 import Logo from "@/components/Logo";
 import { parseNames } from "@/lib/quick-add";
 import { toCSV, withBOM } from "@/lib/csv";
+import { can } from "@/lib/permissions";
 
 const inputCls =
   "w-full rounded-xl border border-navy-200 bg-white px-4 py-2.5 text-sm text-navy-800 outline-none transition focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20";
@@ -66,7 +67,7 @@ export default function QuickAddPage() {
     fetch("/api/auth/me")
       .then((r) => r.json())
       .then((d) => {
-        if (!d.user || !["SUPER_ADMIN", "REGISTRAR"].includes(d.user.role)) {
+        if (!d.user || !can(d.user.role, "students.manage")) {
           router.replace("/login");
           return;
         }

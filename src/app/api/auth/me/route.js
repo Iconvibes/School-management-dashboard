@@ -21,8 +21,15 @@ export async function GET() {
       role: user.role,
       schoolId: user.schoolId,
       assignedClass: user.assignedClass || "",
+      // Subject-specialist teaching scope — the teacher dashboard renders its
+      // arm/subject selectors from these (only what this teacher teaches).
+      subjects: Array.isArray(user.subjects) ? user.subjects : [],
+      assignedClasses: Array.isArray(user.assignedClasses) ? user.assignedClasses : [],
       payrollStatus: user.payrollStatus,
       feePaid: user.feePaid,
+      // Never the secret itself — the store strips it; this is the boolean
+      // the UI uses to show MFA status.
+      mfaEnabled: !!user.mfaEnabled,
     },
     school: {
       id: school?.id || session.schoolId,
@@ -32,6 +39,15 @@ export async function GET() {
       activeArms: school?.activeArms || [],
       currentSession: school?.currentSession || "",
       currentTerm: school?.currentTerm || "",
+      // Drives the /onboarding skip-if-complete redirect (page-level check).
+      onboardingComplete: school?.onboardingComplete || false,
+      // The bell schedule — periodTimes (teaching bells), breakTimes (the
+      // mid-day break) and per-weekday overrides (dailySchedules, e.g. a
+      // Friday that ends at period 6) so the dashboards' day timelines
+      // render the real school day straight from the session.
+      periodTimes: school?.periodTimes || [],
+      breakTimes: school?.breakTimes || undefined,
+      dailySchedules: school?.dailySchedules || undefined,
     },
     isDemo: isDemoMode(),
   });

@@ -57,7 +57,16 @@ export default function LoginPage() {
   const [form, setForm] = useState({ email: "", password: "" });
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  // Staff second-factor step: the code being entered, the deep link carried
+  // through (from the login response's echoed `next`), and the account name
+  // for display.
+  const [mfaCode, setMfaCode] = useState("");
+  const [mfaNext, setMfaNext] = useState("");
+  const [mfaUser, setMfaUser] = useState(null);
   const searchDebounce = useRef(null);
+  // Whether the seeded demo school exists & may be signed into. Defaults to
+  // false so a clean slate (SEED_DEMO_SCHOOL unset) never flashes demo UI.
+  const [demoAvailable, setDemoAvailable] = useState(false);
 
   // Restore last-used school AFTER hydration — the /login page is statically
   // prerendered, so reading localStorage during the initial render would cause
@@ -82,6 +91,16 @@ export default function LoginPage() {
     fetch("/api/schools?limit=8")
       .then((r) => r.json())
       .then((data) => setResults(data.schools || []))
+      .catch(() => {});
+  }, []);
+
+  // Only show the demo school / demo account boxes when the seeded demo
+  // school actually exists (SEED_DEMO_SCHOOL=1 in demo mode). Swallowing the
+  // error keeps a clean-slate deployment looking clean.
+  useEffect(() => {
+    fetch("/api/auth/demo-status")
+      .then((r) => r.json())
+      .then((d) => setDemoAvailable(!!d.enabled))
       .catch(() => {});
   }, []);
 
@@ -126,13 +145,54 @@ export default function LoginPage() {
     setError("");
     setLoading(true);
     try {
+      // Preserve a ?next= deep link (the proxy sets it when bouncing an
+      // unauthenticated visitor off a portal). Read from the URL at submit
+      // time — this page is statically prerendered, so touching
+      // window.location during render would cause a hydration mismatch.
+      const next = new URLSearchParams(window.location.search).get("next") || "";
       const res = await fetch("/api/auth/login", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ...form, role, schoolId: school.id }),
+        body: JSON.stringify({ ...form, role, schoolId: school.id, next }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Login failed");
+      if (data.mfaSetupRequired) {
+        // Staff without MFA enrolled — forced self-enrollment. The pending
+        // ticket was set by this request; the setup page finishes the job.
+        const q = data.next ? "?next=" + encodeURIComponent(data.next) : "";
+        router.push(`/mfa/setup${q}`);
+        return;
+      }
+      if (data.mfaRequired) {
+        // Staff with MFA — second step, right here. The deep link survives in
+        // mfaNext and is re-sent to the verify route, which re-validates it
+        // against the role.
+        setMfaNext(data.next || "");
+        setMfaUser(data.user || null);
+        setStep("mfa");
+        setLoading(false);
+        return;
+      }
+      router.push(data.redirect || "/");
+    } catch (err) {
+      setError(err.message);
+      setLoading(false);
+    }
+  }
+
+  async function submitMfa(e) {
+    e.preventDefault();
+    setError("");
+    setLoading(true);
+    try {
+      const res = await fetch("/api/auth/mfa/verify", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ code: mfaCode, next: mfaNext }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Verification failed");
       router.push(data.redirect || "/");
     } catch (err) {
       setError(err.message);
@@ -241,18 +301,22 @@ export default function LoginPage() {
                   )}
                 </div>
 
-                <div className="mt-5 rounded-xl border border-brand-200 bg-brand-50 p-4">
-                  <p className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wider text-brand-700">
-                    <Info className="h-3.5 w-3.5" /> Demo school
-                  </p>
-                  <button
-                    onClick={() => selectSchool(DEMO_SCHOOL)}
-                    className="mt-2.5 flex w-full items-center justify-between rounded-lg bg-white px-3 py-2 text-left text-xs shadow-sm ring-1 ring-navy-100 transition hover:ring-brand-300"
-                  >
-                    <span className="font-semibold text-navy-700">{DEMO_SCHOOL.name}</span>
-                    <span className="text-navy-400">Tap to continue →</span>
-                  </button>
-                </div>
+                {/* Demo school quick-entry — only when the demo school has
+                    been seeded (SEED_DEMO_SCHOOL=1 in demo mode). */}
+                {demoAvailable && (
+                  <div className="mt-5 rounded-xl border border-brand-200 bg-brand-50 p-4">
+                    <p className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wider text-brand-700">
+                      <Info className="h-3.5 w-3.5" /> Demo school
+                    </p>
+                    <button
+                      onClick={() => selectSchool(DEMO_SCHOOL)}
+                      className="mt-2.5 flex w-full items-center justify-between rounded-lg bg-white px-3 py-2 text-left text-xs shadow-sm ring-1 ring-navy-100 transition hover:ring-brand-300"
+                    >
+                      <span className="font-semibold text-navy-700">{DEMO_SCHOOL.name}</span>
+                      <span className="text-navy-400">Tap to continue →</span>
+                    </button>
+                  </div>
+                )}
 
                 <p className="mt-6 text-center text-sm text-navy-500">
                   New school?{" "}
@@ -308,12 +372,6 @@ export default function LoginPage() {
                   ))}
                 </div>
 
-                {error && (
-                  <div className="mt-4 rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-medium text-rose-700">
-                    {error}
-                  </div>
-                )}
-
                 <form onSubmit={handleSubmit} className="mt-5 space-y-4">
                   <label className="block">
                     <span className="mb-1.5 block text-sm font-medium text-navy-700">Email</span>
@@ -359,29 +417,97 @@ export default function LoginPage() {
                   </button>
                 </form>
 
-                {/* Demo hint */}
-                <div className="mt-5 rounded-xl border border-brand-200 bg-brand-50 p-4">
-                  <p className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wider text-brand-700">
-                    <Info className="h-3.5 w-3.5" /> Demo accounts
-                  </p>
-                  <div className="mt-3 space-y-2">
-                    {DEMO_CREDENTIALS.map((d) => (
-                      <button
-                        key={d.role}
-                        onClick={() => fillDemo(d)}
-                        className="flex w-full items-center justify-between rounded-lg bg-white px-3 py-2 text-left text-xs shadow-sm ring-1 ring-navy-100 transition hover:ring-brand-300"
-                      >
-                        <span className="font-semibold text-navy-700">
-                          {ROLES.find((r) => r.key === d.role)?.label}
-                        </span>
-                        <span className="flex items-center gap-2 text-navy-400">
-                          <span>{d.email}</span>
-                          <Check className="h-3 w-3 text-emerald-500" />
-                        </span>
-                      </button>
-                    ))}
+                {/* Demo accounts — only when the demo school has been seeded
+                    (SEED_DEMO_SCHOOL=1 in demo mode). */}
+                {demoAvailable && (
+                  <div className="mt-5 rounded-xl border border-brand-200 bg-brand-50 p-4">
+                    <p className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wider text-brand-700">
+                      <Info className="h-3.5 w-3.5" /> Demo accounts
+                    </p>
+                    <div className="mt-3 space-y-2">
+                      {DEMO_CREDENTIALS.map((d) => (
+                        <button
+                          key={d.role}
+                          onClick={() => fillDemo(d)}
+                          className="flex w-full items-center justify-between rounded-lg bg-white px-3 py-2 text-left text-xs shadow-sm ring-1 ring-navy-100 transition hover:ring-brand-300"
+                        >
+                          <span className="font-semibold text-navy-700">
+                            {ROLES.find((r) => r.key === d.role)?.label}
+                          </span>
+                          <span className="flex items-center gap-2 text-navy-400">
+                            <span>{d.email}</span>
+                            <Check className="h-3 w-3 text-emerald-500" />
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Shared error (credentials + MFA steps) */}
+            {error && (
+              <div className="mt-4 rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-medium text-rose-700">
+                {error}
+              </div>
+            )}
+
+            {/* STEP 3 — MFA challenge (staff only) */}
+            {step === "mfa" && school && (
+              <div className="animate-fade-up">
+                <button
+                  onClick={() => setStep("credentials")}
+                  className="mb-4 inline-flex items-center gap-1.5 text-xs font-semibold text-navy-400 transition hover:text-navy-700"
+                >
+                  <ArrowLeft className="h-3.5 w-3.5" /> Back to sign in
+                </button>
+
+                <div className="flex items-center gap-3 rounded-xl border border-navy-100 bg-navy-50/60 px-4 py-3">
+                  <span
+                    className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-xs font-bold text-white"
+                    style={{ backgroundColor: "#2563EB" }}
+                  >
+                    <ShieldCheck className="h-4 w-4" />
+                  </span>
+                  <div className="min-w-0">
+                    <p className="truncate text-sm font-bold text-navy-800">{school.name}</p>
+                    <p className="text-xs text-navy-400">{mfaUser?.email || "Two-factor authentication"}</p>
                   </div>
                 </div>
+
+                <h1 className="mt-5 text-2xl font-extrabold tracking-tight text-navy-800">Enter your code</h1>
+                <p className="mt-1.5 text-sm text-navy-500">
+                  Open your authenticator app and enter the 6-digit code to finish signing in.
+                </p>
+
+                <form onSubmit={submitMfa} className="mt-5 space-y-4">
+                  <label className="block">
+                    <span className="mb-1.5 block text-sm font-medium text-navy-700">6-digit code</span>
+                    <input
+                      value={mfaCode}
+                      onChange={(e) => setMfaCode(e.target.value.replace(/\D/g, "").slice(0, 6))}
+                      inputMode="numeric"
+                      autoComplete="one-time-code"
+                      placeholder="000000"
+                      autoFocus
+                      className="w-full rounded-xl border border-navy-200 bg-white py-3 pl-4 pr-4 text-center text-2xl font-bold tracking-[0.5em] text-navy-800 outline-none transition placeholder:text-navy-200 focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20"
+                    />
+                  </label>
+                  <button
+                    type="submit"
+                    disabled={loading || mfaCode.length !== 6}
+                    className="mt-2 inline-flex w-full items-center justify-center gap-2 rounded-xl bg-brand-600 py-3.5 font-semibold text-white shadow-lg shadow-brand-600/30 transition hover:bg-brand-500 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {loading ? (
+                      <Loader2 className="h-5 w-5 animate-spin" />
+                    ) : (
+                      <>
+                        <ShieldCheck className="h-5 w-5" /> Verify & continue
+                      </>
+                    )}
+                  </button>
+                </form>
               </div>
             )}
           </div>

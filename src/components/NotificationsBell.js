@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
+  AlertTriangle,
   Bell,
   BellRing,
   CheckCheck,
@@ -17,6 +18,7 @@ import Modal from "@/components/Modal";
 const KIND_ICON = {
   fee_payment: Wallet,
   fee_reminder: BellRing,
+  timetable_conflict: AlertTriangle,
 };
 
 function timeAgo(iso) {
@@ -292,7 +294,9 @@ export default function NotificationsBell() {
                           <span className="shrink-0 text-[11px] text-navy-400">{timeAgo(n.createdAt)}</span>
                         </div>
                         <p className="mt-0.5 truncate text-xs text-navy-500">{n.preview}</p>
-                        <p className="mt-1 text-[11px] text-navy-400">
+                        {/* break-words: long unbroken email addresses must wrap
+                            instead of overflowing the card on narrow screens. */}
+                        <p className="mt-1 break-words text-[11px] text-navy-400">
                           To: {(n.to || []).join(", ") || "school admins"}
                         </p>
                         <pre className="mt-3 whitespace-pre-wrap rounded-lg bg-white p-3 text-xs leading-relaxed text-navy-600 ring-1 ring-navy-100">

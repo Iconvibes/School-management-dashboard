@@ -1,6 +1,7 @@
-import { getSession, jsonError } from "@/lib/auth";
+import { jsonError } from "@/lib/auth";
 import { store } from "@/lib/store";
 import { checkRateLimit } from "@/lib/rate-limit";
+import { isDenied, requirePermission, ROLES } from "@/lib/policy";
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -97,9 +98,11 @@ export async function GET(request) {
       return jsonError("Forbidden", 403);
     }
   } else {
-    const session = await getSession();
-    if (!session) return jsonError("Not authenticated", 401);
-    if (session.role !== "SUPER_ADMIN") return jsonError("Forbidden", 403);
+    // Demo fallback: only a (still-)Super Admin may read leads. requireAuth
+    // re-validates against the store, so a demoted admin's old token stops
+    // working the moment the role changes — not at the 7-day token expiry.
+    const session = await requirePermission([ROLES.SUPER_ADMIN], "leads.view");
+    if (isDenied(session)) return session;
   }
 
   const { searchParams } = new URL(request.url);

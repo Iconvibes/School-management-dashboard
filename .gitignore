@@ -32,6 +32,9 @@ png export.zip
 # demo-mode persisted state (see src/lib/demo-store.js)
 .demo-data/
 
+# backup artifacts (see docs/disaster-recovery.md) — never commit real backups
+/backups/
+
 # generated / export artifacts
 .deck-shots/
 *.pdf

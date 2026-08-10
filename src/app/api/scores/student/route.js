@@ -1,10 +1,13 @@
 import { store } from "@/lib/store";
 import { subjectRemark } from "@/lib/grading";
 import { rankClassPosition } from "@/lib/ranking";
-import { isDenied, requireAuth } from "@/lib/policy";
+import { isDenied, requirePermission } from "@/lib/policy";
 
 export async function GET() {
-  const session = await requireAuth(["STUDENT", "SUPER_ADMIN"]);
+  // scores.own.view — a STUDENT's own report-card data (keyed off
+  // session.userId, so it can never address another record); SUPER_ADMIN
+  // passes the same gate.
+  const session = await requirePermission(["STUDENT", "SUPER_ADMIN"], "scores.own.view");
   if (isDenied(session)) return session;
 
   const [scores, school, user, attendance, feeLedger] = await Promise.all([
@@ -33,7 +36,9 @@ export async function GET() {
       role: "STUDENT",
       classArm: user.assignedClass,
     });
-    const classScores = await store.getScoresBySchool(session.schoolId);
+    // Only this student's arm is needed for the class position — loading the
+    // whole school's scores per student-dashboard view is the 10k-user killer.
+    const classScores = await store.getScoresByClassArm(session.schoolId, user.assignedClass);
     const classMap = {};
     classScores.forEach((s) => {
       if (!classMap[s.studentId]) classMap[s.studentId] = [];

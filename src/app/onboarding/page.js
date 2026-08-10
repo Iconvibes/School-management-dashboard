@@ -15,7 +15,10 @@ import {
   School,
 } from "lucide-react";
 import Logo from "@/components/Logo";
+import ArmStreamSplitter from "@/components/ArmStreamSplitter";
+import { armAlreadyExists } from "@/lib/arms";
 import { TERMS } from "@/lib/grading";
+import { ROLE_HOME } from "@/lib/portal-guard";
 
 const SESSIONS = ["2024/2025", "2025/2026", "2026/2027", "2027/2028"];
 const BRAND_COLORS = ["#2563EB", "#0EA5E9", "#8B5CF6", "#10B981", "#F59E0B", "#EF4444", "#EC4899", "#1E293B"];
@@ -47,12 +50,25 @@ export default function OnboardingPage() {
   });
   const [newArm, setNewArm] = useState("");
 
+  // Layer-3 me-gate: onboarding is the founding SUPER_ADMIN's setup screen.
+  // The proxy already blocks other roles at the routing layer (JWT only);
+  // here we re-check the DB-backed truth — role from the store, and whether
+  // the first-run wizard was already completed — so a finished school never
+  // sees it again.
   useEffect(() => {
     fetch("/api/auth/me")
       .then((r) => r.json())
       .then((data) => {
         if (!data.user) {
           router.replace("/login");
+          return;
+        }
+        if (data.user.role !== "SUPER_ADMIN") {
+          router.replace(ROLE_HOME[data.user.role] || "/admin/dashboard");
+          return;
+        }
+        if (data.school?.onboardingComplete) {
+          router.replace("/admin/dashboard");
           return;
         }
         setSchool((s) => ({
@@ -81,10 +97,22 @@ export default function OnboardingPage() {
   function addCustomArm() {
     const arm = newArm.trim();
     if (!arm) return;
-    if (!school.activeArms.includes(arm)) {
+    if (!armAlreadyExists(school.activeArms, arm)) {
       setSchool((s) => ({ ...s, activeArms: [...s.activeArms, arm] }));
     }
     setNewArm("");
+  }
+
+  // Merge streamed variants (from ArmStreamSplitter) into the arm list,
+  // skipping any that already exist (case-insensitively).
+  function addStreamedArms(names) {
+    setSchool((s) => ({
+      ...s,
+      activeArms: [
+        ...s.activeArms,
+        ...names.filter((n) => !armAlreadyExists(s.activeArms, n)),
+      ],
+    }));
   }
 
   async function saveAll() {
@@ -100,6 +128,9 @@ export default function OnboardingPage() {
           currentTerm: school.currentTerm,
           brandColor: school.brandColor,
           logoUrl: school.logoUrl,
+          // The wizard is done — a future /onboarding visit redirects to the
+          // dashboard instead of showing these steps again.
+          onboardingComplete: true,
         }),
       });
       const data = await res.json();
@@ -213,6 +244,13 @@ export default function OnboardingPage() {
                 >
                   <Plus className="h-4 w-4" /> Add
                 </button>
+              </div>
+
+              <div className="mt-4">
+                <ArmStreamSplitter
+                  onAdd={addStreamedArms}
+                  compact
+                />
               </div>
 
               {school.activeArms.length > 0 && (

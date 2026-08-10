@@ -2,6 +2,14 @@ import bcrypt from "bcryptjs";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import {
+  blindEmailIndex,
+  blindPhoneIndex,
+  decryptField,
+  encryptField,
+} from "@/lib/field-crypto";
+import { DAYS, DEFAULT_PERIOD_TIMES } from "@/lib/timetable";
+import { armAlreadyExists } from "@/lib/arms";
 
 /**
  * In-memory store used when MONGODB_URI is not set (demo mode).
@@ -20,8 +28,16 @@ const attendance = [];
 const leads = [];
 const notifications = [];
 const feeAudit = [];
+const roleAudit = [];
 const digestPrefs = [];
 const digests = [];
+const timetable = [];
+const classAlertPrefs = [];
+const conflictScans = [];
+// Archived per-term snapshots (scores + attendance) from term rollovers —
+// the live tables start fresh each term; this is the durable record of what
+// the old term held. Rows are keyed by (schoolId, session, term, kind).
+const termArchives = [];
 let receiptSeq = 1000;
 
 // Cost 4 instead of production's 10: this is the in-memory DEMO store, and
@@ -48,6 +64,11 @@ const nowIso = () => new Date().toISOString();
 //    simply falls back to a fresh seed.
 //  - Passwords are stored as bcrypt hashes only — plaintext never touches
 //    disk. The file is gitignored.
+//  - PII (email, phone) is encrypted at rest: dump() writes enc:v1 envelopes
+//    plus blind indexes and restore() decrypts them back to plaintext in
+//    memory — the SNAPSHOT holds ciphertext, mirroring the Mongo store's
+//    on-disk documents. Legacy plaintext snapshots load unchanged and
+//    upgrade themselves on the next save.
 //  - Under `node --test` (NODE_TEST_CONTEXT=child-v8) the file is redirected
 //    to a per-process temp path, so the test suite never writes to (or wipes)
 //    a real demo's state.
@@ -65,23 +86,53 @@ let storeFile =
 let persistTimer = null;
 let persistDirty = false;
 
-/** Snapshot the whole in-memory state (live references — serialized at write). */
+/**
+ * Snapshot the whole in-memory state — with PII ENCRYPTED at rest.
+ *
+ * Returns COPIES (never mutates the live arrays): users' and leads' email /
+ * phone become enc:v1 envelopes plus their blind indexes, and notifications'
+ * `to` arrays (recipient emails) are encrypted element-wise — exactly the
+ * on-disk shape of the Mongo store's documents. Legacy plaintext values are
+ * re-encrypted on every write, so an old snapshot upgrades itself.
+ */
 function dump() {
+  const encryptUser = (u) => ({
+    ...u,
+    email: encryptField(u.email),
+    emailIdx: u.emailIdx || blindEmailIndex(u.email),
+    phone: encryptField(u.phone),
+    phoneIdx: u.phoneIdx || blindPhoneIndex(u.phone),
+  });
+  const encryptLead = (l) => ({
+    ...l,
+    email: encryptField(l.email),
+    emailIdx: l.emailIdx || blindEmailIndex(l.email),
+    phone: encryptField(l.phone),
+  });
+  const encryptNotification = (n) => ({
+    ...n,
+    to: Array.isArray(n.to) ? n.to.map((t) => encryptField(t)) : n.to,
+  });
   return {
     version: STORE_VERSION,
     seq,
     receiptSeq,
     schools,
-    users,
+    users: users.map(encryptUser),
     scores,
     feeStructures,
     feePayments,
     attendance,
-    leads,
-    notifications,
+    leads: leads.map(encryptLead),
+    notifications: notifications.map(encryptNotification),
     feeAudit,
+    roleAudit,
     digestPrefs,
     digests,
+    timetable,
+    classAlertPrefs,
+    conflictScans,
+    termArchives,
   };
 }
 
@@ -98,8 +149,13 @@ function restore(data) {
     "leads",
     "notifications",
     "feeAudit",
+    "roleAudit",
     "digestPrefs",
     "digests",
+    "timetable",
+    "classAlertPrefs",
+    "conflictScans",
+    "termArchives",
   ];
   for (const key of collections) {
     // Backward-compatible restore: snapshots written before a collection
@@ -112,8 +168,40 @@ function restore(data) {
   receiptSeq = Number.isInteger(data.receiptSeq) ? data.receiptSeq : 1000;
   schools.length = 0;
   schools.push(...data.schools);
+  // Legacy migration: snapshots written before the onboarding flag existed
+  // carry no onboardingComplete. Pre-flag demo schools were the fully
+  // configured seed (by far the common case), so default them to complete —
+  // the wizard must not suddenly reappear for an already-set-up demo.
+  schools.forEach((s) => {
+    if (s.onboardingComplete === undefined) s.onboardingComplete = true;
+  });
   users.length = 0;
-  users.push(...data.users);
+  // Restore decrypts PII back to plaintext for memory (the snapshot holds
+  // ciphertext). Legacy plaintext passes through untouched (decryptField's
+  // passthrough), and missing blind indexes are recomputed — so a snapshot
+  // written before encryption still loads and upgrades on the next save.
+  users.push(
+    ...data.users.map((u) => {
+      const copy = { ...u };
+      copy.email = decryptField(u.email) ?? u.email ?? "";
+      copy.phone = decryptField(u.phone) ?? u.phone ?? "";
+      copy.emailIdx = u.emailIdx || blindEmailIndex(copy.email);
+      copy.phoneIdx = u.phoneIdx || blindPhoneIndex(copy.phone);
+      // Legacy migration: snapshots written before subject-teaching model a
+      // teacher with ONLY assignedClass. Derive assignedClasses from it so
+      // the multi-arm scope works — same fallback as the Mongo store.
+      if (
+        copy.role === "TEACHER" &&
+        (!Array.isArray(copy.assignedClasses) || copy.assignedClasses.length === 0) &&
+        copy.assignedClass
+      ) {
+        copy.assignedClasses = [copy.assignedClass];
+      }
+      if (!Array.isArray(copy.subjects)) copy.subjects = [];
+      if (!Array.isArray(copy.assignedClasses)) copy.assignedClasses = [];
+      return copy;
+    })
+  );
   scores.length = 0;
   scores.push(...data.scores);
   feeStructures.length = 0;
@@ -123,11 +211,21 @@ function restore(data) {
   attendance.length = 0;
   attendance.push(...data.attendance);
   leads.length = 0;
-  leads.push(...data.leads);
+  leads.push(
+    ...data.leads.map((l) => {
+      const copy = { ...l };
+      copy.email = decryptField(l.email) ?? l.email ?? "";
+      copy.phone = decryptField(l.phone) ?? l.phone ?? "";
+      copy.emailIdx = l.emailIdx || blindEmailIndex(copy.email);
+      return copy;
+    })
+  );
   notifications.length = 0;
   notifications.push(
     ...(data.notifications || []).map((n) => {
       const copy = { ...n };
+      // Decrypt recipient emails back to plaintext for the inbox.
+      if (Array.isArray(copy.to)) copy.to = copy.to.map((t) => decryptField(t) ?? t);
       // Legacy migration: snapshots written before per-admin read-state stored
       // a school-wide `read` boolean. `read: true` meant every admin had seen
       // it — represent that as the "*" sentinel in readBy.
@@ -138,10 +236,20 @@ function restore(data) {
   );
   feeAudit.length = 0;
   feeAudit.push(...data.feeAudit);
+  roleAudit.length = 0;
+  roleAudit.push(...(data.roleAudit || []));
   digestPrefs.length = 0;
   digestPrefs.push(...(data.digestPrefs || []));
   digests.length = 0;
   digests.push(...(data.digests || []));
+  timetable.length = 0;
+  timetable.push(...(data.timetable || []));
+  classAlertPrefs.length = 0;
+  classAlertPrefs.push(...(data.classAlertPrefs || []));
+  conflictScans.length = 0;
+  conflictScans.push(...(data.conflictScans || []));
+  termArchives.length = 0;
+  termArchives.push(...(data.termArchives || []));
   return true;
 }
 
@@ -189,16 +297,23 @@ function seed() {
     name: "Greenfield International School",
     logoUrl: "",
     brandColor: "#2563EB",
+    // The REAL Nigerian secondary structure: JSS1–JSS3 are plain classes
+    // (no Science/Arts/Commercial streams — streaming starts at SSS), and
+    // only SS1–SS3 split into the three streams — 12 class arms in total.
     activeArms: [
-      "SS1 Science",
-      "SS1 Arts",
-      "SS2 Science",
-      "SS2 Arts",
-      "SS3 Science",
-      "SS3 Arts",
+      "JSS1", "JSS2", "JSS3",
+      "SS1 Science", "SS1 Arts", "SS1 Commercial",
+      "SS2 Science", "SS2 Arts", "SS2 Commercial",
+      "SS3 Science", "SS3 Arts", "SS3 Commercial",
     ],
     currentSession: "2025/2026",
     currentTerm: "First Term",
+    // The demo school's bell schedule — drives the class-alert alarms. A
+    // school without one falls back to the same defaults.
+    periodTimes: DEFAULT_PERIOD_TIMES.map((p) => ({ ...p })),
+    // The demo school is already fully set up — the onboarding wizard must
+    // never appear for it.
+    onboardingComplete: true,
     createdAt: nowIso(),
   };
   schools.push(school);
@@ -215,6 +330,9 @@ function seed() {
       id: nid("usr"),
       name,
       email,
+      // Blind indexes — in-memory lookups (login, dedupe) match on these,
+      // exactly like the Mongo store. Stripped from every public shape.
+      emailIdx: blindEmailIndex(email),
       password: hash(password),
       role,
       schoolId: school.id,
@@ -223,10 +341,13 @@ function seed() {
       feePaid: false,
       parentId: null,
       phone: "",
+      phoneIdx: "",
       address: "",
+      mfaSecret: "",
       createdAt: nowIso(),
       ...extra,
     };
+    if (u.phone) u.phoneIdx = blindPhoneIndex(u.phone);
     users.push(u);
     return u;
   };
@@ -249,15 +370,115 @@ function seed() {
     phone: "0802 555 0187",
   });
 
+  // Subject-specialist teachers — the real Nigerian secondary-school model.
+  // JSS1–JSS3 are PLAIN classes (no streams); streaming starts at SSS, so
+  // only SS arms split into Science / Arts / Commercial. The headline case is
+  // real: ONE English teacher (Mrs. Bakare) and ONE Mathematics teacher
+  // (Mrs. Okafor) teach their subject to JSS1–JSS3 AND every SS stream.
+  // JSS runs the junior curriculum (Basic Science, Basic Technology, Social
+  // Studies, Business Studies, Computer Studies, Agricultural Science — some
+  // taught by the same specialist who takes the related SSS subject, e.g.
+  // Mr. Okonkwo teaches Basic Science in JSS and Biology in SS Science).
+  // Stream specialists cover ONLY the SS arms of their stream. `assignedClass`
+  // stays the display/default arm; `subjects` × `assignedClasses` is the
+  // enforceable scope (requireClassScope).
+  const JSS_ARMS = ["JSS1", "JSS2", "JSS3"];
+  const STREAMS = ["Science", "Arts", "Commercial"];
+  const SS_NAMES = ["SS1", "SS2", "SS3"];
+  const SS_ARMS = SS_NAMES.flatMap((c) => STREAMS.map((s) => `${c} ${s}`));
+  const ALL_ARMS = [...JSS_ARMS, ...SS_ARMS];
+  const SS_SCIENCE_ARMS = SS_NAMES.map((c) => `${c} Science`);
+  const SS_ARTS_ARMS = SS_NAMES.map((c) => `${c} Arts`);
+  const SS_COMMERCIAL_ARMS = SS_NAMES.map((c) => `${c} Commercial`);
   const teachers = [
-    addUser("Mrs. Adaeze Okafor", "a.okafor@edutrack.app", "teacher123", "TEACHER", "SS1 Science", { payrollStatus: "PAID" }),
-    addUser("Mr. Tunde Bakare", "t.bakare@edutrack.app", "teacher123", "TEACHER", "SS1 Arts", { payrollStatus: "PENDING" }),
-    addUser("Dr. Ifeoma Nwosu", "i.nwosu@edutrack.app", "teacher123", "TEACHER", "SS2 Science", { payrollStatus: "PAID" }),
-    addUser("Mr. Emeka Obi", "e.obi@edutrack.app", "teacher123", "TEACHER", "SS2 Arts", { payrollStatus: "PENDING" }),
-    addUser("Ms. Sarah Adeyemi", "s.adeyemi@edutrack.app", "teacher123", "TEACHER", "SS3 Science", { payrollStatus: "PENDING" }),
+    addUser("Mrs. Adaeze Okafor", "a.okafor@edutrack.app", "teacher123", "TEACHER", "SS1 Science", {
+      payrollStatus: "PAID",
+      subjects: ["Mathematics"],
+      assignedClasses: ALL_ARMS,
+    }),
+    addUser("Mr. Tunde Bakare", "t.bakare@edutrack.app", "teacher123", "TEACHER", "SS1 Arts", {
+      payrollStatus: "PENDING",
+      subjects: ["English Language"],
+      assignedClasses: ALL_ARMS,
+    }),
+    addUser("Ms. Bisi Fagbemi", "b.fagbemi@edutrack.app", "teacher123", "TEACHER", "JSS1", {
+      payrollStatus: "PENDING",
+      subjects: ["Civic Education"],
+      assignedClasses: ALL_ARMS,
+    }),
+    addUser("Dr. Ifeoma Nwosu", "i.nwosu@edutrack.app", "teacher123", "TEACHER", "SS2 Science", {
+      payrollStatus: "PAID",
+      subjects: ["Physics"],
+      assignedClasses: SS_SCIENCE_ARMS,
+    }),
+    addUser("Mr. Emeka Obi", "e.obi@edutrack.app", "teacher123", "TEACHER", "SS2 Science", {
+      payrollStatus: "PENDING",
+      subjects: ["Chemistry"],
+      assignedClasses: SS_SCIENCE_ARMS,
+    }),
+    // Basic Science (JSS) + Biology (SS Science) — one life-sciences teacher.
+    addUser("Mr. Chidi Okonkwo", "c.okonkwo@edutrack.app", "teacher123", "TEACHER", "JSS1", {
+      payrollStatus: "PENDING",
+      subjects: ["Basic Science", "Biology"],
+      assignedClasses: [...JSS_ARMS, ...SS_SCIENCE_ARMS],
+    }),
+    // Agricultural Science — taught in JSS and SS Science.
+    addUser("Mr. Bello Yusuf", "b.yusuf@edutrack.app", "teacher123", "TEACHER", "JSS1", {
+      payrollStatus: "PENDING",
+      subjects: ["Agricultural Science"],
+      assignedClasses: [...JSS_ARMS, ...SS_SCIENCE_ARMS],
+    }),
+    addUser("Ms. Sarah Adeyemi", "s.adeyemi@edutrack.app", "teacher123", "TEACHER", "SS3 Science", {
+      payrollStatus: "PENDING",
+      subjects: ["Literature in English"],
+      assignedClasses: SS_ARTS_ARMS,
+    }),
+    // Social Studies (JSS) + Government (SS Arts) — one humanities teacher.
+    addUser("Mrs. Amina Suleiman", "a.suleiman@edutrack.app", "teacher123", "TEACHER", "JSS1", {
+      payrollStatus: "PENDING",
+      subjects: ["Social Studies", "Government"],
+      assignedClasses: [...JSS_ARMS, ...SS_ARTS_ARMS],
+    }),
+    addUser("Mr. Emeka Anya", "e.anya@edutrack.app", "teacher123", "TEACHER", "SS1 Arts", {
+      payrollStatus: "PENDING",
+      subjects: ["French"],
+      assignedClasses: SS_ARTS_ARMS,
+    }),
+    addUser("Mrs. Ngozi Eze", "n.eze@edutrack.app", "teacher123", "TEACHER", "SS1 Commercial", {
+      payrollStatus: "PENDING",
+      subjects: ["Economics"],
+      assignedClasses: [...SS_ARTS_ARMS, ...SS_COMMERCIAL_ARMS],
+    }),
+    addUser("Ms. Kemi Adeleke", "k.adeleke@edutrack.app", "teacher123", "TEACHER", "SS1 Commercial", {
+      payrollStatus: "PENDING",
+      subjects: ["Accounting"],
+      assignedClasses: SS_COMMERCIAL_ARMS,
+    }),
+    addUser("Mr. Femi Balogun", "f.balogun@edutrack.app", "teacher123", "TEACHER", "SS2 Commercial", {
+      payrollStatus: "PENDING",
+      subjects: ["Commerce"],
+      assignedClasses: SS_COMMERCIAL_ARMS,
+    }),
+    // Business Studies — a JSS junior subject AND an SS Commercial one.
+    addUser("Mrs. Hauwa Danjuma", "h.danjuma@edutrack.app", "teacher123", "TEACHER", "JSS1", {
+      payrollStatus: "PENDING",
+      subjects: ["Business Studies"],
+      assignedClasses: [...JSS_ARMS, ...SS_COMMERCIAL_ARMS],
+    }),
+    addUser("Mr. Segun Adewale", "s.adewale@edutrack.app", "teacher123", "TEACHER", "JSS1", {
+      payrollStatus: "PENDING",
+      subjects: ["Basic Technology"],
+      assignedClasses: JSS_ARMS,
+    }),
+    addUser("Ms. Chiamaka Nnadi", "c.nnadi@edutrack.app", "teacher123", "TEACHER", "JSS1", {
+      payrollStatus: "PENDING",
+      subjects: ["Computer Studies"],
+      assignedClasses: JSS_ARMS,
+    }),
   ];
 
   const studentSeeds = [
+    // SS1–SS3 students (first two stay index 0/1 — the parent demo links them).
     ["Kunle Adebayo", "k.adebayo@edutrack.app", "SS1 Science"],
     ["Chidinma Obi", "c.obi@edutrack.app", "SS1 Science"],
     ["Emeka Nwosu", "e.nwosu@edutrack.app", "SS1 Science"],
@@ -268,6 +489,13 @@ function seed() {
     ["Grace Uche", "g.uche@edutrack.app", "SS2 Science"],
     ["David Osei", "d.osei@edutrack.app", "SS2 Science"],
     ["Hannah Kalu", "h.kalu@edutrack.app", "SS3 Arts"],
+    // JSS1–JSS3 — plain classes, no streams.
+    ["Adebisi Ajayi", "a.ajayi@edutrack.app", "JSS1"],
+    ["Musa Sule", "m.sule@edutrack.app", "JSS1"],
+    ["Ngozi Okafor", "n.okafor@edutrack.app", "JSS2"],
+    ["Tunde Adebisi", "t.adebisi@edutrack.app", "JSS2"],
+    ["Halima Yusuf", "h.yusuf@edutrack.app", "JSS3"],
+    ["Chinedu Eze", "c.eze@edutrack.app", "JSS3"],
   ];
 
   const students = studentSeeds.map(([name, email, arm], i) =>
@@ -290,12 +518,20 @@ function seed() {
 
   // ---- Seed fee structures + payments (demo) ----
   const feeByArm = {
+    // JSS — plain classes, junior fees.
+    "JSS1": 90000,
+    "JSS2": 95000,
+    "JSS3": 100000,
+    // SSS — streamed, senior fees.
     "SS1 Science": 185000,
     "SS1 Arts": 170000,
+    "SS1 Commercial": 165000,
     "SS2 Science": 185000,
     "SS2 Arts": 170000,
+    "SS2 Commercial": 165000,
     "SS3 Science": 190000,
     "SS3 Arts": 175000,
+    "SS3 Commercial": 170000,
   };
   Object.entries(feeByArm).forEach(([classArm, amount]) => {
     feeStructures.push({
@@ -334,7 +570,7 @@ function seed() {
   const SCHOOL_DAYS = 20;
   for (let d = SCHOOL_DAYS; d >= 1; d--) {
     const date = new Date(Date.now() - d * 86400000).toISOString().slice(0, 10);
-    ["SS1 Science", "SS1 Arts", "SS2 Science", "SS2 Arts", "SS3 Science", "SS3 Arts"].forEach((arm) => {
+    ALL_ARMS.forEach((arm) => {
       const armStudents = students.filter((s) => s.assignedClass === arm);
       if (armStudents.length === 0) return;
       attendance.push({
@@ -355,6 +591,28 @@ function seed() {
 
   // Deterministic-ish score seeds so every dashboard has content
   const subjectSets = {
+    // JSS — the junior curriculum (plain classes).
+    "JSS1": [
+      ["Mathematics", 34, 52],
+      ["English Language", 33, 50],
+      ["Basic Science", 30, 44],
+      ["Social Studies", 29, 42],
+      ["Business Studies", 28, 40],
+    ],
+    "JSS2": [
+      ["Mathematics", 30, 46],
+      ["English Language", 31, 45],
+      ["Basic Technology", 27, 39],
+      ["Computer Studies", 26, 38],
+      ["Civic Education", 29, 43],
+    ],
+    "JSS3": [
+      ["Mathematics", 32, 48],
+      ["English Language", 30, 44],
+      ["Agricultural Science", 28, 41],
+      ["Social Studies", 27, 40],
+      ["Business Studies", 29, 42],
+    ],
     "SS1 Science": [
       ["Mathematics", 34, 52],
       ["Physics", 30, 44],
@@ -406,6 +664,280 @@ function seed() {
     });
   });
 
+  // ---- Seed weekly timetable (demo): the SUPER_ADMIN-set schedule. ----
+  //
+  // At full JSS1–JSS3 (plain classes) + SS1–SS3 × Science/Arts/Commercial
+  // scale (12 arms) the schedule is GENERATED rather than hand-tuned, so the
+  // one-English-teacher-across-every-class reality actually fits. Construction:
+  //
+  //   • Every arm gets a 20-slot week. The school-wide trio — Mathematics,
+  //     English Language and Civic Education (2 slots each, taught by Okafor,
+  //     Bakare and Fagbemi) — appears in EVERY arm, JSS or SS. On top of that:
+  //       – JSS arms run the JUNIOR curriculum (Basic Science, Social Studies,
+  //         Business Studies, Basic Technology, Computer Studies, Agricultural
+  //         Science), taught by the JSS specialists.
+  //       – SS arms run their stream's specialist subjects (Physics /
+  //         Chemistry / Biology / Agricultural Science for science arms;
+  //         Literature / Government / French for arts; Accounting / Commerce /
+  //         Business Studies for commercial; Economics serves arts + commercial).
+  //   • School-wide subjects stagger across arm groups via a five-pattern
+  //     day rotation (armIdx % 5) so no teacher is ever booked more than 8
+  //     times in a day (there are 8 periods). Economics uses its own three-
+  //     pattern stagger; stream specialists teach fixed weekdays and top
+  //     out at 6 arms a day.
+  //   • Periods are assigned by KÖNIG'S EDGE-COLORING ALGORITHM — the
+  //     provably-correct way to color a bipartite graph (teachers × arms)
+  //     with Δ colors, here Δ = 8 = the number of periods. Every teacher has
+  //     ≤ 8 slots a day and every arm ≤ 6, so a conflict-free assignment
+  //     ALWAYS exists; the greedy lowest-free heuristic can wedge (a
+  //     full-load teacher's last booking finding its only free period
+  //     blocked), König's alternating-path recoloring cannot.
+  //   • The whole grid is then VERIFIED: a single double-booked teacher or
+  //     arm (or a per-teacher day load over 8) throws at seed time, so a
+  //     future edit can never ship a broken schedule silently. The API's
+  //     double-booking guard enforces the same rule on live edits.
+  const DAY_LIST = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"];
+  // 2-day school-wide rotations (armIdx % 5) — each teacher peaks at 8/day.
+  const CORE_DAY_PATTERNS = [
+    ["Monday", "Tuesday"],
+    ["Wednesday", "Thursday"],
+    ["Friday", "Monday"],
+    ["Tuesday", "Wednesday"],
+    ["Thursday", "Friday"],
+  ];
+  // 3-day Economics rotations (econ-arm index % 3) — peaks at 8/day.
+  const ECON_DAY_PATTERNS = [
+    ["Monday", "Wednesday", "Friday"],
+    ["Monday", "Tuesday", "Thursday"],
+    ["Tuesday", "Wednesday", "Friday"],
+  ];
+  // Stream specialists: fixed weekdays for every arm in the stream.
+  const STREAM_SUBJECT_DAYS = {
+    Science: [
+      ["Physics", ["Monday", "Tuesday", "Wednesday", "Friday"]],
+      ["Chemistry", ["Monday", "Tuesday", "Wednesday", "Friday"]],
+      ["Biology", ["Monday", "Wednesday", "Thursday", "Friday"]],
+      ["Agricultural Science", ["Wednesday", "Friday"]],
+    ],
+    Arts: [
+      ["Literature in English", ["Monday", "Tuesday", "Wednesday", "Friday"]],
+      ["Government", ["Monday", "Tuesday", "Wednesday", "Friday"]],
+      ["French", ["Monday", "Wednesday", "Thursday"]],
+    ],
+    Commercial: [
+      ["Accounting", ["Monday", "Tuesday", "Wednesday", "Friday"]],
+      ["Commerce", ["Monday", "Tuesday", "Wednesday", "Friday"]],
+      ["Business Studies", ["Monday", "Wednesday", "Thursday"]],
+    ],
+  };
+
+  const teacherFor = (arm, subject) =>
+    teachers.find(
+      (t) =>
+        t.subjects?.includes(subject) && t.assignedClasses?.includes(arm)
+    )?.id || "";
+
+  // JSS junior curriculum — JSS1–JSS3 are PLAIN classes (no streams), so each
+  // gets the junior subjects across the week: three 4-slot subjects + one
+  // 2-slot extra = 14 slots, completing the 20-slot week on top of the 6 core
+  // slots (Mathematics / English Language / Civic Education).
+  const JSS_SUBJECTS = [
+    // JSS1 — Basic Science, Social Studies, Business Studies + Agricultural Science.
+    [
+      ["Basic Science", ["Monday", "Tuesday", "Wednesday", "Thursday"]],
+      ["Social Studies", ["Monday", "Tuesday", "Thursday", "Friday"]],
+      ["Business Studies", ["Tuesday", "Wednesday", "Thursday", "Friday"]],
+      ["Agricultural Science", ["Wednesday", "Friday"]],
+    ],
+    // JSS2 — Basic Technology, Computer Studies, Social Studies + Civic Education.
+    // (Civic's extra days avoid the core Civic days [Mon, Tue] so the same
+    // teacher never holds two slots in the same arm on the same day — the
+    // bipartite edge-coloring assumes one slot per teacher-arm-day.)
+    [
+      ["Basic Technology", ["Monday", "Tuesday", "Wednesday", "Thursday"]],
+      ["Computer Studies", ["Monday", "Wednesday", "Thursday", "Friday"]],
+      ["Social Studies", ["Monday", "Tuesday", "Thursday", "Friday"]],
+      ["Civic Education", ["Wednesday", "Friday"]],
+    ],
+    // JSS3 — Agricultural Science, Social Studies, Business Studies + Basic Science.
+    [
+      ["Agricultural Science", ["Monday", "Tuesday", "Wednesday", "Thursday"]],
+      ["Social Studies", ["Monday", "Tuesday", "Thursday", "Friday"]],
+      ["Business Studies", ["Tuesday", "Wednesday", "Thursday", "Friday"]],
+      ["Basic Science", ["Wednesday", "Friday"]],
+    ],
+  ];
+
+  // Per-arm weekly plan: day → subjects in a deterministic order. Core
+  // subjects come FIRST so a full-load teacher always finds a free period.
+  const weeklyPlans = ALL_ARMS.map((arm, armIdx) => {
+    const plan = {};
+    const add = (subject, days) => {
+      days.forEach((d) => {
+        if (!plan[d]) plan[d] = [];
+        plan[d].push(subject);
+      });
+    };
+    add("Mathematics", CORE_DAY_PATTERNS[armIdx % 5]);
+    add("English Language", CORE_DAY_PATTERNS[(armIdx + 2) % 5]);
+    add("Civic Education", CORE_DAY_PATTERNS[(armIdx + 4) % 5]);
+    if (armIdx < JSS_ARMS.length) {
+      // JSS1–JSS3 — plain classes running the junior curriculum.
+      JSS_SUBJECTS[armIdx].forEach(([subject, days]) => add(subject, days));
+    } else {
+      // SS arms — streamed. Add the stream's specialists; Economics serves
+      // the arts + commercial arms on its own stagger.
+      const stream = arm.split(" ")[1];
+      if (stream !== "Science") {
+        add("Economics", ECON_DAY_PATTERNS[armIdx % 3]);
+      }
+      STREAM_SUBJECT_DAYS[stream].forEach(([subject, days]) => add(subject, days));
+    }
+    return plan;
+  });
+
+  // ---- Period assignment: König's bipartite edge-coloring --------------
+  //
+  // The schedule is a bipartite graph: teachers on one side, arms on the
+  // other, one edge per slot (a teacher never has two slots in the same arm
+  // on the same day). Edge-coloring = assigning each edge a period so no
+  // two edges sharing a vertex share a period — exactly the no-double-
+  // booking rule. With max degree Δ ≤ 8 (8 periods), a coloring always
+  // exists. The greedy "lowest free period" can fail; König's algorithm
+  // walks an alternating path and swaps colors, which is provably
+  // successful. Deterministic: slots are processed in a fixed order.
+  function colorDay(edges) {
+    // edges: [{ teacher, arm }] — returns { "teacher|arm": period }
+    //
+    // `incident` is the SINGLE source of truth: "vertex|period" -> edge key.
+    // mex() reads it directly (8 periods, so O(8) per lookup), which keeps
+    // the ≤1-edge-per-color invariant trivially consistent — no parallel
+    // color sets to drift. Two subtleties that naive implementations miss:
+    //
+    //  1. When an alternating path passes through a vertex TWICE (an
+    //     alternating cycle), recoloring must not delete the other edge's
+    //     entry: a path edge's OLD color equals its neighbour's NEW color at
+    //     the shared vertex, so deletes are guarded with `=== key`.
+    //  2. The path walk can enter an alternating cycle; a visited set clips
+    //     it. The clipped path still recolors validly (the re-entered vertex
+    //     has two path edges swapped in opposite directions, netting to zero).
+    const colorOf = {}; // "teacher|arm" -> period
+    const incident = {}; // "vertex|period" -> "teacher|arm"
+    const vertexHas = (vertex, period) => !!incident[`${vertex}|${period}`];
+    const mex = (vertex) => {
+      let c = 1;
+      while (vertexHas(vertex, c)) c++;
+      return c;
+    };
+    const otherVertex = (key, vertex) => {
+      const [a, b] = key.split("|");
+      return a === vertex ? b : a;
+    };
+    const recolor = (key, from, to) => {
+      const [b, a] = key.split("|"); // key is "teacher|arm"
+      if (incident[`${b}|${from}`] === key) delete incident[`${b}|${from}`];
+      if (incident[`${a}|${from}`] === key) delete incident[`${a}|${from}`];
+      incident[`${b}|${to}`] = key;
+      incident[`${a}|${to}`] = key;
+      colorOf[key] = to;
+    };
+    const walk = (start, firstColor, c1, c2) => {
+      // Maximal alternating path from `start` with colors firstColor, then
+      // c1/c2 alternating; clipped at any vertex already on the path.
+      const path = [];
+      const visited = new Set([start]);
+      let cur = start;
+      let need = firstColor;
+      while (vertexHas(cur, need)) {
+        const pk = incident[`${cur}|${need}`];
+        path.push(pk);
+        cur = otherVertex(pk, cur);
+        need = need === c1 ? c2 : c1;
+        if (visited.has(cur)) break;
+        visited.add(cur);
+      }
+      return path;
+    };
+
+    for (const e of edges) {
+      const u = e.teacher;
+      const v = e.arm;
+      const alpha = mex(u);
+      const beta = mex(v);
+      const key = `${u}|${v}`;
+      if (alpha === beta) {
+        colorOf[key] = alpha;
+      } else if (alpha < beta) {
+        // Path from the ARM v starting with alpha (v holds an alpha edge:
+        // alpha < beta = mex(v)). Recolor, then place (u,v) at alpha.
+        const path = walk(v, alpha, alpha, beta);
+        path.forEach((pk) => recolor(pk, colorOf[pk], colorOf[pk] === alpha ? beta : alpha));
+        colorOf[key] = alpha;
+      } else {
+        // Symmetric: path from the TEACHER u starting with beta (u holds a
+        // beta edge: beta < alpha = mex(u)). Place (u,v) at beta.
+        const path = walk(u, beta, beta, alpha);
+        path.forEach((pk) => recolor(pk, colorOf[pk], colorOf[pk] === beta ? alpha : beta));
+        colorOf[key] = beta;
+      }
+      incident[`${u}|${colorOf[key]}`] = key;
+      incident[`${v}|${colorOf[key]}`] = key;
+    }
+    return colorOf;
+  }
+
+  // Build the day's edge list (one edge per slot), color it, then push the
+  // slots with their assigned periods.
+  DAY_LIST.forEach((day) => {
+    const edges = [];
+    ALL_ARMS.forEach((arm, armIdx) => {
+      (weeklyPlans[armIdx][day] || []).forEach((subject) => {
+        edges.push({ teacher: teacherFor(arm, subject), arm, subject });
+      });
+    });
+    const colorOf = colorDay(edges);
+    edges.forEach(({ teacher, arm, subject }) => {
+      timetable.push({
+        id: nid("ttb"),
+        schoolId: school.id,
+        classArm: arm,
+        day,
+        period: colorOf[`${teacher}|${arm}`],
+        subject,
+        teacherId: teacher,
+        session: "2025/2026",
+        term: "First Term",
+        createdAt: nowIso(),
+      });
+    });
+  });
+
+  // Hard verification — the seed never ships a broken schedule silently.
+  const seenTeacher = new Set();
+  const seenArm = new Set();
+  const dayLoad = {};
+  for (const e of timetable) {
+    const tKey = `${e.teacherId}|${e.day}|${e.period}`;
+    const aKey = `${e.classArm}|${e.day}|${e.period}`;
+    if (seenTeacher.has(tKey)) {
+      const dup = teachers.find((x) => x.id === e.teacherId);
+      throw new Error(
+        `timetable seed double-books a teacher: ${dup?.name || e.teacherId} (${e.subject} in ${e.classArm}) on ${e.day} period ${e.period}`
+      );
+    }
+    if (seenArm.has(aKey)) throw new Error(`timetable seed double-books an arm: ${aKey}`);
+    seenTeacher.add(tKey);
+    seenArm.add(aKey);
+    dayLoad[`${e.teacherId}|${e.day}`] = (dayLoad[`${e.teacherId}|${e.day}`] || 0) + 1;
+    const t = teachers.find((x) => x.id === e.teacherId);
+    if (!t || !t.subjects.includes(e.subject) || !t.assignedClasses.includes(e.classArm)) {
+      throw new Error(`timetable seed mis-staffs ${e.subject} in ${e.classArm}`);
+    }
+  }
+  Object.entries(dayLoad).forEach(([key, n]) => {
+    if (n > 8) throw new Error(`timetable seed over-books a teacher (${n} periods): ${key}`);
+  });
+
   return { admin, teachers, students };
 }
 
@@ -419,13 +951,33 @@ function clearAll() {
   leads.length = 0;
   notifications.length = 0;
   feeAudit.length = 0;
+  roleAudit.length = 0;
   digestPrefs.length = 0;
   digests.length = 0;
+  timetable.length = 0;
+  classAlertPrefs.length = 0;
+  conflictScans.length = 0;
+  termArchives.length = 0;
 }
 
-// Boot: restore a persisted demo, otherwise seed fresh and write the seed to
-// disk so even the very next restart is stable.
-if (!loadPersisted()) {
+/**
+ * Whether the boot-time demo seed may run. Production ships a CLEAN SLATE:
+ * an empty store, so the first registered user becomes the first school's
+ * admin — no pre-existing "demo school" anywhere.
+ *
+ *   SEED_DEMO_SCHOOL=0|false  → never seed (default — clean slate, even in dev)
+ *   SEED_DEMO_SCHOOL=1|true   → always seed (dev/demo convenience)
+ *   unset                     → never seed (same as 0|false)
+ */
+export function demoSeedEnabled() {
+  const v = process.env.SEED_DEMO_SCHOOL;
+  if (v === "1" || v === "true" || v === "yes") return true;
+  return false;
+}
+
+// Boot: restore a persisted store (real operator data from a previous run),
+// otherwise seed the demo school ONLY when demo seeding is enabled.
+if (!loadPersisted() && demoSeedEnabled()) {
   seed();
   writeSnapshot();
 }
@@ -470,16 +1022,31 @@ export function __persistNow() {
   }
 }
 
-/** Test hook: simulate a process restart — reload state from disk. */
+/** Test hook: simulate a process restart — reload state from disk, seeding
+ * ONLY when demo seeding is enabled (a production boot starts empty). */
 export function __reloadDemoStore() {
   clearPersistPending();
   clearAll();
-  if (!loadPersisted()) seed();
+  if (!loadPersisted() && demoSeedEnabled()) seed();
 }
 
 // ---- Helpers ---------------------------------------------------------------
 
 const clone = (obj) => (obj ? { ...obj } : obj);
+
+/**
+ * The public user shape: password, mfaSecret AND blind indexes stripped,
+ * with an mfaEnabled boolean — parity with the Mongo model's toJSON
+ * transform. Blind indexes must never leave the server (they would enable
+ * offline dictionary attacks on emails).
+ */
+function publicUser(user) {
+  const { password, mfaSecret, emailIdx, phoneIdx, ...safe } = user;
+  safe.mfaEnabled = !!user.mfaSecret;
+  safe.subjects = Array.isArray(user.subjects) ? user.subjects : [];
+  safe.assignedClasses = Array.isArray(user.assignedClasses) ? user.assignedClasses : [];
+  return safe;
+}
 
 // ---- Store API -------------------------------------------------------------
 
@@ -492,6 +1059,8 @@ export async function createSchoolAndAdmin({ schoolName, adminName, email, passw
     activeArms: [],
     currentSession: "2025/2026",
     currentTerm: "First Term",
+    // A fresh registration has NOT run the first-run wizard yet.
+    onboardingComplete: false,
     createdAt: nowIso(),
   };
   schools.push(school);
@@ -499,6 +1068,7 @@ export async function createSchoolAndAdmin({ schoolName, adminName, email, passw
     id: nid("usr"),
     name: adminName,
     email: email.toLowerCase(),
+    emailIdx: blindEmailIndex(email),
     password: hash(password),
     role: "SUPER_ADMIN",
     schoolId: school.id,
@@ -507,22 +1077,24 @@ export async function createSchoolAndAdmin({ schoolName, adminName, email, passw
     feePaid: false,
     parentId: null,
     phone: "",
+    phoneIdx: "",
     address: "",
+    mfaSecret: "",
     createdAt: nowIso(),
   };
   users.push(user);
   persist();
-  return { school, user };
+  return { school, user: publicUser(user) };
 }
 
 export async function findUserByEmail(email) {
-  return clone(users.find((u) => u.email === email.toLowerCase()));
+  return clone(users.find((u) => u.emailIdx === blindEmailIndex(email)));
 }
 
 export async function findUserByEmailInSchool(schoolId, email) {
   return clone(
     users.find(
-      (u) => u.schoolId === schoolId && u.email === email.toLowerCase()
+      (u) => u.schoolId === schoolId && u.emailIdx === blindEmailIndex(email)
     )
   );
 }
@@ -540,13 +1112,36 @@ export async function searchSchools(search, limit = 8) {
     }));
 }
 
+/** Every school id — the daily conflict-scan scheduler iterates tenants. */
+export async function listSchoolIds() {
+  return schools.map((s) => s.id);
+}
+
 export async function findUserById(id) {
   const user = users.find((u) => u.id === id);
   if (!user) return null;
-  // Strip the password hash for parity with the Mongo store (findUserByEmail
-  // is the only path that intentionally returns it, for login verification)
-  const { password, ...safe } = user;
-  return safe;
+  return publicUser(user);
+}
+
+/**
+ * Auth-data lookup by id (MFA flows hold a userId, not an email). Returns
+ * password + mfaSecret like findUserByEmailInSchool — never serialized.
+ */
+export async function findUserByIdWithSecret(id) {
+  return clone(users.find((u) => u.id === id));
+}
+
+/**
+ * Save a TOTP secret — a dedicated store op so the generic updateUser path
+ * can NEVER touch mfaSecret (enrollment is self-service by construction).
+ * Returns the public user shape (secret stripped).
+ */
+export async function setMfaSecret(id, mfaSecret) {
+  const user = users.find((u) => u.id === id);
+  if (!user) return null;
+  user.mfaSecret = mfaSecret;
+  persist();
+  return publicUser(user);
 }
 
 export async function getSchoolById(id) {
@@ -556,7 +1151,7 @@ export async function getSchoolById(id) {
 export async function updateSchool(id, patch) {
   const school = schools.find((s) => s.id === id);
   if (!school) return null;
-  const allowed = ["name", "logoUrl", "brandColor", "activeArms", "currentSession", "currentTerm"];
+  const allowed = ["name", "logoUrl", "brandColor", "activeArms", "currentSession", "currentTerm", "onboardingComplete", "periodTimes", "breakTimes", "dailySchedules"];
   allowed.forEach((k) => {
     if (patch[k] !== undefined) school[k] = patch[k];
   });
@@ -564,33 +1159,456 @@ export async function updateSchool(id, patch) {
   return clone(school);
 }
 
-export async function listUsers({ schoolId, role, classArm }) {
+/**
+ * Rename a class arm across EVERY reference in one atomic pass — the school's
+ * activeArms list, student/teacher assignedClass, teacher assignedClasses
+ * arrays, fee structures, scores, attendance registers and timetable entries.
+ * A rename is a migration, not an edit: leaving any of these pointing at the
+ * old name would strand students in an arm that no longer exists (or orphan
+ * timetable slots the conflict scan would then flag).
+ *
+ * Validation: `from` must be a current arm, `to` must be non-empty and must
+ * not collide (case-insensitively) with any existing arm. Returns
+ * { school, counts } on success or { error } for a rejected rename — null if
+ * the school itself is missing.
+ */
+export async function renameArm(schoolId, from, to) {
+  const school = schools.find((s) => s.id === schoolId);
+  if (!school) return null;
+  const source = String(from || "").trim();
+  const target = String(to || "").trim();
+  if (!source) return { error: "The arm to rename is required" };
+  if (!target) return { error: "The new arm name is required" };
+  if (!school.activeArms.includes(source)) {
+    return { error: `"${source}" is not one of the school's class arms` };
+  }
+  if (armAlreadyExists(school.activeArms, target)) {
+    return { error: `"${target}" is already a class arm` };
+  }
+  if (source.toLowerCase() === target.toLowerCase()) {
+    return { error: "The new name must differ from the current one" };
+  }
+
+  const counts = {
+    students: 0,
+    teachers: 0,
+    feeStructures: 0,
+    scores: 0,
+    attendance: 0,
+    timetable: 0,
+  };
+
+  school.activeArms = school.activeArms.map((a) => (a === source ? target : a));
+
+  users.forEach((u) => {
+    if (u.schoolId !== schoolId) return;
+    const inClasses = Array.isArray(u.assignedClasses) && u.assignedClasses.includes(source);
+    if (u.assignedClass === source || inClasses) {
+      if (u.role === "STUDENT") counts.students += 1;
+      else if (u.role === "TEACHER") counts.teachers += 1;
+    }
+    if (u.assignedClass === source) u.assignedClass = target;
+    if (inClasses) {
+      u.assignedClasses = u.assignedClasses.map((a) => (a === source ? target : a));
+    }
+  });
+  feeStructures.forEach((f) => {
+    if (f.schoolId === schoolId && f.classArm === source) {
+      f.classArm = target;
+      counts.feeStructures += 1;
+    }
+  });
+  scores.forEach((s) => {
+    if (s.schoolId === schoolId && s.classArm === source) {
+      s.classArm = target;
+      counts.scores += 1;
+    }
+  });
+  attendance.forEach((a) => {
+    if (a.schoolId === schoolId && a.classArm === source) {
+      a.classArm = target;
+      counts.attendance += 1;
+    }
+  });
+  timetable.forEach((t) => {
+    if (t.schoolId === schoolId && t.classArm === source) {
+      t.classArm = target;
+      counts.timetable += 1;
+    }
+  });
+
+  persist();
+  return { school: clone(school), counts };
+}
+
+/**
+ * Move the school to a new term (term rollover) — one atomic operation that:
+ *
+ *   1. ARCHIVES the old term: every score row and every attendance register
+ *      for the school's CURRENT session+term is snapshotted into the
+ *      termArchives collection (keyed by schoolId/session/term/kind) and then
+ *      cleared from the live tables — the new term starts with an empty
+ *      scorebook and a clean register, exactly like a real school.
+ *   2. CLONES forward the structure: each class arm's fee structure is
+ *      re-created under the new session+term (same amount, idempotent via the
+ *      unique key), and the weekly timetable grid is re-stamped with the new
+ *      session+term (the grid is shared across terms by design — the school
+ *      edits it if the new term's week differs).
+ *   3. RESETS the termly state: every student's feePaid flips back to false
+ *      (nothing has been paid for the new term yet) and the school's
+ *      currentSession/currentTerm move to the new values, so every term-scoped
+ *      read (fee ledger, attendance summary) now looks at the new term.
+ *
+ * `dryRun` returns the exact counts WITHOUT mutating anything — the UI shows
+ * the preview before the SUPER_ADMIN confirms. Returns { school, counts } on
+ * success, { error } for a rejected rollover, null if the school is missing.
+ * counts = { scoresArchived, attendanceArchived, feesCloned, timetableCloned,
+ *            studentsReset }.
+ */
+export async function rolloverTerm(schoolId, { newTerm, newSession, dryRun = false }) {
+  const school = schools.find((s) => s.id === schoolId);
+  if (!school) return null;
+  const term = String(newTerm || "").trim();
+  const session = String(newSession || "").trim() || school.currentSession || "2025/2026";
+  if (!term) return { error: "The new term is required" };
+  if (term === school.currentTerm && session === school.currentSession) {
+    return { error: `The school is already on ${session} · ${term}` };
+  }
+
+  const oldSession = school.currentSession || "2025/2026";
+  const oldTerm = school.currentTerm || "First Term";
+  const oldStructures = feeStructures.filter(
+    (f) => f.schoolId === schoolId && f.session === oldSession && f.term === oldTerm
+  );
+  const scoreRows = scores.filter((s) => s.schoolId === schoolId);
+  const attendanceRows = attendance.filter(
+    (a) => a.schoolId === schoolId && a.session === oldSession && a.term === oldTerm
+  );
+  const ttEntries = timetable.filter((t) => t.schoolId === schoolId);
+  const students = users.filter((u) => u.schoolId === schoolId && u.role === "STUDENT");
+
+  const counts = {
+    scoresArchived: scoreRows.length,
+    attendanceArchived: attendanceRows.length,
+    feesCloned: oldStructures.length,
+    timetableCloned: ttEntries.length,
+    studentsReset: students.length,
+  };
+  if (dryRun) return { school: clone(school), counts };
+
+  // 1. Archive the old term's scores + attendance, then clear them from live.
+  //    Also snapshot the COHORT ROSTER: each enrolled student's name (and
+  //    arm) rides into the archive so archived report cards keep the real
+  //    name even if the student later graduates or is deleted. Roster rows
+  //    are excluded from the summary counts (they are neither scores nor
+  //    attendance registers).
+  students.forEach((u) => {
+    termArchives.push({
+      id: nid("tar"),
+      schoolId,
+      session: oldSession,
+      term: oldTerm,
+      kind: "student",
+      classArm: u.assignedClass || "",
+      studentId: u.id,
+      studentName: u.name,
+    });
+  });
+  scoreRows.forEach((s) => {
+    termArchives.push({
+      id: nid("tar"),
+      schoolId,
+      session: oldSession,
+      term: oldTerm,
+      kind: "score",
+      classArm: s.classArm,
+      studentId: s.studentId,
+      subject: s.subject,
+      caScore: s.caScore,
+      examScore: s.examScore,
+      totalScore: s.totalScore,
+      grade: s.grade,
+    });
+  });
+  attendanceRows.forEach((a) => {
+    termArchives.push({
+      id: nid("tar"),
+      schoolId,
+      session: oldSession,
+      term: oldTerm,
+      kind: "attendance",
+      classArm: a.classArm,
+      date: a.date,
+      records: a.records.map((r) => ({ ...r })),
+    });
+  });
+  const keptScores = scores.filter((s) => s.schoolId !== schoolId);
+  scores.length = 0;
+  scores.push(...keptScores);
+  const keptAttendance = attendance.filter(
+    (a) => !(a.schoolId === schoolId && a.session === oldSession && a.term === oldTerm)
+  );
+  attendance.length = 0;
+  attendance.push(...keptAttendance);
+
+  // 2. Clone each arm's fee structure forward (idempotent upsert).
+  oldStructures.forEach((f) => {
+    let structure = feeStructures.find(
+      (x) =>
+        x.schoolId === schoolId &&
+        x.classArm === f.classArm &&
+        x.session === session &&
+        x.term === term
+    );
+    if (!structure) {
+      structure = {
+        id: nid("fst"),
+        schoolId,
+        classArm: f.classArm,
+        session,
+        term,
+        createdAt: nowIso(),
+      };
+      feeStructures.push(structure);
+    }
+    structure.amount = f.amount;
+  });
+
+  // 3. Re-stamp the shared weekly grid onto the new term.
+  ttEntries.forEach((t) => {
+    t.session = session;
+    t.term = term;
+  });
+
+  // 4. Move the school forward and reset termly billing state.
+  school.currentSession = session;
+  school.currentTerm = term;
+  students.forEach((u) => {
+    u.feePaid = false;
+  });
+
+  persist();
+  return { school: clone(school), counts };
+}
+
+/**
+ * Read archived term snapshots — the durable record of a rolled-over term's
+ * scores + attendance. Optional `{ session, term, kind }` narrows the query
+ * (kind: "score" | "attendance"). Used by tests now, and by a future
+ * "previous terms" viewer.
+ */
+export async function listTermArchives(schoolId, { session, term, kind } = {}) {
+  return termArchives
+    .filter((a) => a.schoolId === schoolId)
+    .filter((a) => (session ? a.session === session : true))
+    .filter((a) => (term ? a.term === term : true))
+    .filter((a) => (kind ? a.kind === kind : true))
+    .map(clone);
+}
+
+// Display order for archived terms: First → Second → Third, then by session.
+const TERM_DISPLAY_ORDER = ["First Term", "Second Term", "Third Term"];
+
+/**
+ * Grouped summary of every archived term for a school — the "Previous Terms"
+ * viewer's term list. Each entry carries the term's total score/attendance
+ * counts plus a per-arm breakdown, so the admin sees exactly what each
+ * archived term holds before drilling into a class arm.
+ */
+export async function getTermArchiveTerms(schoolId) {
+  const groups = {};
+  termArchives
+    // Roster snapshot rows are neither scores nor attendance registers —
+    // they must not inflate the term/arm counts.
+    .filter((a) => a.schoolId === schoolId && a.kind !== "student")
+    .forEach((a) => {
+      const key = `${a.session}||${a.term}`;
+      if (!groups[key]) {
+        groups[key] = { session: a.session, term: a.term, scoreCount: 0, attendanceCount: 0, arms: {} };
+      }
+      const g = groups[key];
+      if (a.kind === "score") g.scoreCount += 1;
+      else if (a.kind === "attendance") g.attendanceCount += 1;
+      if (!g.arms[a.classArm]) {
+        g.arms[a.classArm] = { classArm: a.classArm, scoreCount: 0, attendanceCount: 0 };
+      }
+      if (a.kind === "score") g.arms[a.classArm].scoreCount += 1;
+      else if (a.kind === "attendance") g.arms[a.classArm].attendanceCount += 1;
+    });
+  return Object.values(groups)
+    .sort((x, y) => {
+      const tx = TERM_DISPLAY_ORDER.indexOf(x.term);
+      const ty = TERM_DISPLAY_ORDER.indexOf(y.term);
+      if (tx !== ty) return tx - ty;
+      return String(x.session).localeCompare(String(y.session));
+    })
+    .map((g) => ({
+      session: g.session,
+      term: g.term,
+      scoreCount: g.scoreCount,
+      attendanceCount: g.attendanceCount,
+      arms: Object.values(g.arms).sort((a, b) => a.classArm.localeCompare(b.classArm)),
+    }));
+}
+
+/**
+ * Raw archived rows for one (session, term) and optionally one class arm —
+ * the API joins these with student names and computes report-card summaries.
+ */
+export async function getTermArchiveDetail(schoolId, { session, term, classArm } = {}) {
+  return termArchives
+    .filter((a) => a.schoolId === schoolId)
+    .filter((a) => (session ? a.session === session : true))
+    .filter((a) => (term ? a.term === term : true))
+    .filter((a) => (classArm ? a.classArm === classArm : true))
+    .map(clone);
+}
+
+/**
+ * Ordering key for "which term came last" comparisons: session string first
+ * ("2025/2026" < "2026/2027"), then First < Second < Third within a session.
+ */
+function termRankKey(session, term) {
+  const t = TERM_DISPLAY_ORDER.indexOf(term);
+  return `${session}::${String(t === -1 ? 99 : t).padStart(2, "0")}`;
+}
+
+/**
+ * Alumni — every student in an archived term's roster who is NO LONGER on the
+ * live roster (graduated or deleted), with the term they last appeared in.
+ * The archived roster snapshots names, so alumni keep the name they were
+ * called in school even if the live user record is gone.
+ */
+export async function getAlumni(schoolId) {
+  const liveIds = new Set(
+    users
+      .filter((u) => u.schoolId === schoolId && u.role === "STUDENT")
+      .map((u) => u.id)
+  );
+  const lastByStudent = {};
+  termArchives
+    .filter((a) => a.schoolId === schoolId && a.kind === "student")
+    .forEach((a) => {
+      const prev = lastByStudent[a.studentId];
+      if (!prev || termRankKey(a.session, a.term) > termRankKey(prev.lastSession, prev.lastTerm)) {
+        lastByStudent[a.studentId] = {
+          studentName: a.studentName,
+          classArm: a.classArm,
+          lastSession: a.session,
+          lastTerm: a.term,
+        };
+      }
+    });
+  return Object.entries(lastByStudent)
+    .filter(([studentId]) => !liveIds.has(studentId))
+    .map(([studentId, last]) => ({
+      studentId,
+      studentName: last.studentName,
+      classArm: last.classArm,
+      lastSession: last.lastSession,
+      lastTerm: last.lastTerm,
+    }))
+    .sort((x, y) => x.studentName.localeCompare(y.studentName));
+}
+
+export async function listUsers({ schoolId, role, classArm, limit, offset = 0 }) {
+  const filtered = users
+    .filter((u) => u.schoolId === schoolId)
+    .filter((u) => (role ? u.role === role : true))
+    .filter((u) => (classArm ? u.assignedClass === classArm : true));
+  // Optional pagination — callers that pass `limit` get a slice instead of the
+  // whole school roster (the 10k-user ceiling for the admin roster tab).
+  // Clamp offset (a negative would slice from the END here while Mongo's
+  // skip(-n) throws) and floor the limit (slice truncates, Mongo driver
+  // rejects non-integers) — parity with the Mongo store's guards.
+  const from = Math.max(0, Number(offset) || 0);
+  const to = limit === undefined ? undefined : from + Math.floor(Math.max(0, Number(limit) || 0));
+  const page = limit === undefined ? filtered : filtered.slice(from, to);
+  // Strip blind indexes (and the password hash) — the public roster shape.
+  return page.map(publicUser);
+}
+
+/** Total rows listUsers would return for the same query (pagination parity). */
+export async function countUsers({ schoolId, role, classArm }) {
   return users
     .filter((u) => u.schoolId === schoolId)
     .filter((u) => (role ? u.role === role : true))
     .filter((u) => (classArm ? u.assignedClass === classArm : true))
-    .map(clone);
+    .length;
 }
 
-export async function createUser({ schoolId, name, email, password, role, assignedClass = "", phone = "" }) {
+/**
+ * Lean auth hot-path lookup — role/schoolId/assignedClass/subjects/arms ONLY.
+ * Every authed request revalidates the session through requireAuth; this
+ * deliberately skips the publicUser transform so a request storm never pays
+ * for building (or decrypting) the full user shape per request. The teaching
+ * arrays ride along because requireClassScope needs them for the subject-
+ * specialist scope (they are tiny).
+ */
+export async function findAuthSnapshot(id) {
+  const user = users.find((u) => u.id === id);
+  if (!user) return null;
+  // Legacy fallback at read time (parity with the Mongo store): a teacher
+  // carrying only assignedClass is treated as teaching that one arm.
+  const ownArms = Array.isArray(user.assignedClasses) ? user.assignedClasses : [];
+  const arms = ownArms.length ? ownArms : user.assignedClass ? [user.assignedClass] : [];
+  return {
+    id: user.id,
+    role: user.role,
+    schoolId: user.schoolId,
+    // Normalize like the Mongo store so both shapes are identical.
+    assignedClass: user.assignedClass || "",
+    subjects: Array.isArray(user.subjects) ? user.subjects : [],
+    assignedClasses: arms,
+  };
+}
+
+export async function createUser({ schoolId, name, email, password, role, assignedClass = "", phone = "", subjects = [], assignedClasses = [] }) {
   const user = {
     id: nid("usr"),
     name,
     email: email.toLowerCase(),
+    emailIdx: blindEmailIndex(email),
     password: hash(password),
     role,
     schoolId,
     assignedClass,
+    subjects: Array.isArray(subjects) ? subjects : [],
+    // Teachers default to their single assignedClass (legacy parity); an
+    // explicit multi-arm list wins.
+    assignedClasses:
+      Array.isArray(assignedClasses) && assignedClasses.length > 0
+        ? assignedClasses
+        : role === "TEACHER" && assignedClass
+          ? [assignedClass]
+          : [],
     payrollStatus: role === "TEACHER" ? "PENDING" : "PAID",
     feePaid: false,
     parentId: null,
     phone,
+    phoneIdx: blindPhoneIndex(phone),
     address: "",
+    mfaSecret: "",
     createdAt: nowIso(),
   };
   users.push(user);
   persist();
-  return clone(user);
+  // Public shape (password + mfaSecret + indexes stripped) — parity with the
+  // Mongo store's toJSON transform, which strips all of them.
+  return publicUser(user);
+}
+
+/**
+ * Change a user's role — a dedicated store op so the generic updateUser path
+ * can NEVER touch role (that route forbids it by construction). Persists.
+ * Returns the user with the password hash stripped, like findUserById.
+ */
+export async function updateRole(id, newRole) {
+  const user = users.find((u) => u.id === id);
+  if (!user) return null;
+  user.role = newRole;
+  persist();
+  return publicUser(user);
 }
 
 export async function updateUser(id, patch) {
@@ -598,14 +1616,29 @@ export async function updateUser(id, patch) {
   if (!user) return null;
   // password is handled separately below — it must never touch the stored
   // object as plaintext (even transiently), only as a hash.
-  const allowed = ["name", "assignedClass", "payrollStatus", "feePaid", "parentId", "phone", "address"];
+  const allowed = [
+    "name",
+    "assignedClass",
+    "subjects",
+    "assignedClasses",
+    "payrollStatus",
+    "feePaid",
+    "parentId",
+    "phone",
+    "address",
+  ];
   allowed.forEach((k) => {
     if (patch[k] !== undefined) user[k] = patch[k];
   });
+  // Phone is PII — keep the blind index in sync (email is immutable via PATCH
+  // by design, so only phone needs recomputation here).
+  if (patch.phone !== undefined) user.phoneIdx = blindPhoneIndex(patch.phone);
   // Passwords are stored hashed (hashSync at demo cost) — hash on reset too.
   if (patch.password !== undefined) user.password = hash(patch.password);
   persist();
-  return clone(user);
+  // Strip the hash + MFA secret — no caller needs them back (parity with
+  // findUserById; the mongo store's schema transform does the same).
+  return publicUser(user);
 }
 
 /** List a parent's linked children (tenant-scoped to the parent's school). */
@@ -614,11 +1647,7 @@ export async function getChildren(parentId) {
   if (!parent) return [];
   return users
     .filter((u) => u.schoolId === parent.schoolId && u.parentId === parentId)
-    .map((u) => {
-      // Strip password hash for parity with the Mongo store
-      const { password, ...safe } = u;
-      return safe;
-    });
+    .map(publicUser);
 }
 
 export async function deleteUser(id) {
@@ -674,6 +1703,17 @@ export async function getScoresBySchool(schoolId) {
   return scores.filter((s) => s.schoolId === schoolId).map(clone);
 }
 
+/**
+ * Arm-scoped scores — ranking/report-card comparisons that only need one
+ * class arm load a bounded slice instead of the whole school's score table
+ * (the 10k-user ceiling: 10k students × 5 subjects ≈ 50k docs per request).
+ */
+export async function getScoresByClassArm(schoolId, classArm) {
+  return scores
+    .filter((s) => s.schoolId === schoolId && s.classArm === classArm)
+    .map(clone);
+}
+
 export async function getDashboardStats(schoolId) {
   const schoolUsers = users.filter((u) => u.schoolId === schoolId);
   const students = schoolUsers.filter((u) => u.role === "STUDENT");
@@ -687,10 +1727,23 @@ export async function getDashboardStats(schoolId) {
     byArm[s.assignedClass] = (byArm[s.assignedClass] || 0) + 1;
   });
 
-  // Fee amounts — only CONFIRMED payments count as collected.
-  const schoolPayments = feePayments.filter((p) => p.schoolId === schoolId);
+  // Fee amounts — scoped to the school's CURRENT session+term so the
+  // overview reflects "this term" (after a rollover, the old term's payments
+  // and structures are out of scope). Only CONFIRMED payments count.
+  const school = schools.find((s) => s.id === schoolId);
+  const schoolPayments = feePayments.filter(
+    (p) =>
+      p.schoolId === schoolId &&
+      p.session === (school?.currentSession || "2025/2026") &&
+      p.term === (school?.currentTerm || "First Term")
+  );
   const totalBilled = feeStructures
-    .filter((f) => f.schoolId === schoolId)
+    .filter(
+      (f) =>
+        f.schoolId === schoolId &&
+        f.session === (school?.currentSession || "2025/2026") &&
+        f.term === (school?.currentTerm || "First Term")
+    )
     .reduce((acc, f) => acc + f.amount * (byArm[f.classArm] || 0), 0);
   const totalCollected = schoolPayments
     .filter((p) => p.status !== "PENDING")
@@ -751,9 +1804,16 @@ export async function saveFeeStructure(schoolId, { classArm, amount, session, te
 /** Full fee ledger for a school: per-student billed / paid / balance.
  *  Only CONFIRMED payments count toward paid/balance; PENDING payments are
  *  reported separately so a parent's unconfirmed payment never clears a
- *  student's balance. */
-export async function getFeeLedger(schoolId) {
-  const students = users.filter((u) => u.schoolId === schoolId && u.role === "STUDENT");
+ *  student's balance.
+ *  Optional `{ studentIds }` scopes the ledger to a subset (the parent portal
+ *  only needs its own children — not the whole school's — per request). */
+export async function getFeeLedger(schoolId, { studentIds } = {}) {
+  const students = users.filter(
+    (u) =>
+      u.schoolId === schoolId &&
+      u.role === "STUDENT" &&
+      (!studentIds || studentIds.includes(u.id))
+  );
   const school = schools.find((s) => s.id === schoolId);
   // Scope structures to the school's CURRENT session+term so a term rollover
   // never bills students with an old term's fee.
@@ -763,13 +1823,24 @@ export async function getFeeLedger(schoolId) {
       f.session === (school?.currentSession || "2025/2026") &&
       f.term === (school?.currentTerm || "First Term")
   );
+  // Pre-scope payments too, so the per-student scan below only walks the
+  // requested subset (not the whole school's payment history).
+  // Scope payments to the school's CURRENT session+term too, so an old term's
+  // payments never satisfy the new term's balance after a rollover.
+  const scopedPayments = feePayments.filter(
+    (p) =>
+      p.schoolId === schoolId &&
+      p.session === (school?.currentSession || "2025/2026") &&
+      p.term === (school?.currentTerm || "First Term") &&
+      (!studentIds || studentIds.includes(p.studentId))
+  );
   return students.map((student) => {
     const structure = structures.find(
       (f) => f.classArm === student.assignedClass
     );
     const amount = structure?.amount || 0;
-    const payments = feePayments
-      .filter((p) => p.schoolId === schoolId && p.studentId === student.id)
+    const payments = scopedPayments
+      .filter((p) => p.studentId === student.id)
       .sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
     const confirmed = payments.filter((p) => p.status !== "PENDING");
     const pending = payments.filter((p) => p.status === "PENDING");
@@ -796,6 +1867,7 @@ export async function recordFeePayment({ schoolId, studentId, amount, method, no
     (u) => u.id === studentId && u.schoolId === schoolId && u.role === "STUDENT"
   );
   if (!student) return null;
+  const school = schools.find((s) => s.id === schoolId);
   const amt = Math.max(0, Number(amount) || 0);
   // Normalize for parity with the Mongo schema's enum validation.
   const paymentStatus = status === "PENDING" ? "PENDING" : "CONFIRMED";
@@ -806,8 +1878,11 @@ export async function recordFeePayment({ schoolId, studentId, amount, method, no
     amount: amt,
     method: method || "CASH",
     receiptNo: `RCT-${++receiptSeq}`,
-    session: "2025/2026",
-    term: "First Term",
+    // Stamp the payment with the school's CURRENT term so a term rollover
+    // archives the right rows and old-term payments never satisfy the new
+    // term's ledger.
+    session: school?.currentSession || "2025/2026",
+    term: school?.currentTerm || "First Term",
     note: note || "",
     status: paymentStatus,
     createdAt: nowIso(),
@@ -851,6 +1926,7 @@ export async function getAttendance(schoolId, classArm, date) {
 }
 
 export async function saveAttendance(schoolId, classArm, date, records) {
+  const school = schools.find((s) => s.id === schoolId);
   let rec = attendance.find(
     (a) => a.schoolId === schoolId && a.classArm === classArm && a.date === date
   );
@@ -860,8 +1936,11 @@ export async function saveAttendance(schoolId, classArm, date, records) {
       schoolId,
       classArm,
       date,
-      session: "2025/2026",
-      term: "First Term",
+      // Stamp the register with the school's CURRENT term — the rollover
+      // archives exactly the old term's registers and the new term starts
+      // with a clean count.
+      session: school?.currentSession || "2025/2026",
+      term: school?.currentTerm || "First Term",
       records: [],
       createdAt: nowIso(),
     };
@@ -877,9 +1956,14 @@ export async function saveAttendance(schoolId, classArm, date, records) {
 
 /** Attendance summary for one student: total days, present, absent. */
 export async function getStudentAttendanceSummary(schoolId, studentId) {
+  const school = schools.find((s) => s.id === schoolId);
+  // Term-scoped: "days present THIS term" must not leak the old term's
+  // registers after a rollover (the old term lives in the archive).
   const records = attendance.filter(
     (a) =>
       a.schoolId === schoolId &&
+      a.session === (school?.currentSession || "2025/2026") &&
+      a.term === (school?.currentTerm || "First Term") &&
       a.records.some((r) => r.studentId === studentId)
   );
   let present = 0;
@@ -890,13 +1974,162 @@ export async function getStudentAttendanceSummary(schoolId, studentId) {
   return { total: records.length, present, absent: records.length - present };
 }
 
+// ---- Timetable ---------------------------------------------------------------
+
+/**
+ * Weekly timetable slots for a school, optionally narrowed to one class arm
+ * and/or one school day. The route enforces role scoping on top (a teacher
+ * only ever asks about their assigned arms).
+ */
+export async function getTimetable({ schoolId, classArm, day }) {
+  return timetable
+    .filter((t) => t.schoolId === schoolId)
+    .filter((t) => (classArm ? t.classArm === classArm : true))
+    .filter((t) => (day ? t.day === day : true))
+    .map(clone);
+}
+
+/**
+ * Upsert one slot — a class arm can only hold one subject per period, so
+ * assigning a period replaces what was there. Parity with the Mongo
+ * findOneAndUpdate({ ... }, { upsert: true }).
+ */
+export async function saveTimetableEntry({ schoolId, classArm, day, period, subject, teacherId }) {
+  const school = schools.find((s) => s.id === schoolId);
+  let entry = timetable.find(
+    (t) =>
+      t.schoolId === schoolId &&
+      t.classArm === classArm &&
+      t.day === day &&
+      t.period === period
+  );
+  if (!entry) {
+    entry = {
+      id: nid("ttb"),
+      schoolId,
+      classArm,
+      day,
+      period,
+      // Stamp with the school's CURRENT term so the shared grid follows the
+      // rollover (and the term field stays honest for the archive).
+      session: school?.currentSession || "2025/2026",
+      term: school?.currentTerm || "First Term",
+      createdAt: nowIso(),
+    };
+    timetable.push(entry);
+  }
+  entry.subject = subject;
+  entry.teacherId = teacherId;
+  persist();
+  return clone(entry);
+}
+
+/** Remove one slot. Returns false when it didn't exist (parity with Mongo). */
+export async function deleteTimetableEntry({ schoolId, classArm, day, period }) {
+  const idx = timetable.findIndex(
+    (t) =>
+      t.schoolId === schoolId &&
+      t.classArm === classArm &&
+      t.day === day &&
+      t.period === period
+  );
+  if (idx === -1) return false;
+  timetable.splice(idx, 1);
+  persist();
+  return true;
+}
+
+/**
+ * Double-booking guard: any OTHER slot where the same teacher is already
+ * teaching at that day + period (in any arm). `excludeClassArm` lets the
+ * caller ignore the slot being edited (upserting your own slot is fine).
+ */
+export async function getTimetableConflict({ schoolId, teacherId, day, period, excludeClassArm }) {
+  const entry = timetable.find(
+    (t) =>
+      t.schoolId === schoolId &&
+      t.teacherId === teacherId &&
+      t.day === day &&
+      t.period === period &&
+      (!excludeClassArm || t.classArm !== excludeClassArm)
+  );
+  return entry ? clone(entry) : null;
+}
+
+// ---- Class alert preferences (per teacher) -----------------------------------
+
+const DEFAULT_ALERT_PREF = Object.freeze({
+  enabled: false,
+  leadMinutes: 5,
+  soundOn: true,
+});
+
+/** One teacher's class-alert preferences (defaults when never set). */
+export async function getClassAlertPref(schoolId, userId) {
+  const pref = classAlertPrefs.find((p) => p.schoolId === schoolId && p.userId === userId);
+  if (pref) return clone(pref);
+  return { schoolId, userId, ...DEFAULT_ALERT_PREF };
+}
+
+/** Upsert one teacher's preferences. Values are clamped like the API route. */
+export async function setClassAlertPref(schoolId, userId, patch = {}) {
+  let pref = classAlertPrefs.find((p) => p.schoolId === schoolId && p.userId === userId);
+  if (!pref) {
+    pref = {
+      id: nid("cap"),
+      schoolId,
+      userId,
+      ...DEFAULT_ALERT_PREF,
+      createdAt: nowIso(),
+    };
+    classAlertPrefs.push(pref);
+  }
+  if (patch.enabled !== undefined) pref.enabled = patch.enabled === true;
+  if (patch.soundOn !== undefined) pref.soundOn = patch.soundOn === true;
+  if (patch.leadMinutes !== undefined && [0, 5, 10, 15, 30].includes(Number(patch.leadMinutes))) {
+    pref.leadMinutes = Number(patch.leadMinutes);
+  }
+  persist();
+  return clone(pref);
+}
+
+// ---- Timetable conflict scans (the Overview health metric) -------------------
+
+/** The school's most recent timetable-conflict scan, or null when never run. */
+export async function getConflictScan(schoolId) {
+  return clone(conflictScans.find((c) => c.schoolId === schoolId) || null);
+}
+
+/**
+ * Record a conflict scan (upsert, one row per school). `conflicts` holds the
+ * resolved conflict objects, `conflictKeys` their stable identities for the
+ * next diff, and `newConflictKeys` the ones that were new at scan time.
+ */
+export async function saveConflictScan(schoolId, record) {
+  let scan = conflictScans.find((c) => c.schoolId === schoolId);
+  if (!scan) {
+    scan = { id: nid("csc"), schoolId, createdAt: nowIso() };
+    conflictScans.push(scan);
+  }
+  scan.lastRunAt = record.lastRunAt || nowIso();
+  scan.conflicts = record.conflicts || { teacher: [], arm: [] };
+  scan.conflictKeys = Array.isArray(record.conflictKeys) ? record.conflictKeys : [];
+  scan.newConflictKeys = Array.isArray(record.newConflictKeys) ? record.newConflictKeys : [];
+  scan.flaggedSlots = Array.isArray(record.flaggedSlots) ? record.flaggedSlots : [];
+  // Per-day history: keep the existing series when a caller doesn't supply
+  // one (legacy records read back as [] until the next scan writes it).
+  scan.history = Array.isArray(record.history) ? record.history : scan.history || [];
+  persist();
+  return clone(scan);
+}
+
 // ---- Marketing leads ---------------------------------------------------------
 
 /** Create a lead (demo request or newsletter subscription). Returns null if the
  *  email already exists for that kind (parity with the Mongo unique index). */
 export async function createLead({ kind, name = "", school = "", email, phone = "", size = "", interest = "", message = "", ip = "", userAgent = "" }) {
   const existing = leads.find(
-    (l) => l.kind === kind && l.email === email.toLowerCase()
+    (l) => l.kind === kind && l.emailIdx === blindEmailIndex(email)
   );
   if (existing) return null;
   const lead = {
@@ -905,6 +2138,7 @@ export async function createLead({ kind, name = "", school = "", email, phone = 
     name,
     school,
     email: email.toLowerCase(),
+    emailIdx: blindEmailIndex(email),
     phone,
     size,
     interest,
@@ -919,12 +2153,15 @@ export async function createLead({ kind, name = "", school = "", email, phone = 
   return clone(lead);
 }
 
-/** Most recent leads first (parity with Mongo listLeads). */
+/** Most recent leads first (parity with Mongo listLeads) — indexes stripped. */
 export async function listLeads(kind) {
   return leads
     .filter((l) => (kind ? l.kind === kind : true))
     .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
-    .map(clone);
+    .map((l) => {
+      const { emailIdx, ...safe } = l;
+      return safe;
+    });
 }
 
 // ---- Notifications (admin inbox) ----------------------------------------------
@@ -1076,6 +2313,53 @@ export async function logFeeAudit({
 /** Newest first (parity with Mongo's createdAt desc sort). */
 export async function listFeeAudit(schoolId, { limit = 100 } = {}) {
   return feeAudit
+    .filter((e) => e.schoolId === schoolId)
+    .sort(
+      (a, b) =>
+        new Date(b.createdAt) - new Date(a.createdAt) ||
+        Number(b.id.replace(/\D/g, "")) - Number(a.id.replace(/\D/g, ""))
+    )
+    .slice(0, limit)
+    .map(clone);
+}
+
+// ---- Role audit trail ----------------------------------------------------------
+
+/**
+ * Append a role-change audit entry — an immutable "who re-rolled whom, when".
+ * The actor is resolved by the caller (the API route) so the store stays a
+ * dumb ledger, same as logFeeAudit.
+ */
+export async function logRoleAudit({
+  schoolId,
+  actorId = "",
+  actorName,
+  actorRole = "",
+  targetId = "",
+  targetName = "",
+  fromRole = "",
+  toRole,
+}) {
+  const entry = {
+    id: nid("rla"),
+    schoolId,
+    actorId,
+    actorName: actorName || "Unknown",
+    actorRole,
+    targetId,
+    targetName: targetName || "Unknown",
+    fromRole,
+    toRole,
+    createdAt: nowIso(),
+  };
+  roleAudit.push(entry);
+  persist();
+  return clone(entry);
+}
+
+/** Newest first (parity with Mongo's createdAt desc sort). */
+export async function listRoleAudit(schoolId, { limit = 100 } = {}) {
+  return roleAudit
     .filter((e) => e.schoolId === schoolId)
     .sort(
       (a, b) =>

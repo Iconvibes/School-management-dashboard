@@ -1,9 +1,9 @@
 import { jsonError } from "@/lib/auth";
 import { store } from "@/lib/store";
-import { isDenied, requireAuth, requireClassScope } from "@/lib/policy";
+import { isDenied, requirePermission, requireClassScope } from "@/lib/policy";
 
 export async function POST(request) {
-  const session = await requireAuth(["SUPER_ADMIN", "TEACHER"]);
+  const session = await requirePermission(["SUPER_ADMIN", "TEACHER"], "scores.enter");
   if (isDenied(session)) return session;
 
   let body;
@@ -18,8 +18,10 @@ export async function POST(request) {
     return jsonError("classArm, subject and rows[] are required");
   }
 
-  // Teachers may only enter scores for their assigned arm.
-  const scope = await requireClassScope(session, { classArm, mode: "resolve", unassigned: "allow" });
+  // Teachers may only enter scores for arms they teach AND subjects they
+  // teach (a Mathematics teacher cannot grade Physics — requireClassScope
+  // enforces both gates).
+  const scope = await requireClassScope(session, { classArm, subject, mode: "resolve", unassigned: "allow" });
   if (isDenied(scope)) return scope;
 
   // Validate bounds
@@ -53,7 +55,7 @@ export async function POST(request) {
 }
 
 export async function GET(request) {
-  const session = await requireAuth(["SUPER_ADMIN", "TEACHER"]);
+  const session = await requirePermission(["SUPER_ADMIN", "TEACHER"], "scores.view");
   if (isDenied(session)) return session;
 
   const { searchParams } = new URL(request.url);
@@ -64,8 +66,8 @@ export async function GET(request) {
     return jsonError("classArm and subject query params are required");
   }
 
-  // Teachers may only read their assigned arm.
-  const scope = await requireClassScope(session, { classArm, mode: "resolve", unassigned: "allow" });
+  // Teachers may only read arms + subjects they teach.
+  const scope = await requireClassScope(session, { classArm, subject, mode: "resolve", unassigned: "allow" });
   if (isDenied(scope)) return scope;
 
   const scores = await store.getScoresByClassSubject({

@@ -1,6 +1,6 @@
 import { jsonError } from "@/lib/auth";
 import { store } from "@/lib/store";
-import { assertSameTenant, isDenied, mayResetPassword, requireAuth } from "@/lib/policy";
+import { assertSameTenant, isDenied, mayResetPassword, requirePermission } from "@/lib/policy";
 import { generatePassword, PASSWORD_MAX_LENGTH, PASSWORD_MIN_LENGTH } from "@/lib/passwords";
 
 /**
@@ -9,13 +9,14 @@ import { generatePassword, PASSWORD_MAX_LENGTH, PASSWORD_MIN_LENGTH } from "@/li
  * POST /api/users/[id]/reset-password
  *   body: { password?: string }   — omit to auto-generate a temporary one
  *
- * SUPER_ADMIN + REGISTRAR, tenant-scoped. A registrar may reset student and
- * parent passwords (handing out logins is a registrar duty) but never staff
- * or teacher credentials. Returns the NEW password in plaintext so the
- * school can hand it out (printed, copied, read over the phone).
+ * SUPER_ADMIN + REGISTRAR (users.password.reset), tenant-scoped. A registrar
+ * may reset student and parent passwords (handing out logins is a registrar
+ * duty) but never staff or teacher credentials. Returns the NEW password in
+ * plaintext so the school can hand it out (printed, copied, read over the
+ * phone).
  */
 export async function POST(request, { params }) {
-  const session = await requireAuth(["SUPER_ADMIN", "REGISTRAR"]);
+  const session = await requirePermission(["SUPER_ADMIN", "REGISTRAR"], "users.password.reset");
   if (isDenied(session)) return session;
 
   const { id } = await params;

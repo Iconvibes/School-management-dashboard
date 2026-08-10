@@ -30,10 +30,14 @@ export const TEMPLATES = {
     ],
   },
   TEACHER: {
-    headers: ["name", "email", "assigned class", "phone", "password"],
+    // `assigned class` stays the display/default arm; `subjects` and
+    // `assigned classes` carry the subject-specialist scope (multiple values
+    // separated by `;` or `|` inside one cell). Both are optional — a school
+    // can import plain single-arm teachers exactly like before.
+    headers: ["name", "email", "assigned class", "subjects", "assigned classes", "phone", "password"],
     example: [
-      ["Mrs. Adaeze Okafor", "a.okafor@school.edu.ng", "SS1 Science", "0805 111 2222", ""],
-      ["Mr. Tunde Bakare", "", "SS1 Arts", "0805 333 4444", ""],
+      ["Mrs. Adaeze Okafor", "a.okafor@school.edu.ng", "SS1 Science", "Mathematics", "SS1 Science; SS2 Science; SS3 Science", "0805 111 2222", ""],
+      ["Mr. Tunde Bakare", "", "JSS1", "English Language", "JSS1; JSS2; JSS3", "0805 333 4444", ""],
     ],
   },
 };
@@ -44,6 +48,10 @@ const ALIASES = {
   email: ["email", "email address", "emailaddress", "mail"],
   password: ["password", "pass", "temp password", "temporary password"],
   classArm: ["class", "class arm", "classarm", "assigned class", "assignedclass", "arm", "class name", "stream"],
+  // Subject-specialist teaching scope: a teacher teaches SUBJECTS across
+  // MULTIPLE arms. Multiple values live in one cell, separated by `;` or `|`.
+  subjects: ["subjects", "subject", "subject taught", "subjectstaught", "courses", "course"],
+  assignedClasses: ["assigned classes", "assignedclasses", "class arms", "classarms", "classes taught", "classestaught", "arms taught", "armstaught"],
   phone: ["phone", "phone number", "phonenumber", "telephone", "mobile", "contact", "tel"],
   parentName: ["parent name", "parentname", "guardian name", "guardianname", "parent/guardian", "parent", "guardian"],
   parentPhone: ["parent phone", "parentphone", "guardian phone", "guardianphone"],
@@ -69,6 +77,21 @@ export function mapColumns(headers) {
 }
 
 const cell = (cells, i) => (i !== undefined && i < cells.length ? String(cells[i] ?? "") : "");
+
+/**
+ * Split a multi-value CSV cell ("A; B|C") into trimmed, de-duped strings.
+ * Semicolon and pipe both work as separators — semicolon is the common Excel
+ * in-cell separator, pipe is the one that can never collide with the CSV
+ * delimiter (a European-locale file may itself use `;`).
+ */
+export function splitList(value) {
+  return [...new Set(
+    String(value || "")
+      .split(/[;|]/)
+      .map((s) => s.trim())
+      .filter(Boolean)
+  )];
+}
 
 /**
  * Parse CSV text into normalized rows for a role.
@@ -106,6 +129,9 @@ export function parseRows(role, csvText) {
     phone: cell(cells, map.phone).trim(),
     parentName: role === "STUDENT" ? cell(cells, map.parentName).trim() : "",
     parentPhone: role === "STUDENT" ? cell(cells, map.parentPhone).trim() : "",
+    // Teacher subject-specialist scope — multi-value cells, split + cleaned.
+    subjects: role === "TEACHER" ? splitList(cell(cells, map.subjects)) : [],
+    assignedClasses: role === "TEACHER" ? splitList(cell(cells, map.assignedClasses)) : [],
   }));
 
   return { rows, unknown };
@@ -298,10 +324,28 @@ export function planImport({
     const name = r.name.trim();
     if (!name) rowErrors.push("Name is required");
 
+    // Teacher subject-specialist scope: the singular `assigned class` column
+    // stays the display/default arm; the multi-value `assigned classes` column
+    // is the full set of arms taught. Every arm gets the same known/create
+    // treatment as the singular one. Students keep the single arm.
+    const isTeacher = role === "TEACHER";
     const arm = r.classArm.trim();
-    if (arm && !knownArms.has(arm)) {
-      if (createArms) armsToAdd.add(arm);
-      else rowErrors.push(`Unknown class arm “${arm}” — add it in Settings or enable auto-create`);
+    // The multi-value `assigned classes` list is the authoritative arm set;
+    // the singular `assigned class` column is only appended when it names an
+    // arm not already in that list (dedupe keeps the list's own order).
+    const armList = isTeacher
+      ? [...new Set(
+          [...(r.assignedClasses || []), ...(arm ? [arm] : [])].filter(Boolean)
+        )]
+      : arm
+        ? [arm]
+        : [];
+    const primaryArm = isTeacher && !arm && armList.length ? armList[0] : arm;
+    for (const a of armList) {
+      if (!knownArms.has(a)) {
+        if (createArms) armsToAdd.add(a);
+        else rowErrors.push(`Unknown class arm “${a}” — add it in Settings or enable auto-create`);
+      }
     }
 
     const providedEmail = r.email.toLowerCase();
@@ -309,8 +353,19 @@ export function planImport({
       rowErrors.push("Invalid email format");
     }
 
-    const password = r.password || defaultPassword || "";
-    if (password.length < 6) {
+    const rawPassword = r.password || defaultPassword || "";
+    let password = rawPassword;
+    if (!password) {
+      // Students auto-derive a password as name + class arm (lowercased,
+      // unspaced — "Adam Tope" → "adamtopejss1") so they never need an
+      // admin-chosen one. Staff imports still require a valid password.
+      if (role === "STUDENT") {
+        const slug = (s) => String(s || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+        password = `${slug(name)}${slug(primaryArm)}`;
+      } else {
+        rowErrors.push("Password must be at least 6 characters");
+      }
+    } else if (password.length < 6) {
       rowErrors.push("Password must be at least 6 characters");
     }
 
@@ -339,7 +394,7 @@ export function planImport({
         email = uniqueEmail(emailSlug(name), domain, usedEmails);
       }
 
-      if (status === "ok" && isPossibleDuplicate(name, arm, r.phone)) {
+      if (status === "ok" && isPossibleDuplicate(name, primaryArm, r.phone)) {
         status = "duplicate";
         error = "Possible duplicate entry (same name, class and phone)";
       }
@@ -355,7 +410,11 @@ export function planImport({
       row: r.row,
       name,
       email,
-      assignedClass: arm,
+      assignedClass: primaryArm,
+      // Teacher subject-specialist scope — what applyImport passes to
+      // createUser. Empty for students (and legacy single-arm teachers).
+      subjects: isTeacher ? (r.subjects || []) : [],
+      assignedClasses: isTeacher ? armList : [],
       phone: r.phone,
       password,
       parentKey,
@@ -472,6 +531,11 @@ export async function applyImport({ store, schoolId, role, plans, parentRefs, ne
             password: p.password,
             role,
             assignedClass: p.assignedClass,
+            // Subject-specialist scope rides along — the teacher lands with
+            // their subjects × arms already set, matching what the admin
+            // console's form would produce.
+            subjects: p.subjects || [],
+            assignedClasses: p.assignedClasses || [],
             phone: p.phone,
           });
           if (role === "TEACHER") created.teachers++;

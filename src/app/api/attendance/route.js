@@ -1,6 +1,6 @@
 import { jsonError } from "@/lib/auth";
 import { store } from "@/lib/store";
-import { isDenied, requireAuth, requireClassScope } from "@/lib/policy";
+import { isDenied, requirePermission, requireClassScope } from "@/lib/policy";
 
 // Local (not UTC) date so registers default to the actual school day
 function localDateStr() {
@@ -16,7 +16,7 @@ function localDateStr() {
  * SUPER_ADMIN may read any arm; TEACHER only their assigned arm.
  */
 export async function GET(request) {
-  const session = await requireAuth(["SUPER_ADMIN", "TEACHER"]);
+  const session = await requirePermission(["SUPER_ADMIN", "TEACHER"], "attendance.view");
   if (isDenied(session)) return session;
 
   const { searchParams } = new URL(request.url);
@@ -62,7 +62,7 @@ export async function GET(request) {
  * POST /api/attendance — save a register { classArm, date, rows: [{studentId, present}] }
  */
 export async function POST(request) {
-  const session = await requireAuth(["SUPER_ADMIN", "TEACHER"]);
+  const session = await requirePermission(["SUPER_ADMIN", "TEACHER"], "attendance.mark");
   if (isDenied(session)) return session;
 
   let body;

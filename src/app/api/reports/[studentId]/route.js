@@ -9,7 +9,7 @@ import { rankClassPosition } from "@/lib/ranking";
 import {
   assertSameTenant,
   isDenied,
-  requireAuth,
+  requirePermission,
   requireClassScope,
   requireOwnChild,
 } from "@/lib/policy";
@@ -22,7 +22,10 @@ import {
  * their own linked children.
  */
 export async function GET(request, { params }) {
-  const session = await requireAuth(["SUPER_ADMIN", "REGISTRAR", "TEACHER", "PARENT"]);
+  const session = await requirePermission(
+    ["SUPER_ADMIN", "REGISTRAR", "TEACHER", "PARENT"],
+    "reports.view"
+  );
   if (isDenied(session)) return session;
 
   const { studentId } = await params;
@@ -59,7 +62,8 @@ export async function GET(request, { params }) {
       role: "STUDENT",
       classArm: student.assignedClass,
     });
-    const classScores = await store.getScoresBySchool(session.schoolId);
+    // Only this student's arm is needed for the class position.
+    const classScores = await store.getScoresByClassArm(session.schoolId, student.assignedClass);
     const classMap = {};
     classScores.forEach((s) => {
       if (!classMap[s.studentId]) classMap[s.studentId] = [];

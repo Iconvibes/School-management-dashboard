@@ -1,14 +1,14 @@
 import { jsonError } from "@/lib/auth";
 import { store } from "@/lib/store";
-import { isDenied, requireAuth } from "@/lib/policy";
+import { isDenied, requirePermission } from "@/lib/policy";
 
 /**
  * POST /api/notifications/read
  * Body: { ids: string[] } — mark those notifications read for the school.
- * Returns the remaining unread count.
+ * notifications.view (SUPER_ADMIN). Returns the remaining unread count.
  */
 export async function POST(request) {
-  const session = await requireAuth(["SUPER_ADMIN"]);
+  const session = await requirePermission(["SUPER_ADMIN"], "notifications.view");
   if (isDenied(session)) return session;
 
   let body;

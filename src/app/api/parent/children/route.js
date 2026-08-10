@@ -15,17 +15,35 @@ export async function GET() {
   if (isDenied(session)) return session;
 
   const children = await store.getChildren(session.userId);
-  const [school, allScores, students] = await Promise.all([
+  const childIds = children.map((c) => c.id);
+  const [school, ledger] = await Promise.all([
     store.getSchoolById(session.schoolId),
-    store.getScoresBySchool(session.schoolId),
-    store.listUsers({ schoolId: session.schoolId, role: "STUDENT" }),
+    // Only the children's ledger rows — not the whole school's (10k-user
+    // ceiling: a parent with 2 kids must not pay for 10k students' fees).
+    store.getFeeLedger(session.schoolId, { studentIds: childIds }),
   ]);
-  const ledger = await store.getFeeLedger(session.schoolId);
 
+  // Load scores + classmates only for the arms this parent's children are
+  // in — the class position needs the arm's ranking, nothing more.
+  const arms = [...new Set(children.map((c) => c.assignedClass).filter(Boolean))];
+  const armData = await Promise.all(
+    arms.map(async (arm) => {
+      const [armStudents, armScores] = await Promise.all([
+        store.listUsers({ schoolId: session.schoolId, role: "STUDENT", classArm: arm }),
+        store.getScoresByClassArm(session.schoolId, arm),
+      ]);
+      return { arm, students: armStudents, scores: armScores };
+    })
+  );
+
+  const students = [];
   const scoreMap = {};
-  allScores.forEach((s) => {
-    if (!scoreMap[s.studentId]) scoreMap[s.studentId] = [];
-    scoreMap[s.studentId].push(s);
+  armData.forEach(({ students: armStudents, scores: armScores }) => {
+    students.push(...armStudents);
+    armScores.forEach((s) => {
+      if (!scoreMap[s.studentId]) scoreMap[s.studentId] = [];
+      scoreMap[s.studentId].push(s);
+    });
   });
 
   const armRankings = buildArmRankings(students, scoreMap);

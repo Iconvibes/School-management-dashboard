@@ -1,20 +1,31 @@
-import jwt from "jsonwebtoken";
-import { cookies } from "next/headers";
+// Token sign/verify, the cookie name and expiry live in ./token.js (pure, no
+// Next imports) so the page-route proxy shares one source of truth.
+import {
+  COOKIE_NAME,
+  MFA_COOKIE_NAME,
+  MFA_MAX_AGE,
+  MAX_AGE,
+  signToken,
+  verifyToken,
+  verifyMfaToken,
+} from "@/lib/token";
+// `next/headers.js` (not `next/headers`): Next aliases the extensionless form
+// internally, but plain `node --test` resolves this file's imports too, so the
+// policy tests in tests/policy.test.js can exercise the real guard. Both forms
+// point at the same dist implementation.
+import { cookies } from "next/headers.js";
+// `next/server.js` (not `next/server`): same alias rule as next/headers.js above
+// — Next resolves both, but plain `node --test` needs the explicit extension.
+import { NextResponse } from "next/server.js";
 
-const SECRET = process.env.JWT_SECRET || "edutrack-dev-secret-change-in-prod";
-export const COOKIE_NAME = "edutrack_token";
-const MAX_AGE = 60 * 60 * 24 * 7; // 7 days
+export { COOKIE_NAME, signToken, verifyToken, MFA_COOKIE_NAME };
 
-export function signToken(payload) {
-  return jwt.sign(payload, SECRET, { expiresIn: "7d" });
-}
-
-export function verifyToken(token) {
-  try {
-    return jwt.verify(token, SECRET);
-  } catch {
-    return null;
-  }
+/** Read and verify the MFA pending cookie (second step of a two-step login). */
+export async function getPendingMfa() {
+  const store = await cookies();
+  const token = store.get(MFA_COOKIE_NAME)?.value;
+  if (!token) return null;
+  return verifyMfaToken(token);
 }
 
 /** Read and verify the session cookie in a Route Handler / Server Component. */
@@ -47,6 +58,30 @@ export function clearAuthCookie(res) {
   return res;
 }
 
+/** Issue the short-lived MFA pending ticket (signed by the caller). */
+export function setMfaCookie(res, token) {
+  res.cookies.set(MFA_COOKIE_NAME, token, {
+    httpOnly: true,
+    sameSite: "lax",
+    secure: process.env.NODE_ENV === "production",
+    path: "/",
+    maxAge: MFA_MAX_AGE,
+  });
+  return res;
+}
+
+export function clearMfaCookie(res) {
+  res.cookies.set(MFA_COOKIE_NAME, "", {
+    httpOnly: true,
+    sameSite: "lax",
+    path: "/",
+    maxAge: 0,
+  });
+  return res;
+}
+
 export function jsonError(message, status = 400, extra = {}) {
-  return Response.json({ error: message, ...extra }, { status });
+  // NextResponse (not Response): some callers pass the result to
+  // setAuthCookie/setMfaCookie/clearMfaCookie, which need res.cookies.
+  return NextResponse.json({ error: message, ...extra }, { status });
 }

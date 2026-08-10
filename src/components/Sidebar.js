@@ -12,58 +12,75 @@ import {
   FileText,
   Wallet,
   CalendarCheck,
+  CalendarDays,
   HeartHandshake,
   Upload,
   UserPlus,
+  ShieldCheck,
+  Layers,
+  History,
 } from "lucide-react";
 import Logo from "@/components/Logo";
 import NotificationsBell from "@/components/NotificationsBell";
+import { can } from "@/lib/permissions";
 
 export default function Sidebar({ role, open, onClose }) {
   const router = useRouter();
 
-  // The admin console shows different navigation per staff role:
-  //   SUPER_ADMIN — everything
-  //   BURSAR     — overview + fee management (no roster tools, no payroll)
-  //   REGISTRAR  — overview + roster tools + report cards (no fee access)
+  // The admin-console navigation is permission-driven — ROLE_PERMISSIONS is
+  // the single source of truth, so the menu can never drift from what the
+  // API enforces. The teacher/parent/student portals are role HOMES, not
+  // permission-gated actions, so they keep their own fixed lists.
   const items =
-    role === "SUPER_ADMIN"
-      ? [
-          { href: "/admin/dashboard", label: "Overview", icon: LayoutDashboard },
-          { href: "/admin/import", label: "Bulk Import", icon: Upload },
-          { href: "/admin/quick-add", label: "Quick Add", icon: UserPlus },
-          { href: "/admin/placeholders", label: "From Class Sizes", icon: ClipboardList },
-          { href: "/admin/dashboard#teachers", label: "Teachers & Payroll", icon: Users },
-          { href: "/admin/dashboard#students", label: "Students & Fees", icon: BookOpen },
-          { href: "/admin/dashboard#fees", label: "Fee Management", icon: Wallet },
-          { href: "/admin/dashboard#reports", label: "Report Cards", icon: ClipboardList },
-        ]
-      : role === "BURSAR"
-      ? [
-          { href: "/admin/dashboard", label: "Overview", icon: LayoutDashboard },
-          { href: "/admin/dashboard#fees", label: "Fee Management", icon: Wallet },
-        ]
-      : role === "REGISTRAR"
-      ? [
-          { href: "/admin/dashboard", label: "Overview", icon: LayoutDashboard },
-          { href: "/admin/import", label: "Bulk Import", icon: Upload },
-          { href: "/admin/quick-add", label: "Quick Add", icon: UserPlus },
-          { href: "/admin/placeholders", label: "From Class Sizes", icon: ClipboardList },
-          { href: "/admin/dashboard#students", label: "Students & Fees", icon: BookOpen },
-          { href: "/admin/dashboard#reports", label: "Report Cards", icon: ClipboardList },
-        ]
-      : role === "TEACHER"
+    role === "TEACHER"
       ? [
           { href: "/teacher/dashboard", label: "Grading Matrix", icon: ClipboardList },
           { href: "/teacher/dashboard#attendance", label: "Attendance", icon: CalendarCheck },
+          { href: "/teacher/dashboard#timetable", label: "My Timetable", icon: CalendarDays },
           { href: "/teacher/dashboard#reports", label: "Report Cards", icon: FileText },
         ]
       : role === "PARENT"
+      ? [{ href: "/parent/dashboard", label: "My Children", icon: HeartHandshake }]
+      : role === "STUDENT"
       ? [
-          { href: "/parent/dashboard", label: "My Children", icon: HeartHandshake },
+          { href: "/student/dashboard", label: "My Report", icon: BookOpen },
+          { href: "/student/dashboard#timetable", label: "My Timetable", icon: CalendarDays },
         ]
       : [
-          { href: "/student/dashboard", label: "My Report", icon: BookOpen },
+          ...(can(role, "stats.view")
+            ? [{ href: "/admin/dashboard", label: "Overview", icon: LayoutDashboard }]
+            : []),
+          ...(can(role, "students.manage")
+            ? [
+                { href: "/admin/import", label: "Bulk Import", icon: Upload },
+                { href: "/admin/quick-add", label: "Quick Add", icon: UserPlus },
+                { href: "/admin/placeholders", label: "From Class Sizes", icon: ClipboardList },
+              ]
+            : []),
+          ...(can(role, "school.edit")
+            ? [{ href: "/admin/dashboard#classes", label: "Classes & Arms", icon: Layers }]
+            : []),
+          ...(can(role, "users.manage")
+            ? [{ href: "/admin/dashboard#teachers", label: "Teachers & Payroll", icon: Users }]
+            : []),
+          ...(can(role, "roles.manage")
+            ? [{ href: "/admin/dashboard#roles", label: "Roles & Access", icon: ShieldCheck }]
+            : []),
+          ...(can(role, "timetable.manage")
+            ? [{ href: "/admin/dashboard#timetable", label: "Timetable", icon: CalendarDays }]
+            : []),
+          ...(can(role, "students.manage")
+            ? [{ href: "/admin/dashboard#students", label: "Students & Fees", icon: BookOpen }]
+            : []),
+          ...(can(role, "fees.view")
+            ? [{ href: "/admin/dashboard#fees", label: "Fee Management", icon: Wallet }]
+            : []),
+          ...(can(role, "reports.view")
+            ? [{ href: "/admin/dashboard#reports", label: "Report Cards", icon: ClipboardList }]
+            : []),
+          ...(can(role, "reports.view")
+            ? [{ href: "/admin/dashboard#archives", label: "Previous Terms", icon: History }]
+            : []),
         ];
 
   async function handleLogout() {

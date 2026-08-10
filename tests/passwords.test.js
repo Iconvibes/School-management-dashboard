@@ -61,8 +61,13 @@ describe("updateUser password hashing (demo store)", () => {
   it("stores the reset password hashed, never in plaintext", async () => {
     const updated = await demoStore.updateUser(seeded.id, { password: "B3tterPass" });
     assert.equal(updated.name, seeded.name);
-    assert.notEqual(updated.password, "B3tterPass");
-    assert.ok(bcrypt.compareSync("B3tterPass", updated.password), "hash must verify");
+    // Parity with the mongo store: updateUser never returns the hash (its
+    // schema transform strips it) — the stored hash is only reachable through
+    // the login-shape lookup.
+    assert.equal(updated.password, undefined, "hash never returned by updateUser");
+    const stored = await demoStore.findUserByEmailInSchool(school.id, seeded.email);
+    assert.notEqual(stored.password, "B3tterPass");
+    assert.ok(bcrypt.compareSync("B3tterPass", stored.password), "hash must verify");
   });
 
   it("keeps other fields when resetting the password", async () => {
@@ -93,13 +98,15 @@ describe("reset-password end-to-end (demo store)", () => {
 
     // The reset flow: generate a new password, store it via updateUser.
     const fresh = generatePassword();
-    const updated = await demoStore.updateUser(seeded.id, { password: fresh });
+    await demoStore.updateUser(seeded.id, { password: fresh });
 
-    // Old password must now fail against the stored hash.
-    assert.ok(!bcrypt.compareSync("student123", updated.password));
+    // Old password must now fail against the stored hash (fetched via the
+    // login-shape lookup — updateUser does not return the hash).
+    const stored = await demoStore.findUserByEmailInSchool(school.id, seeded.email);
+    assert.ok(!bcrypt.compareSync("student123", stored.password));
 
     // New password must verify exactly as the login route does (bcrypt.compare).
-    const after = await demoStore.findUserByEmailInSchool(school.id, seeded.email);
+    const after = stored;
     assert.ok(await bcrypt.compare(fresh, after.password), "new password logs in");
     assert.ok(!(await bcrypt.compare("student123", after.password)), "old password rejected");
   });

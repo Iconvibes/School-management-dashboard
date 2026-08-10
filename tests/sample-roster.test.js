@@ -22,9 +22,9 @@ describe("generateRosterCsv", () => {
     assert.equal(a, b);
   });
 
-  it("generates 900 students + header across the six seeded arms", () => {
+  it("generates 1800 students + header across the twelve seeded arms", () => {
     const table = parseCSV(generateRosterCsv({ role: "STUDENT" }));
-    assert.equal(table.length, 901); // header + 900
+    assert.equal(table.length, 1801); // header + 1800
     assert.deepEqual(
       table[0],
       ["name", "email", "class", "phone", "password", "parent name", "parent phone"]
@@ -38,19 +38,17 @@ describe("generateRosterCsv", () => {
       counts[r[2]] = (counts[r[2]] || 0) + 1;
     });
     assert.deepEqual(counts, {
-      "SS1 Science": 150,
-      "SS1 Arts": 150,
-      "SS2 Science": 150,
-      "SS2 Arts": 150,
-      "SS3 Science": 150,
-      "SS3 Arts": 150,
+      "JSS1": 150, "JSS2": 150, "JSS3": 150,
+      "SS1 Science": 150, "SS1 Arts": 150, "SS1 Commercial": 150,
+      "SS2 Science": 150, "SS2 Arts": 150, "SS2 Commercial": 150,
+      "SS3 Science": 150, "SS3 Arts": 150, "SS3 Commercial": 150,
     });
   });
 
   it("gives every student a unique phone", () => {
     const table = parseCSV(generateRosterCsv({ role: "STUDENT" }));
     const phones = new Set(table.slice(1).map((r) => r[3]));
-    assert.equal(phones.size, 900);
+    assert.equal(phones.size, 1800);
   });
 
   it("shares parents between sibling students", () => {
@@ -63,12 +61,23 @@ describe("generateRosterCsv", () => {
     assert.ok(siblings.length > 0, "expected some parents to have multiple children");
   });
 
-  it("generates 50 teachers round-robined across arms", () => {
+  it("generates 50 subject-specialist teachers with subjects × arms", () => {
     const table = parseCSV(generateRosterCsv({ role: "TEACHER" }));
     assert.equal(table.length, 51); // header + 50
-    assert.deepEqual(table[0], ["name", "email", "assigned class", "phone", "password"]);
-    const arms = new Set(table.slice(1).map((r) => r[2]));
-    assert.deepEqual([...arms].sort(), [...DEFAULT_SAMPLE_ARMS].sort());
+    assert.deepEqual(table[0], [
+      "name", "email", "assigned class", "subjects", "assigned classes", "phone", "password",
+    ]);
+    const subjects = new Set(table.slice(1).map((r) => r[3].split("; ")[0]));
+    assert.ok(subjects.has("Mathematics"), "a Mathematics teacher is in the sample");
+    assert.ok(subjects.has("English Language"), "an English teacher is in the sample");
+    // Every teacher carries the full arm list of their profile, and the
+    // profiles together cover every arm of the school.
+    const allArms = new Set(
+      table.slice(1).flatMap((r) => r[4].split("; "))
+    );
+    assert.deepEqual([...allArms].sort(), [...DEFAULT_SAMPLE_ARMS].sort());
+    // Display arm is the first of the profile's arms (JSS1 — plain class).
+    assert.equal(table[1][2], "JSS1");
   });
 });
 
