@@ -13,7 +13,7 @@ const leadSchema = new mongoose.Schema(
     kind: {
       type: String,
       required: true,
-      enum: ["demo", "newsletter"],
+      enum: ["demo", "newsletter", "exit"],
       index: true,
     },
     name: { type: String, default: "", trim: true },

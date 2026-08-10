@@ -60,16 +60,6 @@ export function proxy(request) {
     return NextResponse.next();
   }
 
-  // MFA screens are mid-login: the browser holds the short-lived pending
-  // ticket, not a session. A fully authenticated session has already passed
-  // MFA, so send it home instead.
-  if (pathname === "/mfa" || pathname.startsWith("/mfa/")) {
-    if (session?.role) {
-      return NextResponse.redirect(new URL(ROLE_HOME[session.role] || "/", request.url));
-    }
-    return NextResponse.next();
-  }
-
   const guard = matchPortalGuard(pathname);
   if (!guard) return NextResponse.next();
 
@@ -102,6 +92,5 @@ export const config = {
     "/login",
     "/register",
     "/onboarding",
-    "/mfa/:path*",
   ],
 };

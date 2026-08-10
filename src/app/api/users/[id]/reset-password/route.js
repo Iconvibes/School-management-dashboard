@@ -47,7 +47,12 @@ export async function POST(request, { params }) {
     return jsonError(`Password must be at most ${PASSWORD_MAX_LENGTH} characters`);
   }
 
-  const user = await store.updateUser(id, { password: newPassword });
+  const user = await store.updateUser(id, {
+    password: newPassword,
+    // Keep the Login Details lookup current: the reset password is recorded
+    // so the admin can always look up (and export) what any account now is.
+    generatedPassword: newPassword,
+  });
   if (!user) return jsonError("User not found", 404);
 
   return Response.json({

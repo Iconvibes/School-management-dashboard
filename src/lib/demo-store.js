@@ -10,6 +10,7 @@ import {
 } from "@/lib/field-crypto";
 import { DAYS, DEFAULT_PERIOD_TIMES } from "@/lib/timetable";
 import { armAlreadyExists } from "@/lib/arms";
+import { nameSlug } from "@/lib/passwords";
 
 /**
  * In-memory store used when MONGODB_URI is not set (demo mode).
@@ -296,7 +297,11 @@ function seed() {
     id: nid("sch"),
     name: "Greenfield International School",
     logoUrl: "",
+    sealUrl: "",
     brandColor: "#2563EB",
+    // "active" | "frozen" — a frozen school blocks every non-super-admin
+    // login while keeping all data (see setSchoolStatus).
+    status: "active",
     // The REAL Nigerian secondary structure: JSS1–JSS3 are plain classes
     // (no Science/Arts/Commercial streams — streaming starts at SSS), and
     // only SS1–SS3 split into the three streams — 12 class arms in total.
@@ -343,7 +348,6 @@ function seed() {
       phone: "",
       phoneIdx: "",
       address: "",
-      mfaSecret: "",
       createdAt: nowIso(),
       ...extra,
     };
@@ -1035,14 +1039,12 @@ export function __reloadDemoStore() {
 const clone = (obj) => (obj ? { ...obj } : obj);
 
 /**
- * The public user shape: password, mfaSecret AND blind indexes stripped,
- * with an mfaEnabled boolean — parity with the Mongo model's toJSON
- * transform. Blind indexes must never leave the server (they would enable
- * offline dictionary attacks on emails).
+ * The public user shape: password AND blind indexes stripped — parity with
+ * the Mongo model's toJSON transform. Blind indexes must never leave the
+ * server (they would enable offline dictionary attacks on emails).
  */
 function publicUser(user) {
-  const { password, mfaSecret, emailIdx, phoneIdx, ...safe } = user;
-  safe.mfaEnabled = !!user.mfaSecret;
+  const { password, emailIdx, phoneIdx, ...safe } = user;
   safe.subjects = Array.isArray(user.subjects) ? user.subjects : [];
   safe.assignedClasses = Array.isArray(user.assignedClasses) ? user.assignedClasses : [];
   return safe;
@@ -1055,7 +1057,11 @@ export async function createSchoolAndAdmin({ schoolName, adminName, email, passw
     id: nid("sch"),
     name: schoolName,
     logoUrl: "",
+    sealUrl: "",
     brandColor: "#2563EB",
+    // New schools start active; the founding admin can freeze the account
+    // later from the dashboard danger zone (soft deactivation).
+    status: "active",
     activeArms: [],
     currentSession: "2025/2026",
     currentTerm: "First Term",
@@ -1079,7 +1085,6 @@ export async function createSchoolAndAdmin({ schoolName, adminName, email, passw
     phone: "",
     phoneIdx: "",
     address: "",
-    mfaSecret: "",
     createdAt: nowIso(),
   };
   users.push(user);
@@ -1108,7 +1113,11 @@ export async function searchSchools(search, limit = 8) {
       id: s.id,
       name: s.name,
       logoUrl: s.logoUrl || "",
+      sealUrl: s.sealUrl || "",
       brandColor: s.brandColor || "#2563EB",
+      // "active" | "frozen" — the login page shows a notice when someone
+      // picks a deactivated school, before they type credentials.
+      status: s.status || "active",
     }));
 }
 
@@ -1124,24 +1133,12 @@ export async function findUserById(id) {
 }
 
 /**
- * Auth-data lookup by id (MFA flows hold a userId, not an email). Returns
- * password + mfaSecret like findUserByEmailInSchool — never serialized.
+ * Auth-data lookup by id (password verification needs the hash, not the
+ * public shape). Returns password like findUserByEmailInSchool — never
+ * serialized.
  */
-export async function findUserByIdWithSecret(id) {
+export async function findUserByIdWithAuth(id) {
   return clone(users.find((u) => u.id === id));
-}
-
-/**
- * Save a TOTP secret — a dedicated store op so the generic updateUser path
- * can NEVER touch mfaSecret (enrollment is self-service by construction).
- * Returns the public user shape (secret stripped).
- */
-export async function setMfaSecret(id, mfaSecret) {
-  const user = users.find((u) => u.id === id);
-  if (!user) return null;
-  user.mfaSecret = mfaSecret;
-  persist();
-  return publicUser(user);
 }
 
 export async function getSchoolById(id) {
@@ -1151,7 +1148,7 @@ export async function getSchoolById(id) {
 export async function updateSchool(id, patch) {
   const school = schools.find((s) => s.id === id);
   if (!school) return null;
-  const allowed = ["name", "logoUrl", "brandColor", "activeArms", "currentSession", "currentTerm", "onboardingComplete", "periodTimes", "breakTimes", "dailySchedules"];
+  const allowed = ["name", "logoUrl", "sealUrl", "brandColor", "activeArms", "currentSession", "currentTerm", "onboardingComplete", "periodTimes", "breakTimes", "dailySchedules"];
   allowed.forEach((k) => {
     if (patch[k] !== undefined) school[k] = patch[k];
   });
@@ -1538,12 +1535,13 @@ export async function countUsers({ schoolId, role, classArm }) {
 }
 
 /**
- * Lean auth hot-path lookup — role/schoolId/assignedClass/subjects/arms ONLY.
- * Every authed request revalidates the session through requireAuth; this
- * deliberately skips the publicUser transform so a request storm never pays
- * for building (or decrypting) the full user shape per request. The teaching
- * arrays ride along because requireClassScope needs them for the subject-
- * specialist scope (they are tiny).
+ * Lean auth hot-path lookup — role/schoolId/assignedClass/subjects/arms/
+ * tokenVersion ONLY. Every authed request revalidates the session through
+ * requireAuth; this deliberately skips the publicUser transform so a request
+ * storm never pays for building (or decrypting) the full user shape per
+ * request. The teaching arrays ride along because requireClassScope needs
+ * them for the subject-specialist scope (they are tiny); tokenVersion rides
+ * along so the auth guard can revoke stale sessions after a password change.
  */
 export async function findAuthSnapshot(id) {
   const user = users.find((u) => u.id === id);
@@ -1556,14 +1554,20 @@ export async function findAuthSnapshot(id) {
     id: user.id,
     role: user.role,
     schoolId: user.schoolId,
+    // The school's freeze status — the auth guard uses it to reject every
+    // non-super-admin request the moment a school is deactivated, without a
+    // second lookup.
+    schoolStatus: schools.find((s) => s.id === user.schoolId)?.status || "active",
     // Normalize like the Mongo store so both shapes are identical.
     assignedClass: user.assignedClass || "",
     subjects: Array.isArray(user.subjects) ? user.subjects : [],
     assignedClasses: arms,
+    // Session-revocation counter — legacy rows without it read as 0.
+    tokenVersion: user.tokenVersion || 0,
   };
 }
 
-export async function createUser({ schoolId, name, email, password, role, assignedClass = "", phone = "", subjects = [], assignedClasses = [] }) {
+export async function createUser({ schoolId, name, email, password, role, assignedClass = "", phone = "", subjects = [], assignedClasses = [], generatedPassword }) {
   const user = {
     id: nid("usr"),
     name,
@@ -1582,19 +1586,19 @@ export async function createUser({ schoolId, name, email, password, role, assign
         : role === "TEACHER" && assignedClass
           ? [assignedClass]
           : [],
+    generatedPassword: generatedPassword || "",
     payrollStatus: role === "TEACHER" ? "PENDING" : "PAID",
     feePaid: false,
     parentId: null,
     phone,
     phoneIdx: blindPhoneIndex(phone),
     address: "",
-    mfaSecret: "",
     createdAt: nowIso(),
   };
   users.push(user);
   persist();
-  // Public shape (password + mfaSecret + indexes stripped) — parity with the
-  // Mongo store's toJSON transform, which strips all of them.
+  // Public shape (password + indexes stripped) — parity with the Mongo
+  // store's toJSON transform, which strips all of them.
   return publicUser(user);
 }
 
@@ -1626,6 +1630,10 @@ export async function updateUser(id, patch) {
     "parentId",
     "phone",
     "address",
+    "generatedPassword",
+    // Session revocation: bumped by the change-password route so every token
+    // signed before the change dies on its next use.
+    "tokenVersion",
   ];
   allowed.forEach((k) => {
     if (patch[k] !== undefined) user[k] = patch[k];
@@ -1635,9 +1643,24 @@ export async function updateUser(id, patch) {
   if (patch.phone !== undefined) user.phoneIdx = blindPhoneIndex(patch.phone);
   // Passwords are stored hashed (hashSync at demo cost) — hash on reset too.
   if (patch.password !== undefined) user.password = hash(patch.password);
+  // Parent-link sync: when a student is linked to a parent, that parent's
+  // login password becomes the child's full name (slugged — lowercase,
+  // unspaced), recorded in generatedPassword so the admin can look it up.
+  // Linking several children updates it to the most recent one; the login
+  // route also accepts ANY linked child's name, so the parent can sign in
+  // with whichever child they remember. Unlinking (parentId: null) changes
+  // nothing.
+  if (patch.parentId !== undefined && user.role === "STUDENT") {
+    const parent = user.parentId ? users.find((u) => u.id === user.parentId) : null;
+    if (parent && parent.role === "PARENT" && parent.schoolId === user.schoolId) {
+      const slug = nameSlug(user.name);
+      parent.password = hash(slug);
+      parent.generatedPassword = slug;
+    }
+  }
   persist();
-  // Strip the hash + MFA secret — no caller needs them back (parity with
-  // findUserById; the mongo store's schema transform does the same).
+  // Strip the hash — no caller needs it back (parity with findUserById; the
+  // mongo store's schema transform does the same).
   return publicUser(user);
 }
 
@@ -1653,9 +1676,101 @@ export async function getChildren(parentId) {
 export async function deleteUser(id) {
   const idx = users.findIndex((u) => u.id === id);
   if (idx === -1) return false;
+  const user = users[idx];
   users.splice(idx, 1);
+  // Cascade: a removed student takes their scores, attendance and fee
+  // payments with them; a removed teacher frees their timetable slots.
+  const drop = (arr, key) => {
+    for (let i = arr.length - 1; i >= 0; i--) {
+      if (arr[i][key] === id) arr.splice(i, 1);
+    }
+  };
+  if (user.role === "STUDENT") {
+    drop(scores, "studentId");
+    drop(attendance, "studentId");
+    drop(feePayments, "studentId");
+  } else if (user.role === "TEACHER") {
+    drop(timetable, "teacherId");
+  }
   persist();
   return true;
+}
+
+/**
+ * Permanently delete a school and every byte of its data (tenant wipe).
+ * Used by the SUPER_ADMIN exit flow — after an exit survey is recorded.
+ * Platform-level leads are NOT tenant-scoped and survive.
+ */
+/** How long a deleted school's data stays recoverable before the permanent wipe. */
+export const SCHOOL_DELETION_GRACE_MS = 30 * 24 * 60 * 60 * 1000;
+
+/**
+ * Delete a school (grace period): marks it "deleted" with a deletedAt stamp
+ * instead of wiping it. Every byte of data stays intact and the SUPER_ADMIN
+ * can restore the account (setSchoolStatus → "active") until the grace
+ * period expires — purgeExpiredDeletedSchools then wipes it for real.
+ */
+export async function deleteSchool(schoolId) {
+  const school = schools.find((s) => s.id === schoolId);
+  if (!school) return false;
+  school.status = "deleted";
+  school.deletedAt = nowIso();
+  persist();
+  return true;
+}
+
+/**
+ * Permanent wipe — removes the school and every tenant record for real. This
+ * is what purgeExpiredDeletedSchools runs once the grace period is over (and
+ * what an expired school's login triggers lazily). Platform-level leads are
+ * intentionally NOT tenant-scoped, so they survive.
+ */
+export async function purgeSchool(schoolId) {
+  const idx = schools.findIndex((s) => s.id === schoolId);
+  if (idx === -1) return false;
+  schools.splice(idx, 1);
+  const drop = (arr) => {
+    for (let i = arr.length - 1; i >= 0; i--) {
+      if (arr[i].schoolId === schoolId) arr.splice(i, 1);
+    }
+  };
+  [users, scores, feeStructures, feePayments, attendance, notifications, feeAudit, roleAudit, digestPrefs, digests, timetable, classAlertPrefs, conflictScans, termArchives].forEach(drop);
+  persist();
+  return true;
+}
+
+/**
+ * Sweep deleted schools whose grace period has lapsed — the daily background
+ * job (see src/instrumentation.js) and the login route's lazy check both call
+ * this. Idempotent: a school already purged is simply skipped. Returns the
+ * number of tenants permanently removed.
+ */
+export async function purgeExpiredDeletedSchools({ now = Date.now(), graceMs = SCHOOL_DELETION_GRACE_MS } = {}) {
+  const expired = schools.filter(
+    (s) => s.status === "deleted" && s.deletedAt && Date.parse(s.deletedAt) + graceMs <= now
+  );
+  for (const s of expired) {
+    await purgeSchool(s.id);
+  }
+  return expired.length;
+}
+
+/**
+ * Soft deactivation: flip a school between "active" and "frozen" without
+ * touching any of its data. A frozen school blocks every non-super-admin
+ * login (requireAuth + the login route both gate on it) so the super admin
+ * can always get back in to reactivate. Returns the updated school, or null
+ * when the school doesn't exist.
+ */
+export async function setSchoolStatus(schoolId, status) {
+  const school = schools.find((s) => s.id === schoolId);
+  if (!school) return null;
+  school.status = status === "frozen" ? "frozen" : "active";
+  // Back to active — whether a reactivation or a grace-period restore, the
+  // deletedAt stamp is no longer meaningful.
+  if (school.status === "active") school.deletedAt = null;
+  persist();
+  return clone(school);
 }
 
 export async function saveScores({ schoolId, classArm, subject, rows }) {

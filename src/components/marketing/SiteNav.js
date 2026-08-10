@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Menu, X, ArrowRight, ChevronDown } from "lucide-react";
+import { Menu, X, ArrowRight } from "lucide-react";
 import { useCallback } from "react";
 import Logo from "@/components/Logo";
 import DemoLoginButton from "@/components/DemoLoginButton";
@@ -20,7 +20,8 @@ const LINKS = [
 
 /**
  * Shared marketing-site navigation. Sticky, translucent, with a mobile
- * menu. "Products" items are the module pages; auth actions on the right.
+ * menu. Every module lives on the Features page, so the nav links straight
+ * to it — no Product dropdown duplicating those anchors.
  */
 export default function SiteNav() {
   const pathname = usePathname();
@@ -86,34 +87,6 @@ export default function SiteNav() {
               </Link>
             );
           })}
-          <div className="group relative ml-2">
-            <button
-              aria-haspopup="true"
-              aria-expanded="false"
-              className="flex items-center gap-1 rounded-lg px-3.5 py-2 text-sm font-medium text-navy-200 transition hover:bg-white/5 hover:text-white"
-            >
-              Product <ChevronDown className="h-3.5 w-3.5" />
-            </button>
-            <div className="invisible absolute right-0 top-full w-64 translate-y-2 rounded-2xl border border-white/10 bg-navy-900/95 p-2 opacity-0 shadow-2xl backdrop-blur-xl transition-all duration-200 group-hover:visible group-hover:translate-y-0 group-hover:opacity-100 group-focus-within:visible group-focus-within:translate-y-0 group-focus-within:opacity-100">
-              {[
-                { href: "/features#report-cards", label: "Report Cards" },
-                { href: "/features#grading", label: "Grading Matrix" },
-                { href: "/features#attendance", label: "Attendance" },
-                { href: "/features#fees", label: "Fee Management" },
-                { href: "/features#payroll", label: "Payroll" },
-                { href: "/features#parents", label: "Parent Portal" },
-              ].map((i) => (
-                <Link
-                  key={i.href}
-                  href={i.href}
-                  className="flex items-center justify-between rounded-xl px-3.5 py-2.5 text-sm text-navy-200 transition hover:bg-white/10 hover:text-white"
-                >
-                  {i.label}
-                  <ArrowRight className="h-3.5 w-3.5 text-navy-400" />
-                </Link>
-              ))}
-            </div>
-          </div>
         </nav>
 
         {/* Desktop actions */}
@@ -162,28 +135,6 @@ export default function SiteNav() {
                 {l.label}
               </Link>
             ))}
-            <div className="pt-2">
-              <p className="px-3 pb-1 text-[11px] font-semibold uppercase tracking-widest text-navy-400">
-                Product modules
-              </p>
-              {[
-                { href: "/features#report-cards", label: "Report Cards" },
-                { href: "/features#grading", label: "Grading Matrix" },
-                { href: "/features#attendance", label: "Attendance" },
-                { href: "/features#fees", label: "Fee Management" },
-                { href: "/features#payroll", label: "Payroll" },
-                { href: "/features#parents", label: "Parent Portal" },
-              ].map((i) => (
-                <Link
-                  key={i.href}
-                  href={i.href}
-                  className="flex items-center justify-between rounded-lg px-3 py-2.5 text-sm text-navy-200 transition hover:bg-white/5 hover:text-white"
-                >
-                  {i.label}
-                  <ArrowRight className="h-3.5 w-3.5 text-navy-400" />
-                </Link>
-              ))}
-            </div>
             <div className="mt-3 flex flex-col gap-2 border-t border-white/10 pt-4">
               <Link
                 href="/login"

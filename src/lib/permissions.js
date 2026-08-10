@@ -4,13 +4,12 @@
  * can share one source of truth without pulling Next.js server bits in.
  *
  * Add a role here AND to: (1) src/models/User.js enum, (2) STAFF_ROLES when
- * it opens the admin console, (3) MFA_ROLES when it is staff (every staff
- * role must pass a second factor — the login route only issues a session to
- * MFA_ROLES members after TOTP, and MANAGED_ROLES in src/lib/roles.js
- * derives from it), (4) ROLE_HOME in src/lib/portal-guard.js,
- * (5) ROLE_LABELS in src/lib/roles.js, (6) the login page's ROLES list,
- * (7) the demo seed if the demo should ship a sample account. The full
- * checklist lives in README.md ("Adding a new role").
+ * it opens the admin console, (3) MANAGED_ROLES in src/lib/roles.js when it
+ * is a staff role (role management may only re-roll that list),
+ * (4) ROLE_HOME in src/lib/portal-guard.js, (5) ROLE_LABELS in
+ * src/lib/roles.js, (6) the login page's ROLES list, (7) the demo seed if
+ * the demo should ship a sample account. The full checklist lives in
+ * README.md ("Adding a new role").
  */
 
 /** Canonical roles (mirrors the User model's role enum). */
@@ -28,18 +27,6 @@ export const STAFF_ROLES = Object.freeze([
   ROLES.SUPER_ADMIN,
   ROLES.BURSAR,
   ROLES.REGISTRAR,
-]);
-
-/**
- * Roles that MUST pass a second factor (TOTP) before any session is issued —
- * the staff who hold consequential power in a school. Kept in sync with
- * MANAGED_ROLES in src/lib/roles.js (which derives from this).
- */
-export const MFA_ROLES = Object.freeze([
-  ROLES.SUPER_ADMIN,
-  ROLES.BURSAR,
-  ROLES.REGISTRAR,
-  ROLES.TEACHER,
 ]);
 
 /**

@@ -5,14 +5,19 @@
  * Re-rolling is staff-to-staff only: a student or parent account becomes
  * staff through the normal account-creation flow, never through this path.
  */
-import { MFA_ROLES, ROLES } from "@/lib/permissions";
+import { ROLES } from "@/lib/permissions";
 
 /**
- * The only roles role management may touch — exactly the MFA-required staff
- * set (single source of truth in permissions.js), so the two policies can
- * never drift apart.
+ * The only roles role management may touch — exactly the staff set (the
+ * roles who hold consequential power in a school: the three console roles
+ * plus TEACHER). Students and parents are never re-rolled through this path.
  */
-export const MANAGED_ROLES = MFA_ROLES;
+export const MANAGED_ROLES = Object.freeze([
+  ROLES.SUPER_ADMIN,
+  ROLES.BURSAR,
+  ROLES.REGISTRAR,
+  ROLES.TEACHER,
+]);
 
 export const ROLE_LABELS = Object.freeze({
   SUPER_ADMIN: "Super Admin",

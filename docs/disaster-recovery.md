@@ -100,7 +100,7 @@ loss, worse than an error).
 
 ### `JWT_SECRET` — session signing secret ⚠️ important
 
-Sessions (and the MFA pending tickets) are JWTs signed with this. A restore
+Sessions are JWTs signed with this. A restore
 doesn't need it to recover data, but the *users* need it: if the restored
 environment signs with a different secret, every existing session stops
 verifying and everyone is logged out (an operational incident, not data loss).

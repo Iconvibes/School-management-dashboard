@@ -198,7 +198,6 @@ describe("backup round-trip", () => {
           feePaid: false,
           parentId: null,
           address: "",
-          mfaSecret: "",
           createdAt: new Date().toISOString(),
         },
       ],

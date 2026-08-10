@@ -23,9 +23,10 @@ import {
 } from "lucide-react";
 import Logo from "@/components/Logo";
 import { TEMPLATES } from "@/lib/importer";
-import { toCSV, withBOM } from "@/lib/csv";
+import { downloadBlob, toCSV, withBOM } from "@/lib/csv";
 import { generateRosterCsv, DEFAULT_SAMPLE_ARMS } from "@/lib/sample-roster";
 import { can } from "@/lib/permissions";
+import { bounceToLogin } from "@/lib/auth-client";
 
 const inputCls =
   "w-full rounded-xl border border-navy-200 bg-white px-4 py-2.5 text-sm text-navy-800 outline-none transition focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20";
@@ -64,15 +65,7 @@ function StatusBadge({ status }) {
 }
 
 function downloadFile(filename, text, mime = "text/csv") {
-  const blob = new Blob([withBOM(text)], { type: `${mime};charset=utf-8` });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  URL.revokeObjectURL(url);
+  downloadBlob(filename, new Blob([withBOM(text)], { type: `${mime};charset=utf-8` }));
 }
 
 // CSV injection guard: cells starting with = + - @ (or tabs) are interpreted
@@ -108,7 +101,7 @@ export default function ImportPage() {
       .then((r) => r.json())
       .then((d) => {
         if (!d.user || !can(d.user.role, "students.manage")) {
-          router.replace("/login");
+          bounceToLogin(router);
           return;
         }
         setIsDemo(d.isDemo === true);

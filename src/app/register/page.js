@@ -66,14 +66,7 @@ export default function RegisterPage() {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Registration failed");
-      if (data.mfaSetupRequired) {
-        // No session yet — the founding SUPER_ADMIN must enroll MFA before
-        // onboarding. The pending ticket was set by the register request;
-        // after confirm they're sent to onboarding via ?next=.
-        router.push("/mfa/setup?next=" + encodeURIComponent("/onboarding"));
-        return;
-      }
-      router.push("/onboarding");
+      router.push(data.redirect || "/onboarding");
     } catch (err) {
       setError(err.message);
       setLoading(false);

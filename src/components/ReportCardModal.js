@@ -3,6 +3,7 @@
 import { useRef, useState } from "react";
 import { Loader2, Printer, X } from "lucide-react";
 import ReportCard from "@/components/ReportCard";
+import useFitScale from "@/components/useFitScale";
 
 /**
  * Reusable report-card preview modal with A4 PDF export.
@@ -27,6 +28,9 @@ export default function ReportCardModal({
   // Off-screen node is always mounted so html2canvas captures at natural size
   // without clipping from the scrollable / scaled modal context.
   const captureRef = useRef(null);
+  // Scale the 794px A4 sheet to fit the modal at any screen width — a phone
+  // sees the whole card without horizontal sliding.
+  const [sheetRef, sheetScale] = useFitScale(794, open);
 
   if (!open) return null;
 
@@ -77,12 +81,12 @@ export default function ReportCardModal({
 
   return (
     <div className="fixed inset-0 z-50 overflow-y-auto bg-navy-950/80 p-4 backdrop-blur-sm">
-      <div className="mx-auto max-w-4xl py-6">
-        <div className="mb-4 flex items-center justify-between">
-          <h3 className="text-lg font-bold text-white">
+      <div ref={sheetRef} className="mx-auto max-w-4xl py-6">
+        <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
+          <h3 className="min-w-0 truncate text-lg font-bold text-white">
             {student?.name ? `${student.name} — report card` : "Report card preview"}
           </h3>
-          <div className="flex items-center gap-2">
+          <div className="flex shrink-0 items-center gap-2">
             <button
               onClick={exportPDF}
               disabled={exporting}
@@ -100,7 +104,10 @@ export default function ReportCardModal({
             </button>
           </div>
         </div>
-        <div className="mx-auto w-fit origin-top scale-[0.62] sm:scale-75 lg:scale-90">
+        <div
+          className="mx-auto w-fit origin-top"
+          style={{ transform: `scale(${sheetScale})` }}
+        >
           <ReportCard school={school} user={student} scores={scores} summary={summary} attendance={attendance} />
         </div>
       </div>

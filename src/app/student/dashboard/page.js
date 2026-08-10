@@ -18,12 +18,17 @@ import {
   BellRing,
   Clock,
   Printer,
+  Lock,
+  KeyRound,
+  Check,
+  X,
 } from "lucide-react";
 import Sidebar from "@/components/Sidebar";
 import ReportCardModal from "@/components/ReportCardModal";
 import PrintableTimetable from "@/components/PrintableTimetable";
 import { gradeBadgeClasses, standingFromAverage, standingRemark, ordinal } from "@/lib/grading";
 import { DAYS, getDayTimeline, getPeriodTimes, MAX_PERIOD, PERIODS, schoolDayOf } from "@/lib/timetable";
+import { bounceToLogin } from "@/lib/auth-client";
 
 const naira = (n) =>
   new Intl.NumberFormat("en-NG", {
@@ -56,13 +61,19 @@ export default function StudentDashboard() {
   const [ttMode, setTtMode] = useState("week"); // "week" | "today"
   const [ttEntries, setTtEntries] = useState([]);
   const [ttLoaded, setTtLoaded] = useState(false);
+  // Change-password modal state
+  const [pwModal, setPwModal] = useState(false);
+  const [pwForm, setPwForm] = useState({ current: "", newPw: "", confirm: "" });
+  const [pwSaving, setPwSaving] = useState(false);
+  const [pwError, setPwError] = useState("");
+  const [pwDone, setPwDone] = useState(false);
 
   useEffect(() => {
     (async () => {
       const meRes = await fetch("/api/auth/me");
       const meData = await meRes.json();
       if (!meData.user || meData.user.role !== "STUDENT") {
-        router.replace("/login");
+        bounceToLogin(router);
         return;
       }
       setSession(meData);
@@ -202,7 +213,7 @@ export default function StudentDashboard() {
     <main className="flex min-h-screen flex-1 bg-navy-50">
       <Sidebar role="STUDENT" open={sidebarOpen} onClose={() => setSidebarOpen(false)} />
 
-      <div className="flex-1 lg:pl-64">
+      <div className="min-w-0 flex-1 lg:pl-64">
         <header className="sticky top-0 z-30 flex h-16 items-center justify-between border-b border-navy-200/70 bg-white/80 px-5 backdrop-blur-lg">
           <div className="flex items-center gap-3">
             <button
@@ -489,7 +500,19 @@ export default function StudentDashboard() {
                     <Layers className="h-4 w-4" /> {session.user.assignedClass || "Unassigned class"}
                   </span>
                   <span className="inline-flex items-center gap-1.5">
-                    <BookOpen className="h-4 w-4" /> {session.school?.name}
+                    {/* The school's uploaded logo sits beside its name in
+                        every portal header — branding follows the tenant
+                        everywhere (the book icon is the no-logo fallback). */}
+                    {session.school?.logoUrl ? (
+                      <img
+                        src={session.school.logoUrl}
+                        alt=""
+                        className="h-5 w-5 rounded bg-white/90 object-contain"
+                      />
+                    ) : (
+                      <BookOpen className="h-4 w-4" />
+                    )}
+                    {session.school?.name}
                   </span>
                 </p>
               </div>
@@ -504,6 +527,13 @@ export default function StudentDashboard() {
                     ? `${summary.subjects} subjects · Avg ${summary.average}%`
                     : "Results will appear here once your teachers record them"}
                 </p>
+                <button
+                  onClick={() => { setPwModal(true); setPwDone(false); setPwError(""); setPwForm({ current: "", newPw: "", confirm: "" }); }}
+                  className="mt-3 inline-flex items-center gap-1.5 rounded-lg bg-white/10 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-white/20"
+                >
+                  <Lock className="h-3.5 w-3.5" />
+                  Change password
+                </button>
               </div>
             </div>
           </div>
@@ -684,6 +714,128 @@ export default function StudentDashboard() {
         attendance={data?.attendance}
         fileName={session.user.name.toLowerCase().replace(/[^a-z]+/g, "-")}
       />
+
+      {/* Change password modal */}
+      {pwModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm" onClick={() => setPwModal(false)}>
+          <div
+            className="mx-4 w-full max-w-md animate-fade-up rounded-2xl border border-navy-200/70 bg-white p-6 shadow-xl shadow-navy-900/10"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between">
+              <h2 className="text-lg font-bold text-navy-800">
+                <Lock className="mr-2 inline h-5 w-5 text-brand-600" />
+                Change password
+              </h2>
+              <button onClick={() => setPwModal(false)} className="rounded-lg p-1.5 text-navy-300 transition hover:bg-navy-100 hover:text-navy-600">
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            {pwDone ? (
+              <div className="mt-5 animate-fade-up space-y-4">
+                <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4">
+                  <p className="flex items-center gap-1.5 text-sm font-bold text-emerald-800">
+                    <Check className="h-4 w-4" />
+                    Password changed successfully
+                  </p>
+                  <p className="mt-1 text-xs text-emerald-700">
+                    Your new password is now active. Use it next time you sign in.
+                  </p>
+                  <p className="mt-2 border-t border-emerald-200 pt-2 text-xs text-emerald-700">
+                    Your new password has been recorded on your account, so your school
+                    can always look it up if you forget it.
+                  </p>
+                </div>
+                <button
+                  onClick={() => setPwModal(false)}
+                  className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-navy-800 py-3 font-semibold text-white transition hover:bg-navy-700"
+                >
+                  Done
+                </button>
+              </div>
+            ) : (
+              <form
+                onSubmit={async (e) => {
+                  e.preventDefault();
+                  if (pwForm.newPw !== pwForm.confirm) {
+                    setPwError("Passwords do not match");
+                    return;
+                  }
+                  if (pwForm.newPw.length < 6) {
+                    setPwError("New password must be at least 6 characters");
+                    return;
+                  }
+                  setPwSaving(true);
+                  setPwError("");
+                  try {
+                    const res = await fetch("/api/auth/change-password", {
+                      method: "POST",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({ currentPassword: pwForm.current, newPassword: pwForm.newPw }),
+                    });
+                    const data = await res.json();
+                    if (!res.ok) throw new Error(data.error || "Failed to change password");
+                    setPwDone(true);
+                  } catch (err) {
+                    setPwError(err.message);
+                  } finally {
+                    setPwSaving(false);
+                  }
+                }}
+                className="mt-5 space-y-4"
+              >
+                <label className="block">
+                  <span className="mb-1.5 block text-sm font-medium text-navy-700">Current password</span>
+                  <input
+                    type="password"
+                    value={pwForm.current}
+                    onChange={(e) => setPwForm({ ...pwForm, current: e.target.value })}
+                    placeholder="Your current password"
+                    className="w-full rounded-xl border border-navy-200 px-4 py-3 text-sm outline-none transition focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20"
+                    autoFocus
+                  />
+                </label>
+                <label className="block">
+                  <span className="mb-1.5 block text-sm font-medium text-navy-700">New password</span>
+                  <input
+                    type="password"
+                    value={pwForm.newPw}
+                    onChange={(e) => setPwForm({ ...pwForm, newPw: e.target.value })}
+                    placeholder="At least 6 characters"
+                    className="w-full rounded-xl border border-navy-200 px-4 py-3 text-sm outline-none transition focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20"
+                  />
+                </label>
+                <label className="block">
+                  <span className="mb-1.5 block text-sm font-medium text-navy-700">Confirm new password</span>
+                  <input
+                    type="password"
+                    value={pwForm.confirm}
+                    onChange={(e) => setPwForm({ ...pwForm, confirm: e.target.value })}
+                    placeholder="Repeat new password"
+                    className="w-full rounded-xl border border-navy-200 px-4 py-3 text-sm outline-none transition focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20"
+                  />
+                </label>
+
+                {pwError && (
+                  <div className="rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-medium text-rose-700">
+                    {pwError}
+                  </div>
+                )}
+
+                <button
+                  type="submit"
+                  disabled={pwSaving || !pwForm.current || !pwForm.newPw || !pwForm.confirm}
+                  className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-brand-600 py-3.5 font-semibold text-white shadow-lg shadow-brand-600/30 transition hover:bg-brand-500 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {pwSaving ? <Loader2 className="h-5 w-5 animate-spin" /> : <KeyRound className="h-5 w-5" />}
+                  {pwSaving ? "Changing…" : "Change password"}
+                </button>
+              </form>
+            )}
+          </div>
+        </div>
+      )}
     </main>
   );
 }

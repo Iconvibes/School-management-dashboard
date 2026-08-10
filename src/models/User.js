@@ -59,11 +59,14 @@ const userSchema = new mongoose.Schema(
     phone: { type: String, default: "" },
     phoneIdx: { type: String, default: "" },
     address: { type: String, default: "" },
-    // Base32 TOTP secret for staff accounts. Treated exactly like the
-    // password: never returned by the API, only settable through the
-    // self-service MFA enrollment flow (setMfaSecret — the generic user PATCH
-    // route cannot touch it). Empty string = MFA not enrolled.
-    mfaSecret: { type: String, default: "" },
+    // The student's current login password, stored so the admin can look it
+    // up from the dashboard (Students tab). Starts as the auto-generated
+    // name + class arm value and is kept in sync whenever the student
+    // changes it or an admin resets it. Empty for non-student accounts.
+    generatedPassword: { type: String, default: "" },
+    // Session-revocation counter: bumped on password change so every JWT
+    // signed before the change is rejected by requireAuth on its next use.
+    tokenVersion: { type: Number, default: 0 },
   },
   {
     timestamps: true,
@@ -79,8 +82,6 @@ const userSchema = new mongoose.Schema(
         ret.phone = decryptField(ret.phone) || "";
         delete ret.emailIdx;
         delete ret.phoneIdx;
-        ret.mfaEnabled = !!ret.mfaSecret;
-        delete ret.mfaSecret;
         return ret;
       },
     },

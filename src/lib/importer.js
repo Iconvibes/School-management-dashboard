@@ -355,18 +355,27 @@ export function planImport({
 
     const rawPassword = r.password || defaultPassword || "";
     let password = rawPassword;
+    let generatedPassword = null;
     if (!password) {
       // Students auto-derive a password as name + class arm (lowercased,
       // unspaced — "Adam Tope" → "adamtopejss1") so they never need an
       // admin-chosen one. Staff imports still require a valid password.
       if (role === "STUDENT") {
         const slug = (s) => String(s || "").toLowerCase().replace(/[^a-z0-9]/g, "");
-        password = `${slug(name)}${slug(primaryArm)}`;
+        generatedPassword = `${slug(name)}${slug(primaryArm)}`;
+        password = generatedPassword;
       } else {
         rowErrors.push("Password must be at least 6 characters");
       }
     } else if (password.length < 6) {
       rowErrors.push("Password must be at least 6 characters");
+    }
+    // Record whatever password the account ends up with — the auto-derived
+    // name+classarm value above, or a row/default-provided one — so the admin
+    // can always look it up from Login Details / the credentials export.
+    // Mirrors the single-add users route (parity with createUser).
+    if (generatedPassword === null && password) {
+      generatedPassword = password;
     }
 
     // Parent columns: a phone without a name is unusable.
@@ -417,6 +426,7 @@ export function planImport({
       assignedClasses: isTeacher ? armList : [],
       phone: r.phone,
       password,
+      generatedPassword,
       parentKey,
       parentName: r.parentName,
       status,
@@ -537,6 +547,9 @@ export async function applyImport({ store, schoolId, role, plans, parentRefs, ne
             subjects: p.subjects || [],
             assignedClasses: p.assignedClasses || [],
             phone: p.phone,
+            // Record the auto-generated student password so the admin can
+            // look it up from the dashboard later.
+            ...(p.generatedPassword ? { generatedPassword: p.generatedPassword } : {}),
           });
           if (role === "TEACHER") created.teachers++;
           else created.students++;

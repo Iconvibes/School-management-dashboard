@@ -1,4 +1,7 @@
-import { jsonError } from "@/lib/auth";
+// `next/server.js` (not `next/server`): Next aliases the extensionless form
+// internally, but plain `node --test` resolves this file's imports too.
+import { NextResponse } from "next/server.js";
+import { clearAuthCookie, jsonError } from "@/lib/auth";
 import { store } from "@/lib/store";
 import { isDenied, requireAuth, requirePermission } from "@/lib/policy";
 import { DAYS } from "@/lib/timetable";
@@ -22,6 +25,26 @@ export async function PATCH(request) {
     body = await request.json();
   } catch {
     return jsonError("Invalid request body");
+  }
+
+  // Image safety: an uploaded logo or seal arrives as a base64 data URL (the
+  // upload reads the file client-side). Accept http(s) URLs (legacy), empty
+  // (none uploaded), or data:image/ URLs under ~2 MB — a giant payload must
+  // never land in the school record (Mongo docs cap at 16 MB).
+  for (const [field, label] of [
+    ["logoUrl", "Logo"],
+    ["sealUrl", "Seal"],
+  ]) {
+    if (body[field] !== undefined) {
+      const value = String(body[field] || "");
+      const ok =
+        !value ||
+        /^https?:\/\//i.test(value) ||
+        (/^data:image\//i.test(value) && value.length <= 2 * 1024 * 1024);
+      if (!ok) {
+        return jsonError(`${label} must be an image under 2 MB`, 400);
+      }
+    }
   }
 
   // The bell schedule drives the class-alert alarms — only a well-formed
@@ -126,6 +149,7 @@ export async function PATCH(request) {
   const school = await store.updateSchool(session.schoolId, {
     name: body.name,
     logoUrl: body.logoUrl,
+    sealUrl: body.sealUrl,
     brandColor: body.brandColor,
     activeArms: body.activeArms,
     currentSession: body.currentSession,
@@ -143,4 +167,66 @@ export async function PATCH(request) {
 
   if (!school) return jsonError("School not found", 404);
   return Response.json({ school });
+}
+
+/**
+ * Permanently delete this school and ALL of its data (tenant wipe).
+ *
+ * SUPER_ADMIN + users.manage only — the founding admin deactivates the
+ * school when they leave the platform. The exit-survey answer is captured
+ * BEFORE the wipe so the platform can learn why schools leave. There is no
+ * undo: students, teachers, scores, attendance, fees, timetables and report
+ * cards are all removed.
+ *
+ * Body: { reason: string, feedback?: string }
+ */
+export async function DELETE(request) {
+  const session = await requirePermission(["SUPER_ADMIN"], "users.manage");
+  if (isDenied(session)) return session;
+
+  const school = await store.getSchoolById(session.schoolId);
+  if (!school) return jsonError("School not found", 404);
+
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    return jsonError("Invalid request body");
+  }
+  const reason = String(body.reason || "").trim();
+  const feedback = String(body.feedback || "").trim();
+  if (!reason) return jsonError("Please tell us why you're leaving");
+
+  // The survey lands in the platform's lead inbox BEFORE the tenant is wiped
+  // (a failed capture never blocks the deletion itself).
+  const admin = await store.findUserById(session.userId);
+  try {
+    await store.createLead({
+      kind: "exit",
+      name: admin?.name || "",
+      school: school.name || "",
+      email: admin?.email || "",
+      message: `Reason: ${reason}\nFeedback: ${feedback || "(none)"}`,
+      ip: request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || "",
+      userAgent: request.headers.get("user-agent") || "",
+    });
+  } catch {
+    // Survey capture is best-effort — never block the deletion on it.
+  }
+
+  // Deletion is a 30-day grace period now, not an instant wipe: the school
+  // is marked "deleted" (data fully intact and restorable by its SUPER_ADMIN)
+  // until deletedAt + SCHOOL_DELETION_GRACE_MS, when the sweeper purges it.
+  const ok = await store.deleteSchool(session.schoolId);
+  if (!ok) return jsonError("School not found", 404);
+
+  const deletedSchool = await store.getSchoolById(session.schoolId);
+  const restorableUntil = deletedSchool?.deletedAt
+    ? new Date(Date.parse(deletedSchool.deletedAt) + store.SCHOOL_DELETION_GRACE_MS).toISOString()
+    : null;
+
+  // The account is gone — drop the session so the browser can't hold a
+  // dead tenant's cookie (the next /api/auth/me would 401 anyway).
+  const res = NextResponse.json({ success: true, restorableUntil });
+  return clearAuthCookie(res);
 }

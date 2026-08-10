@@ -1,11 +1,12 @@
-import { NextResponse } from "next/server";
+// `next/server.js` (not `next/server`): Next aliases the extensionless form
+// internally, but plain `node --test` resolves this file's imports too.
+import { NextResponse } from "next/server.js";
 import bcrypt from "bcryptjs";
 import { store } from "@/lib/store";
-import { setAuthCookie, setMfaCookie, jsonError } from "@/lib/auth";
+import { setAuthCookie, jsonError } from "@/lib/auth";
 import { checkRateLimit } from "@/lib/rate-limit";
 import { resolvePostLoginRedirect } from "@/lib/portal-guard";
-import { MFA_ROLES } from "@/lib/permissions";
-import { signMfaToken } from "@/lib/token";
+import { matchesChildName } from "@/lib/passwords";
 
 export async function POST(request) {
   // Brute-force guard: 10 login attempts per IP per 15 minutes.
@@ -46,43 +47,53 @@ export async function POST(request) {
     );
   }
 
-  const ok = await bcrypt.compare(password, user.password);
+  let ok = await bcrypt.compare(password, user.password);
+  // Parents sign in with their email plus ANY linked child's full name (e.g.
+  // "Adam Tope Johnson" → "adamtopejohnson") — one parent, several children,
+  // all reachable from the same session. The stored hash matches the most
+  // recently linked child; this fallback accepts the rest.
+  if (!ok && user.role === "PARENT") {
+    const children = await store.getChildren(user.id);
+    ok = matchesChildName(password, children);
+  }
   if (!ok) {
     return jsonError("Invalid credentials for this school", 401);
   }
 
-  // Staff must complete a second factor (or enroll) before ANY session is
-  // issued — the password alone never grants a staff session. The pending
-  // ticket is 10 minutes and proves only the first factor in this browser.
-  if (MFA_ROLES.includes(user.role)) {
-    const hasMfa = !!user.mfaSecret;
-    const res = NextResponse.json({
-      success: true,
-      mfaRequired: hasMfa,
-      mfaSetupRequired: !hasMfa,
-      // Echoed so the client can carry the deep link through the MFA step
-      // (the final verify/confirm re-validates it against the role).
-      next: resolvePostLoginRedirect(user.role, next),
-      user: {
-        id: user.id,
-        name: user.name,
-        email: user.email,
-        role: user.role,
-        schoolId: user.schoolId,
-      },
-    });
-    setMfaCookie(
-      res,
-      signMfaToken({
-        userId: user.id,
-        purpose: hasMfa ? "challenge" : "enroll",
-        attempts: 0,
-      })
+  // Frozen or deleted school: block everyone except the founding SUPER_ADMIN,
+  // who must be able to get back in to reactivate (frozen) or restore
+  // (deleted, within the 30-day grace period). An EXPIRED deleted school is
+  // purged right here — the lazy check that guarantees the wipe happens even
+  // if the background sweeper hasn't run yet. All of this runs AFTER the
+  // password so a wrong password still gets the generic error — account
+  // status is never leaked to credential guessing.
+  const schoolRec = await store.getSchoolById(user.schoolId);
+  if (schoolRec?.status === "frozen" && user.role !== "SUPER_ADMIN") {
+    return jsonError(
+      "This school's account has been deactivated. Please contact your school administrator.",
+      403
     );
-    return res;
+  }
+  if (schoolRec?.status === "deleted") {
+    const graceOver =
+      !schoolRec.deletedAt ||
+      Date.parse(schoolRec.deletedAt) + store.SCHOOL_DELETION_GRACE_MS <= Date.now();
+    if (graceOver) {
+      // Best-effort — the wipe must never be blocked by a store hiccup.
+      await store.purgeSchool(user.schoolId).catch(() => {});
+      return jsonError(
+        "This school's account was permanently deleted. Please contact support if this is a mistake.",
+        403
+      );
+    }
+    if (user.role !== "SUPER_ADMIN") {
+      return jsonError(
+        "This school's account has been deleted and can still be restored by the school administrator.",
+        403
+      );
+    }
   }
 
-  // Students and parents stay password-only (self-service portals).
   const school = await store.getSchoolById(schoolId);
 
   const res = NextResponse.json({
@@ -108,6 +119,9 @@ export async function POST(request) {
     userId: user.id,
     role: user.role,
     schoolId: user.schoolId,
+    // Session-revocation stamp: requireAuth rejects any token whose version
+    // is older than the live account (a password change bumps it).
+    tokenVersion: user.tokenVersion || 0,
   });
   return res;
 }

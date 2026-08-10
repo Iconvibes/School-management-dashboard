@@ -80,9 +80,31 @@ export async function requireAuth(roles, session) {
   if (String(user.schoolId) !== String(session.schoolId) || user.role !== session.role) {
     return jsonError(MSG.sessionInvalid, 401);
   }
+  // Session revocation: a password change bumps the account's tokenVersion,
+  // so every token signed before it (including a stolen one) fails here on
+  // its very next use. Both sides normalize to 0, so legacy tokens (issued
+  // without a version claim) stay valid while the account is at version 0.
+  if ((user.tokenVersion || 0) !== (session.tokenVersion || 0)) {
+    return jsonError(MSG.sessionInvalid, 401);
+  }
 
   // Gate on the FRESH role from the store, never the token claim.
   if (roles && !roles.includes(user.role)) return jsonError("Forbidden", 403);
+
+  // A frozen (soft-deactivated) or deleted (grace-period) school rejects
+  // every request from non-super admins — already-issued sessions die on
+  // their very next call. The SUPER_ADMIN is always allowed through so the
+  // account can be reactivated or restored from the dashboard. (An expired
+  // deleted school is purged, so its users no longer exist and this session
+  // lookup fails closed with a 401.)
+  if (user.schoolStatus !== "active" && user.role !== "SUPER_ADMIN") {
+    return jsonError(
+      user.schoolStatus === "frozen"
+        ? "This school's account has been deactivated. Please contact your school administrator."
+        : "This school's account has been deleted. Please contact your school administrator.",
+      403
+    );
+  }
   return { ...session, role: user.role, schoolId: user.schoolId };
 }
 

@@ -84,6 +84,7 @@ export async function GET(request, { params }) {
     school: {
       name: school?.name || "",
       logoUrl: school?.logoUrl || "",
+      sealUrl: school?.sealUrl || "",
       brandColor: school?.brandColor || "#2563EB",
       currentSession: school?.currentSession || "",
       currentTerm: school?.currentTerm || "",

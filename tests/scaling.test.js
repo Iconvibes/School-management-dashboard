@@ -85,13 +85,20 @@ describe("findAuthSnapshot — the lean per-request auth lookup", () => {
       "id",
       "role",
       "schoolId",
+      // The school's freeze status — the auth guard needs it to reject
+      // requests from a deactivated school without a second lookup.
+      "schoolStatus",
       "subjects",
+      // The session-revocation counter — the auth guard rejects stale
+      // tokens (password changed) without a second lookup.
+      "tokenVersion",
     ]);
     assert.equal(snap.id, admin.id);
     assert.equal(snap.role, "SUPER_ADMIN");
     assert.equal(snap.schoolId, schoolId);
     assert.deepEqual(snap.subjects, []);
     assert.deepEqual(snap.assignedClasses, []);
+    assert.equal(snap.tokenVersion, 0);
   });
 
   it("reflects a role change immediately (the requireAuth re-validation source)", async () => {

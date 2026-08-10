@@ -24,28 +24,3 @@ export function verifyToken(token) {
     return null;
   }
 }
-
-// ---- MFA second-step cookie -------------------------------------------------
-//
-// Between the password step and the MFA step there is NO session — only this
-// short-lived "pending" ticket proving the browser passed the first factor
-// (or registration). It carries the userId, a purpose ("challenge" when a
-// code must be verified, "enroll" when the user must first set up TOTP) and
-// an attempt counter for brute-force capping. 10 minutes, then full re-login.
-
-export const MFA_COOKIE_NAME = "edutrack_mfa_pending";
-export const MFA_MAX_AGE = 10 * 60; // seconds — matches expiresIn below
-export const MFA_MAX_ATTEMPTS = 5;
-
-export function signMfaToken(payload) {
-  return jwt.sign(payload, SECRET, { expiresIn: "10m" });
-}
-
-/** Returns the decoded payload, or null when invalid/expired. */
-export function verifyMfaToken(token) {
-  try {
-    return jwt.verify(token, SECRET);
-  } catch {
-    return null;
-  }
-}

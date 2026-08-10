@@ -33,6 +33,7 @@ import Modal from "@/components/Modal";
 import { computeGrade, gradeBadgeClasses, getSubjects, MAX_CA, MAX_EXAM } from "@/lib/grading";
 import { DAYS, getDayTimeline, MAX_PERIOD, PERIODS, schoolDayOf } from "@/lib/timetable";
 import { bounceTeacherSelection } from "@/lib/teacher-scope";
+import { bounceToLogin } from "@/lib/auth-client";
 import { useClassAlerts } from "@/hooks/useClassAlerts";
 
 export default function TeacherDashboard() {
@@ -101,7 +102,7 @@ export default function TeacherDashboard() {
       const meRes = await fetch("/api/auth/me");
       const meData = await meRes.json();
       if (!meData.user || meData.user.role !== "TEACHER") {
-        router.replace("/login");
+        bounceToLogin(router);
         return;
       }
       setSession(meData);
@@ -130,7 +131,7 @@ export default function TeacherDashboard() {
       const meRes = await fetch("/api/auth/me");
       const meData = await meRes.json();
       if (!meData.user || meData.user.role !== "TEACHER") {
-        router.replace("/login");
+        bounceToLogin(router);
         return;
       }
       const next = bounceTeacherSelection({
@@ -514,24 +515,27 @@ export default function TeacherDashboard() {
     <main className="flex min-h-screen flex-1 bg-navy-50">
       <Sidebar role="TEACHER" open={sidebarOpen} onClose={() => setSidebarOpen(false)} />
 
-      <div className="flex-1 lg:pl-64">
+      <div className="min-w-0 flex-1 lg:pl-64">
         <header className="sticky top-0 z-30 flex h-16 items-center justify-between border-b border-navy-200/70 bg-white/80 px-5 backdrop-blur-lg">
-          <div className="flex items-center gap-3">
+          <div className="flex min-w-0 items-center gap-3">
             <button
               onClick={() => setSidebarOpen(true)}
               className="rounded-lg p-2 text-navy-600 hover:bg-navy-50 lg:hidden"
             >
               <Menu className="h-5 w-5" />
             </button>
-            <div>
-              <p className="text-sm font-bold text-navy-800">
-                {view === "matrix"
-                  ? "Grading Matrix"
-                  : view === "timetable"
-                    ? "My Timetable"
-                    : "Report Cards"}
-              </p>
-              <p className="text-xs text-navy-400">
+            {/* The school's uploaded logo sits beside its name in every
+                portal header — branding follows the tenant everywhere. */}
+            {session.school?.logoUrl && (
+              <img
+                src={session.school.logoUrl}
+                alt=""
+                className="h-7 w-7 shrink-0 rounded-lg bg-white object-contain ring-1 ring-navy-100"
+              />
+            )}
+            <div className="min-w-0">
+              <p className="truncate text-sm font-bold text-navy-800">{session.school?.name}</p>
+              <p className="truncate text-xs text-navy-400">
                 {session.school?.currentSession} · {session.school?.currentTerm}
               </p>
             </div>
@@ -547,14 +551,16 @@ export default function TeacherDashboard() {
         </header>
 
         <div className="mx-auto max-w-7xl px-5 py-8">
-          {/* View toggle */}
-          <div className="mb-6 inline-flex gap-1 rounded-xl bg-navy-100 p-1">
+          {/* View toggle — scrolls horizontally on small screens so the four
+              views never push the page wider than the viewport */}
+          <div className="mb-6 -mx-1 max-w-full overflow-x-auto px-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+            <div className="inline-flex w-max gap-1 rounded-xl bg-navy-100 p-1">
             <button
               onClick={() => {
                 setView("matrix");
                 history.replaceState(null, "", "/teacher/dashboard");
               }}
-              className={`inline-flex items-center gap-1.5 rounded-lg px-4 py-2 text-sm font-semibold transition ${
+              className={`inline-flex items-center gap-1.5 whitespace-nowrap rounded-lg px-4 py-2 text-sm font-semibold transition ${
                 view === "matrix" ? "bg-white text-navy-800 shadow-sm" : "text-navy-500 hover:text-navy-700"
               }`}
             >
@@ -565,7 +571,7 @@ export default function TeacherDashboard() {
                 setView("attendance");
                 history.replaceState(null, "", "/teacher/dashboard#attendance");
               }}
-              className={`inline-flex items-center gap-1.5 rounded-lg px-4 py-2 text-sm font-semibold transition ${
+              className={`inline-flex items-center gap-1.5 whitespace-nowrap rounded-lg px-4 py-2 text-sm font-semibold transition ${
                 view === "attendance" ? "bg-white text-navy-800 shadow-sm" : "text-navy-500 hover:text-navy-700"
               }`}
             >
@@ -576,7 +582,7 @@ export default function TeacherDashboard() {
                 setView("timetable");
                 history.replaceState(null, "", "/teacher/dashboard#timetable");
               }}
-              className={`inline-flex items-center gap-1.5 rounded-lg px-4 py-2 text-sm font-semibold transition ${
+              className={`inline-flex items-center gap-1.5 whitespace-nowrap rounded-lg px-4 py-2 text-sm font-semibold transition ${
                 view === "timetable" ? "bg-white text-navy-800 shadow-sm" : "text-navy-500 hover:text-navy-700"
               }`}
             >
@@ -593,6 +599,7 @@ export default function TeacherDashboard() {
             >
               <FileText className="h-4 w-4" /> Report Cards
             </button>
+            </div>
           </div>
 
           {/* ATTENDANCE VIEW */}

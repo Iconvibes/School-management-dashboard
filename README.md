@@ -116,8 +116,11 @@ boundary. Every route gate goes through `requireAuth([...roles])` or
 `requirePermission([...roles], "action")` and re-reads the user from the store:
 
 - **The JWT is only a ticket; the database is the truth.** A deleted account,
-  a demotion, or a school move invalidates the session on the *next* request
-  (401, `"Session no longer valid"`) — not at the 7-day token expiry.
+  a demotion, a school move, or a **password change** invalidates the session
+  on the *next* request (401, `"Session no longer valid"`) — not at the 7-day
+  token expiry. Password changes bump a `tokenVersion` counter on the account
+  that is stamped into every token at sign-in, so a stolen pre-change token
+  dies on its very next use.
 - **The permission matrix** (`src/lib/permissions.js`): `ROLE_PERMISSIONS` maps
   every role to the actions it may perform (e.g. `fees.record`, `scores.enter`,
   `school.edit`), and `can(role, action)` reads it. Every multi-role gate is a
@@ -144,14 +147,11 @@ new role needs all of these or the app will misbehave somewhere:
 1. **`src/models/User.js`** — add the role to the schema `enum` (Mongo mode).
 2. **`src/lib/permissions.js`** — add it to `ROLES`; give it a
    `ROLE_PERMISSIONS` entry (the actions it may perform); add it to
-   `STAFF_ROLES` if it opens the shared admin console **and** to `MFA_ROLES`
-   if it is a staff role. The `MFA_ROLES` membership is security-relevant:
-   the login route issues a session only after a TOTP second factor for
-   members, and role management (`MANAGED_ROLES` in `src/lib/roles.js`,
-   which derives from `MFA_ROLES`) can only re-roll them. A staff role with
-   its own portal but no console (like TEACHER) goes in `MFA_ROLES` but
-   **not** `STAFF_ROLES` — both lists are needed, and forgetting the MFA one
-   silently skips the second factor for the new role.
+   `STAFF_ROLES` if it opens the shared admin console. A staff role (any
+   role with consequential power in a school) also goes into `MANAGED_ROLES`
+   in `src/lib/roles.js` — role management can only re-roll accounts on that
+   list, and a staff role left off it can never be promoted or demoted
+   through the Roles & Access tab.
 3. **`src/lib/portal-guard.js`** — add a `ROLE_HOME` entry (post-login
    landing). Add a `PORTAL_GUARDS` entry only if the role gets its own portal
    (see below).
@@ -173,9 +173,9 @@ new role needs all of these or the app will misbehave somewhere:
    staff, `tests/roles.test.js` pins `MANAGED_ROLES` — update its expectation.
 
 The login API route needs **no changes** — it reads `resolvePostLoginRedirect`
-(and `ROLE_HOME`) from `portal-guard.js`; the register route returns no role
-home of its own (the register page sends the founding admin through
-`/mfa/setup` first, then `/onboarding` — both client-side).
+(and `ROLE_HOME`) from `portal-guard.js`; the register route issues the
+founding admin's session directly and the register page sends them to
+`/onboarding` (client-side).
 
 > **Why `ROLE_HOME` is load-bearing:** `resolvePostLoginRedirect` falls back to
 > `ROLE_HOME[role] || "/"`, so a role without an entry doesn't crash — it

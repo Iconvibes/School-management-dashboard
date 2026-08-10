@@ -57,16 +57,13 @@ export default function LoginPage() {
   const [form, setForm] = useState({ email: "", password: "" });
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
-  // Staff second-factor step: the code being entered, the deep link carried
-  // through (from the login response's echoed `next`), and the account name
-  // for display.
-  const [mfaCode, setMfaCode] = useState("");
-  const [mfaNext, setMfaNext] = useState("");
-  const [mfaUser, setMfaUser] = useState(null);
   const searchDebounce = useRef(null);
   // Whether the seeded demo school exists & may be signed into. Defaults to
   // false so a clean slate (SEED_DEMO_SCHOOL unset) never flashes demo UI.
   const [demoAvailable, setDemoAvailable] = useState(false);
+  // The selected school's account state — "" | "frozen" | "deleted". The
+  // credentials step shows a notice before anyone types a password.
+  const [schoolStatus, setSchoolStatus] = useState("");
 
   // Restore last-used school AFTER hydration — the /login page is statically
   // prerendered, so reading localStorage during the initial render would cause
@@ -104,6 +101,27 @@ export default function LoginPage() {
       .catch(() => {});
   }, []);
 
+  // Fresh account-status check whenever the credentials step opens — covers a
+  // school picked from the directory AND one restored from localStorage, and
+  // re-checks on every visit so a school frozen/deleted after the last pick is
+  // caught before anyone submits credentials. (schoolStatus is reset by the
+  // event handlers below; the effect only ever sets state from the callback.)
+  useEffect(() => {
+    if (step !== "credentials" || !school) return;
+    let cancelled = false;
+    fetch(`/api/schools?id=${encodeURIComponent(school.id)}`)
+      .then((r) => r.json())
+      .then((d) => {
+        if (cancelled) return;
+        const match = (d.schools || [])[0];
+        setSchoolStatus(match && match.status !== "active" ? match.status : "");
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [step, school]);
+
   const searchSchools = useCallback((q) => {
     setSearching(true);
     fetch(`/api/schools?search=${encodeURIComponent(q)}&limit=8`)
@@ -122,6 +140,7 @@ export default function LoginPage() {
   function selectSchool(s) {
     setSchool(s);
     setError("");
+    setSchoolStatus(""); // the status effect re-checks and sets the real value
     try {
       localStorage.setItem(SCHOOL_KEY, JSON.stringify(s));
     } catch {}
@@ -131,6 +150,7 @@ export default function LoginPage() {
   function backToSchools() {
     setStep("school");
     setSchool(null);
+    setSchoolStatus("");
     setError("");
   }
 
@@ -157,42 +177,6 @@ export default function LoginPage() {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Login failed");
-      if (data.mfaSetupRequired) {
-        // Staff without MFA enrolled — forced self-enrollment. The pending
-        // ticket was set by this request; the setup page finishes the job.
-        const q = data.next ? "?next=" + encodeURIComponent(data.next) : "";
-        router.push(`/mfa/setup${q}`);
-        return;
-      }
-      if (data.mfaRequired) {
-        // Staff with MFA — second step, right here. The deep link survives in
-        // mfaNext and is re-sent to the verify route, which re-validates it
-        // against the role.
-        setMfaNext(data.next || "");
-        setMfaUser(data.user || null);
-        setStep("mfa");
-        setLoading(false);
-        return;
-      }
-      router.push(data.redirect || "/");
-    } catch (err) {
-      setError(err.message);
-      setLoading(false);
-    }
-  }
-
-  async function submitMfa(e) {
-    e.preventDefault();
-    setError("");
-    setLoading(true);
-    try {
-      const res = await fetch("/api/auth/mfa/verify", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ code: mfaCode, next: mfaNext }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Verification failed");
       router.push(data.redirect || "/");
     } catch (err) {
       setError(err.message);
@@ -351,6 +335,54 @@ export default function LoginPage() {
                   </div>
                 </div>
 
+                {/* Frozen / deleted-school notice — shown BEFORE credentials are
+                    typed so staff see why they can't sign in. The SUPER_ADMIN is
+                    the exception (they can still sign in to reactivate or restore),
+                    so the wording adapts to the selected portal role. */}
+                {schoolStatus && (
+                  <div
+                    className={`mt-4 flex items-start gap-2.5 rounded-xl border px-4 py-3 ${
+                      schoolStatus === "frozen" ? "border-amber-200 bg-amber-50" : "border-rose-200 bg-rose-50"
+                    }`}
+                  >
+                    <Info
+                      className={`mt-0.5 h-4 w-4 shrink-0 ${schoolStatus === "frozen" ? "text-amber-600" : "text-rose-600"}`}
+                    />
+                    {schoolStatus === "frozen" ? (
+                      <p className="text-sm leading-relaxed text-amber-900">
+                        {role === "SUPER_ADMIN" ? (
+                          <>
+                            <strong>{school.name}</strong>&apos;s account is currently deactivated —
+                            staff and student sign-ins are blocked. As the school administrator you
+                            can still sign in to reactivate it.
+                          </>
+                        ) : (
+                          <>
+                            <strong>{school.name}</strong>&apos;s account is currently deactivated —
+                            staff and student sign-ins are blocked. Please contact your school
+                            administrator to reactivate it.
+                          </>
+                        )}
+                      </p>
+                    ) : (
+                      <p className="text-sm leading-relaxed text-rose-900">
+                        {role === "SUPER_ADMIN" ? (
+                          <>
+                            <strong>{school.name}</strong> was deleted and is pending permanent
+                            removal. Its data is kept for 30 days — as the school administrator you
+                            can still sign in to restore it.
+                          </>
+                        ) : (
+                          <>
+                            <strong>{school.name}</strong> was deleted and is pending permanent
+                            removal. Please contact your school administrator to restore it.
+                          </>
+                        )}
+                      </p>
+                    )}
+                  </div>
+                )}
+
                 <h1 className="mt-5 text-2xl font-extrabold tracking-tight text-navy-800">Welcome back</h1>
                 <p className="mt-1.5 text-sm text-navy-500">Choose your portal and sign in.</p>
 
@@ -446,68 +478,10 @@ export default function LoginPage() {
               </div>
             )}
 
-            {/* Shared error (credentials + MFA steps) */}
+            {/* Shared error (credentials step) */}
             {error && (
               <div className="mt-4 rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-medium text-rose-700">
                 {error}
-              </div>
-            )}
-
-            {/* STEP 3 — MFA challenge (staff only) */}
-            {step === "mfa" && school && (
-              <div className="animate-fade-up">
-                <button
-                  onClick={() => setStep("credentials")}
-                  className="mb-4 inline-flex items-center gap-1.5 text-xs font-semibold text-navy-400 transition hover:text-navy-700"
-                >
-                  <ArrowLeft className="h-3.5 w-3.5" /> Back to sign in
-                </button>
-
-                <div className="flex items-center gap-3 rounded-xl border border-navy-100 bg-navy-50/60 px-4 py-3">
-                  <span
-                    className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-xs font-bold text-white"
-                    style={{ backgroundColor: "#2563EB" }}
-                  >
-                    <ShieldCheck className="h-4 w-4" />
-                  </span>
-                  <div className="min-w-0">
-                    <p className="truncate text-sm font-bold text-navy-800">{school.name}</p>
-                    <p className="text-xs text-navy-400">{mfaUser?.email || "Two-factor authentication"}</p>
-                  </div>
-                </div>
-
-                <h1 className="mt-5 text-2xl font-extrabold tracking-tight text-navy-800">Enter your code</h1>
-                <p className="mt-1.5 text-sm text-navy-500">
-                  Open your authenticator app and enter the 6-digit code to finish signing in.
-                </p>
-
-                <form onSubmit={submitMfa} className="mt-5 space-y-4">
-                  <label className="block">
-                    <span className="mb-1.5 block text-sm font-medium text-navy-700">6-digit code</span>
-                    <input
-                      value={mfaCode}
-                      onChange={(e) => setMfaCode(e.target.value.replace(/\D/g, "").slice(0, 6))}
-                      inputMode="numeric"
-                      autoComplete="one-time-code"
-                      placeholder="000000"
-                      autoFocus
-                      className="w-full rounded-xl border border-navy-200 bg-white py-3 pl-4 pr-4 text-center text-2xl font-bold tracking-[0.5em] text-navy-800 outline-none transition placeholder:text-navy-200 focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20"
-                    />
-                  </label>
-                  <button
-                    type="submit"
-                    disabled={loading || mfaCode.length !== 6}
-                    className="mt-2 inline-flex w-full items-center justify-center gap-2 rounded-xl bg-brand-600 py-3.5 font-semibold text-white shadow-lg shadow-brand-600/30 transition hover:bg-brand-500 disabled:cursor-not-allowed disabled:opacity-60"
-                  >
-                    {loading ? (
-                      <Loader2 className="h-5 w-5 animate-spin" />
-                    ) : (
-                      <>
-                        <ShieldCheck className="h-5 w-5" /> Verify & continue
-                      </>
-                    )}
-                  </button>
-                </form>
               </div>
             )}
           </div>

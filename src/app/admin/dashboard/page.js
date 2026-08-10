@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   Menu,
@@ -27,6 +27,7 @@ import {
   UserPlus,
   Upload,
   Download,
+  Trash2,
   KeyRound,
   Copy,
   Check,
@@ -48,6 +49,13 @@ import {
   UserX,
   Link2Off,
   Layers,
+  Eye,
+  EyeOff,
+  Printer,
+  Snowflake,
+  ImagePlus,
+  School,
+  BadgeCheck,
 } from "lucide-react";
 import Sidebar from "@/components/Sidebar";
 import MetricCard from "@/components/MetricCard";
@@ -55,8 +63,10 @@ import Modal from "@/components/Modal";
 import Logo from "@/components/Logo";
 import TopStudents from "@/components/TopStudents";
 import ReportCardModal from "@/components/ReportCardModal";
+import PrintableCredentials from "@/components/PrintableCredentials";
 import ArmStreamSplitter from "@/components/ArmStreamSplitter";
 import { armAlreadyExists } from "@/lib/arms";
+import { downloadBlob, toCSV, withBOM } from "@/lib/csv";
 import { getSubjects, gradeBadgeClasses, ordinal, TERMS } from "@/lib/grading";
 import {
   DAYS,
@@ -69,11 +79,28 @@ import {
   slotConflictReasons,
 } from "@/lib/timetable";
 import { can, STAFF_ROLES, summarizeRolePermissions } from "@/lib/permissions";
+import { bounceToLogin } from "@/lib/auth-client";
+import { compressImageFile } from "@/lib/image-upload";
 import { MANAGED_ROLES, ROLE_LABELS } from "@/lib/roles";
 import { sparklinePoints } from "@/lib/conflict-scan";
 
 const inputCls =
   "w-full rounded-xl border border-navy-200 bg-white px-4 py-2.5 text-sm text-navy-800 outline-none transition focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20";
+
+// Exit-survey options shown when a SUPER_ADMIN deletes their school — the
+// answers land in the platform's lead inbox before the tenant is wiped.
+const EXIT_REASONS = [
+  "Too expensive for our budget",
+  "Missing a feature we need",
+  "Too complex / hard to learn",
+  "Our school is closing",
+  "Switching to another platform",
+  "Other",
+];
+
+// Brand swatches for the Settings tab (same starting palette as onboarding —
+// the color well and hex input cover every other school color).
+const BRAND_COLORS = ["#2563EB", "#0EA5E9", "#8B5CF6", "#10B981", "#F59E0B", "#EF4444", "#EC4899", "#1E293B"];
 
 // Role badge colours for the Roles & Access tab (mirrors ROLE_LABELS).
 const ROLE_BADGES = {
@@ -229,6 +256,23 @@ export default function AdminDashboard() {
   // Created-user display — after adding a student the auto-generated password
   // is shown once (bcrypt means it can never be recovered later).
   const [createdUserDisplay, setCreatedUserDisplay] = useState(null); // { name, email, password }
+  // The add-user modal doubles as an edit form — editingUser holds the row
+  // being updated (null = plain add).
+  const [editingUser, setEditingUser] = useState(null);
+  const [deleteTarget, setDeleteTarget] = useState(null); // user pending removal
+  const [deletingUser, setDeletingUser] = useState(false);
+  // School exit flow (SUPER_ADMIN only): confirm warning → exit survey → done.
+  const [exitStep, setExitStep] = useState(null); // null | "confirm" | "survey" | "done"
+  const [exitReason, setExitReason] = useState("");
+  // Soft-deactivation confirm: null | "freeze" | "reactivate". Freezing the
+  // account blocks every non-super-admin login while keeping all data.
+  const [freezeModal, setFreezeModal] = useState(null);
+  const [schoolBusy, setSchoolBusy] = useState(false);
+  const [exitFeedback, setExitFeedback] = useState("");
+  const [exitSaving, setExitSaving] = useState(false);
+  // ISO date until which a deleted school's data stays recoverable (the
+  // DELETE response carries it; the done step prints it).
+  const [exitRestorableUntil, setExitRestorableUntil] = useState(null);
   // Teaching-scope editor state — SUPER_ADMIN assigns a teacher's SUBJECTS ×
   // ARMS here (the same scope the API enforces on every classroom route).
   const [scopeTarget, setScopeTarget] = useState(null); // teacher being edited
@@ -240,10 +284,28 @@ export default function AdminDashboard() {
   const [roleDraft, setRoleDraft] = useState({}); // userId -> selected role
   const [roleConfirm, setRoleConfirm] = useState(null); // { id, name, from, to }
   const [roleSaving, setRoleSaving] = useState(false);
-  // Login Details tab state — every non-student account (staff + parents) so
-  // the SUPER_ADMIN can hand out / reset logins. Students are excluded (too
-  // many — their passwords are auto-derived as name+classarm).
+  // Login Details tab state — staff + parents (the common view), plus a
+  // Students view for looking up any student's current password from one
+  // place. Students load lazily (the roster can be hundreds of rows).
   const [loginUsers, setLoginUsers] = useState([]);
+  const [printSheet, setPrintSheet] = useState(null);
+  const [loginMode, setLoginMode] = useState("staff"); // "staff" | "students"
+  const [loginStudents, setLoginStudents] = useState([]);
+  const [loginStudentsLoaded, setLoginStudentsLoaded] = useState(false);
+  const [loginStudentsSearch, setLoginStudentsSearch] = useState("");
+  // Per-class export scope — "" means the whole roster (default).
+  const [loginExportClass, setLoginExportClass] = useState("");
+  // Student ids whose password is currently revealed in the students view.
+  const [revealedPasswords, setRevealedPasswords] = useState(new Set());
+
+  function toggleRevealPassword(id) {
+    setRevealedPasswords((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
   // Timetable tab state — SUPER_ADMIN builds the weekly schedule here; the
   // assigned slots surface instantly in every teacher's portal.
   const [ttArm, setTtArm] = useState("");
@@ -303,6 +365,40 @@ export default function AdminDashboard() {
   const [archAlumni, setArchAlumni] = useState([]);
   const [archAlumniLoading, setArchAlumniLoading] = useState(false);
   const [archAlumniLoaded, setArchAlumniLoaded] = useState(false);
+  // Settings (branding) tab — the SUPER_ADMIN rebrands after onboarding:
+  // logo + seal upload and a flexible brand color, saved via PATCH /api/school.
+  const [settingsDraft, setSettingsDraft] = useState({
+    brandColor: "#2563EB",
+    logoUrl: "",
+    sealUrl: "",
+  });
+  const [settingsSaving, setSettingsSaving] = useState(false);
+  const [settingsError, setSettingsError] = useState("");
+  const [settingsSaved, setSettingsSaved] = useState(false);
+  const [logoError, setLogoError] = useState("");
+  const [sealError, setSealError] = useState("");
+  const logoInputRef = useRef(null);
+  const sealInputRef = useRef(null);
+
+  // Read an uploaded image file into a data URL — same path as onboarding:
+  // oversized files are compressed in the browser (compressImageFile) so a
+  // huge PNG shrinks instead of being rejected over 1 MB.
+  async function handleImageFile(file, field, setError) {
+    setError("");
+    if (!file) return;
+    try {
+      const dataUrl = await compressImageFile(file);
+      setSettingsDraft((prev) => ({ ...prev, [field]: dataUrl }));
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  // The custom color well needs a valid #rrggbb; a partial hex typed in the
+  // text box falls back to the default until it's complete.
+  const settingsColorWell = /^#[0-9a-fA-F]{6}$/.test(settingsDraft.brandColor)
+    ? settingsDraft.brandColor
+    : "#2563EB";
 
   const subjects = getSubjects();
 
@@ -315,7 +411,7 @@ export default function AdminDashboard() {
   useEffect(() => {
     const applyHash = () => {
       const hash = window.location.hash.replace("#", "");
-      if (["classes", "teachers", "roles", "logins", "students", "fees", "reports", "timetable", "archives"].includes(hash)) setTab(hash);
+      if (["classes", "teachers", "roles", "logins", "students", "fees", "reports", "timetable", "archives", "settings"].includes(hash)) setTab(hash);
     };
     applyHash();
     window.addEventListener("hashchange", applyHash);
@@ -423,6 +519,30 @@ export default function AdminDashboard() {
       .catch(() => {});
   }, [tab, feeClass, feeDefaultersOnly]);
 
+  // Settings: load the school's current branding into the draft every time
+  // the tab opens (async, like the Classes tab) so an unsaved edit is
+  // discarded and server-side truth wins.
+  useEffect(() => {
+    if (tab !== "settings") return;
+    let cancelled = false;
+    fetch("/api/school")
+      .then((r) => r.json())
+      .then((data) => {
+        if (cancelled) return;
+        setSettingsDraft({
+          brandColor: data.school?.brandColor || "#2563EB",
+          logoUrl: data.school?.logoUrl || "",
+          sealUrl: data.school?.sealUrl || "",
+        });
+        setSettingsError("");
+        setSettingsSaved(false);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [tab]);
+
   // Timetable: load the selected arm's schedule when the tab opens, plus the
   // school's bell schedule for the period-times editor.
   useEffect(() => {
@@ -494,8 +614,9 @@ export default function AdminDashboard() {
       .catch(() => {});
   }, [tab]);
 
-  // Login Details: every non-student account (staff + parents) — one query
-  // per role to avoid shipping the whole student roster.
+  // Login Details: staff + parents (the default view) — one query per role
+  // to avoid shipping the whole student roster. Students load lazily in the
+  // separate effect below, only when the Students view is opened.
   useEffect(() => {
     if (tab !== "logins") return;
     Promise.all(
@@ -508,6 +629,40 @@ export default function AdminDashboard() {
       .then((groups) => setLoginUsers(groups.flat()))
       .catch(() => {});
   }, [tab]);
+
+  // Students load on demand — the roster can be hundreds of rows and the
+  // staff/parents view is the common path.
+  useEffect(() => {
+    if (tab !== "logins" || loginMode !== "students" || loginStudentsLoaded) return;
+    fetch("/api/users?role=STUDENT")
+      .then((r) => r.json())
+      .then((d) => {
+        setLoginStudents(d.users || []);
+        setLoginStudentsLoaded(true);
+      })
+      .catch(() => {});
+  }, [tab, loginMode, loginStudentsLoaded]);
+
+  // Student search within the Login Details students view (name / email / arm).
+  const filteredLoginStudents = useMemo(() => {
+    const q = loginStudentsSearch.trim().toLowerCase();
+    if (!q) return loginStudents;
+    return loginStudents.filter(
+      (s) =>
+        s.name.toLowerCase().includes(q) ||
+        (s.email || "").toLowerCase().includes(q) ||
+        (s.assignedClass || "").toLowerCase().includes(q)
+    );
+  }, [loginStudents, loginStudentsSearch]);
+
+  // Distinct class arms present in the roster — the per-class export options.
+  const loginClasses = useMemo(
+    () =>
+      [...new Set(loginStudents.map((s) => s.assignedClass).filter(Boolean))].sort((a, b) =>
+        a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" })
+      ),
+    [loginStudents]
+  );
 
   async function confirmPayment(id) {
     setConfirmingId(id);
@@ -561,7 +716,7 @@ export default function AdminDashboard() {
       const meData = await meRes.json();
       // Any staff role opens the admin console; everyone else is redirected.
       if (!meData.user || !STAFF_ROLES.includes(meData.user.role)) {
-        router.replace("/login");
+        bounceToLogin(router);
         return;
       }
       setSession(meData);
@@ -630,6 +785,31 @@ export default function AdminDashboard() {
       // the API requires the uppercase role enum — normalize before sending.
       // For "staff", form.staffRole holds the chosen BURSAR/REGISTRAR.
       const roleEnum = String(role === "staff" ? form.staffRole || "BURSAR" : role || "").toUpperCase();
+
+      // Edit mode: PATCH the existing row (name/class/subjects/arms only —
+      // email is the login identity and stays immutable; passwords move
+      // through the reset flow).
+      if (editingUser) {
+        const res = await fetch(`/api/users/${editingUser.id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            name: form.name,
+            assignedClass: form.assignedClass,
+            subjects: form.subjects,
+            assignedClasses: form.assignedClasses,
+          }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || "Failed to update");
+        const u = data.user;
+        if (roleEnum === "TEACHER") setTeachers((ts) => ts.map((t) => (t.id === u.id ? u : t)));
+        else if (roleEnum === "STUDENT") setStudents((ss) => ss.map((s) => (s.id === u.id ? u : s)));
+        showToast(`${u.name} updated`);
+        closeAddModal();
+        return;
+      }
+
       const res = await fetch("/api/users", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -707,6 +887,99 @@ export default function AdminDashboard() {
     setResetNewPassword("");
     setResetDone(null);
     setResetCopied(false);
+  }
+
+  // Open the add-modal in edit mode with the row's current values prefilled.
+  // Email is immutable by design (it's the login identity), so it renders
+  // read-only here — replacing an account entirely is remove + re-add.
+  function openEdit(user) {
+    setEditingUser(user);
+    setForm({
+      name: user.name || "",
+      email: user.email || "",
+      password: "",
+      assignedClass: user.assignedClass || "",
+      staffRole: user.role === "BURSAR" || user.role === "REGISTRAR" ? user.role : "BURSAR",
+      subjects: user.subjects || [],
+      assignedClasses: user.assignedClasses || [],
+    });
+    setModal(user.role === "TEACHER" ? "teacher" : user.role === "BURSAR" || user.role === "REGISTRAR" ? "staff" : "student");
+  }
+
+  function closeAddModal() {
+    setModal(null);
+    setEditingUser(null);
+    setForm({ name: "", email: "", password: "", assignedClass: "", staffRole: "BURSAR", subjects: [], assignedClasses: [] });
+  }
+
+  // Soft deactivate / reactivate the school account: freeze blocks every
+  // non-super-admin login while keeping ALL data; reactivate flips it back.
+  // A page reload re-syncs /api/auth/me (status banner) and all the data.
+  async function flipSchoolStatus(action) {
+    setSchoolBusy(true);
+    try {
+      const res = await fetch("/api/school/status", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || "Could not update the school account");
+      window.location.reload();
+    } catch (err) {
+      showToast(err.message);
+      setFreezeModal(null);
+    } finally {
+      setSchoolBusy(false);
+    }
+  }
+
+  // Deactivate & wipe the whole school: the exit survey is sent to the
+  // platform first, then DELETE /api/school removes the tenant and every byte
+  // of its data. Only SUPER_ADMIN can reach this (users.manage).
+  async function submitExitSurvey() {
+    if (!exitReason) return;
+    setExitSaving(true);
+    try {
+      const res = await fetch("/api/school", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ reason: exitReason, feedback: exitFeedback }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || "Could not delete the school");
+      setExitRestorableUntil(data.restorableUntil || null);
+      setExitStep("done");
+    } catch (err) {
+      showToast(err.message);
+    } finally {
+      setExitSaving(false);
+    }
+  }
+
+  // Remove a student (left the school) or teacher (departed) — SUPER_ADMIN
+  // only, matching the DELETE /api/users policy. Their scores/attendance/fees
+  // (student) or timetable slots (teacher) go with them.
+  function confirmDeleteUser() {
+    if (!deleteTarget) return;
+    setDeletingUser(true);
+    fetch(`/api/users/${deleteTarget.id}`, { method: "DELETE" })
+      .then(async (res) => {
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || "Failed to remove the account");
+        const u = deleteTarget;
+        if (u.role === "TEACHER") {
+          setTeachers((ts) => ts.filter((t) => t.id !== u.id));
+          setStats((s) => ({ ...s, activeTeachers: Math.max(0, s.activeTeachers - 1) }));
+        } else if (u.role === "STUDENT") {
+          setStudents((ss) => ss.filter((s) => s.id !== u.id));
+          setStats((s) => ({ ...s, totalStudents: Math.max(0, s.totalStudents - 1) }));
+        }
+        showToast(`${u.name} removed`);
+        setDeleteTarget(null);
+      })
+      .catch((err) => showToast(err.message))
+      .finally(() => setDeletingUser(false));
   }
 
   function closeCreatedUserDisplay() {
@@ -1204,6 +1477,44 @@ export default function AdminDashboard() {
     });
   }
 
+  async function saveSettings() {
+    setSettingsSaving(true);
+    setSettingsError("");
+    setSettingsSaved(false);
+    try {
+      // Branding fields only — the PATCH route re-validates the logo and seal
+      // (image data, ≤ 2 MB) exactly as it does for onboarding.
+      const res = await fetch("/api/school", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          brandColor: settingsDraft.brandColor,
+          logoUrl: settingsDraft.logoUrl,
+          sealUrl: settingsDraft.sealUrl,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to save branding");
+      // Mirror into the session so headers, report cards and every portal pick
+      // it up immediately without a reload.
+      setSession((s) => ({
+        ...s,
+        school: {
+          ...s.school,
+          brandColor: settingsDraft.brandColor,
+          logoUrl: settingsDraft.logoUrl,
+          sealUrl: settingsDraft.sealUrl,
+        },
+      }));
+      setSettingsSaved(true);
+      showToast("School branding updated");
+    } catch (err) {
+      setSettingsError(err.message);
+    } finally {
+      setSettingsSaving(false);
+    }
+  }
+
   async function savePeriodTimes() {
     setPeriodTimesSaving(true);
     try {
@@ -1554,18 +1865,171 @@ export default function AdminDashboard() {
       const disposition = res.headers.get("Content-Disposition") || "";
       const match = disposition.match(/filename="?([^";]+)"?/);
       const filename = match ? match[1] : "alumni.csv";
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = filename;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      downloadBlob(filename, blob);
       showToast(`Exported ${archAlumni.length} alumni to CSV`);
     } catch (err) {
       showToast(err.message || "Could not export the CSV");
     }
+  }
+
+  // Bulk-distribute student logins: name, email, class arm and the current
+  // password (auto-generated name+class, or whatever the student changed it
+  // to / an admin reset it to). Built client-side from the already-loaded
+  // roster — the Login Details students list is fetched without pagination.
+  // When a class arm is selected in the toolbar, only that arm's students are
+  // exported (one class at a time for bulk distribution).
+  function exportStudentLoginsCsv() {
+    const scope = loginExportClass
+      ? loginStudents.filter((s) => s.assignedClass === loginExportClass)
+      : loginStudents;
+    if (!scope.length) {
+      showToast(loginExportClass ? `No students in ${loginExportClass} yet.` : "No students to export yet.");
+      return;
+    }
+    const rows = [
+      ["name", "email", "class", "password"],
+      ...scope.map((s) => [
+        s.name || "",
+        s.email || "",
+        s.assignedClass || "",
+        s.generatedPassword || "",
+      ]),
+    ];
+    const csv = withBOM(toCSV(rows));
+    const base = (session.school?.name || "school").toLowerCase().replace(/[^a-z0-9]+/g, "-");
+    const armSlug = loginExportClass ? `-${loginExportClass.toLowerCase().replace(/[^a-z0-9]+/g, "-")}` : "";
+    downloadBlob(`${base}-student-logins${armSlug}.csv`, new Blob([csv], { type: "text/csv;charset=utf-8" }));
+    showToast(
+      `Exported ${scope.length} student login${scope.length === 1 ? "" : "s"}${loginExportClass ? ` (${loginExportClass})` : ""} to CSV`
+    );
+  }
+
+  // Bulk-distribute staff & parent logins (super admin, teachers, bursars,
+  // registrars + parents): name, email, role, class arm and the current
+  // password — recorded at creation/reset/self-service change so it can be
+  // handed out from one place.
+  function exportStaffLoginsCsv() {
+    if (!loginUsers.length) {
+      showToast("No staff or parent accounts to export yet.");
+      return;
+    }
+    const rows = [
+      ["name", "email", "role", "class", "password"],
+      ...loginUsers.map((u) => [
+        u.name || "",
+        u.email || "",
+        ROLE_LABELS[u.role] || u.role || "",
+        u.assignedClass || (u.assignedClasses?.length ? u.assignedClasses.join(" | ") : "") || "",
+        u.generatedPassword || "",
+      ]),
+    ];
+    const csv = withBOM(toCSV(rows));
+    const base = (session.school?.name || "school").toLowerCase().replace(/[^a-z0-9]+/g, "-");
+    downloadBlob(`${base}-staff-logins.csv`, new Blob([csv], { type: "text/csv;charset=utf-8" }));
+    showToast(`Exported ${loginUsers.length} staff & parent logins to CSV`);
+  }
+
+  // parentId → linked children's full names, in roster order. Reuses the
+  // already-loaded student roster when the Students view has been opened;
+  // otherwise fetches it on demand. Used by the parent-logins CSV export and
+  // the printable credentials sheet.
+  async function getChildrenByParent() {
+    let roster = loginStudents;
+    if (!roster.length) {
+      const res = await fetch("/api/users?role=STUDENT");
+      const data = await res.json();
+      roster = data.users || [];
+    }
+    const childrenByParent = {};
+    for (const s of roster) {
+      if (!s.parentId) continue;
+      (childrenByParent[s.parentId] ||= []).push(s.name || "");
+    }
+    return childrenByParent;
+  }
+
+  // Bulk-distribute parent logins: parent name, email, linked children and
+  // the login password — which is ANY linked child's full name (case- and
+  // spacing-insensitive, e.g. "Adam Tope Johnson" works as typed), so a
+  // parent with several children can sign in with whichever name they
+  // remember. Each valid child name is listed; parents with no linked child
+  // yet fall back to the admin-set generated password.
+  async function exportParentLoginsCsv() {
+    const parents = loginUsers.filter((u) => u.role === "PARENT");
+    if (!parents.length) {
+      showToast("No parent accounts to export yet.");
+      return;
+    }
+    let childrenByParent = {};
+    try {
+      childrenByParent = await getChildrenByParent();
+    } catch {
+      showToast("Could not load the student roster for this export.");
+      return;
+    }
+    const rows = [
+      ["parent name", "email", "linked children", "password"],
+      ...parents.map((p) => {
+        const children = (childrenByParent[p.id] || []).filter(Boolean);
+        return [
+          p.name || "",
+          p.email || "",
+          children.join("; "),
+          children.length ? children.join(" / ") : p.generatedPassword || "",
+        ];
+      }),
+    ];
+    const csv = withBOM(toCSV(rows));
+    const base = (session.school?.name || "school").toLowerCase().replace(/[^a-z0-9]+/g, "-");
+    downloadBlob(`${base}-parent-logins.csv`, new Blob([csv], { type: "text/csv;charset=utf-8" }));
+    showToast(`Exported ${parents.length} parent logins to CSV`);
+  }
+
+  // Printable credentials sheet — names + passwords side by side on paper.
+  // Staff & parents: every non-student account; parent slips show their
+  // linked children's full names as the password (the friendly form that
+  // actually signs them in), falling back to the recorded password when a
+  // parent has no linked child yet.
+  async function openStaffPrintSheet() {
+    if (!loginUsers.length) {
+      showToast("No staff or parent accounts to print yet.");
+      return;
+    }
+    let childrenByParent = {};
+    try {
+      childrenByParent = await getChildrenByParent();
+    } catch {
+      /* roster fetch failed — parent slips fall back to generatedPassword */
+    }
+    setPrintSheet({
+      title: "Staff & Parent Login Credentials",
+      rows: loginUsers.map((u) => ({
+        name: u.name || "",
+        email: u.email || "",
+        meta: ROLE_LABELS[u.role] || u.role || "",
+        password:
+          u.role === "PARENT"
+            ? (childrenByParent[u.id] || []).filter(Boolean).join(" / ") || u.generatedPassword || ""
+            : u.generatedPassword || "",
+      })),
+    });
+  }
+
+  // Printable credentials sheet for the whole student roster.
+  function openStudentPrintSheet() {
+    if (!loginStudents.length) {
+      showToast("No students to print yet.");
+      return;
+    }
+    setPrintSheet({
+      title: "Student Login Credentials",
+      rows: loginStudents.map((s) => ({
+        name: s.name || "",
+        email: s.email || "",
+        meta: s.assignedClass || "",
+        password: s.generatedPassword || "",
+      })),
+    });
   }
 
   async function clearTtSlot() {
@@ -1745,6 +2209,8 @@ export default function AdminDashboard() {
     ...(canReports ? [{ key: "reports", label: "Report Cards" }] : []),
     // Historical scores/attendance live with the staff who own report cards.
     ...(isSuper || myRole === "REGISTRAR" ? [{ key: "archives", label: "Previous Terms" }] : []),
+    // Branding lives with the school owner — logo upload + brand color.
+    ...(isSuper ? [{ key: "settings", label: "Settings" }] : []),
   ];
   // A role-specific hash (e.g. /admin/dashboard#fees as a BURSAR) must not
   // land on a tab they can't see — fall back to the first visible tab.
@@ -1756,19 +2222,31 @@ export default function AdminDashboard() {
     <main className="flex min-h-screen flex-1 bg-navy-50">
       <Sidebar role={myRole} open={sidebarOpen} onClose={() => setSidebarOpen(false)} />
 
-      <div className="flex-1 lg:pl-64">
+      {/* min-w-0: the flex item must be allowed to shrink below its content's
+          min-width, or wide children (metric grids, tables, tab strips) blow
+          the whole page out horizontally on small screens */}
+      <div className="min-w-0 flex-1 lg:pl-64">
         {/* Topbar */}
         <header className="sticky top-0 z-30 flex h-16 items-center justify-between border-b border-navy-200/70 bg-white/80 px-5 backdrop-blur-lg">
-          <div className="flex items-center gap-3">
+          <div className="flex min-w-0 items-center gap-3">
             <button
               onClick={() => setSidebarOpen(true)}
-              className="rounded-lg p-2 text-navy-600 hover:bg-navy-50 lg:hidden"
+              className="shrink-0 rounded-lg p-2 text-navy-600 hover:bg-navy-50 lg:hidden"
             >
               <Menu className="h-5 w-5" />
             </button>
-            <div>
-              <p className="text-sm font-bold text-navy-800">{session.school?.name}</p>
-              <p className="text-xs text-navy-400">
+            {/* The school's uploaded logo sits beside its name in every
+                portal header — branding follows the tenant everywhere. */}
+            {session.school?.logoUrl && (
+              <img
+                src={session.school.logoUrl}
+                alt=""
+                className="h-7 w-7 shrink-0 rounded-lg bg-white object-contain ring-1 ring-navy-100"
+              />
+            )}
+            <div className="min-w-0">
+              <p className="truncate text-sm font-bold text-navy-800">{session.school?.name}</p>
+              <p className="truncate text-xs text-navy-400">
                 {session.school?.currentSession} · {session.school?.currentTerm}
               </p>
             </div>
@@ -1782,6 +2260,48 @@ export default function AdminDashboard() {
             </div>
           </div>
         </header>
+
+        {/* Soft-deactivation banner — the SUPER_ADMIN is the only one who can
+            still sign in to a frozen school, so they always see this with the
+            reactivate action right there. */}
+        {session.school?.status !== "active" && (
+          <div
+            className={`border-b px-5 py-3 ${
+              session.school?.status === "frozen" ? "border-amber-200 bg-amber-50" : "border-rose-200 bg-rose-50"
+            }`}
+          >
+            <div className="mx-auto flex max-w-7xl flex-wrap items-center justify-between gap-3">
+              <div className="flex min-w-0 items-start gap-2.5">
+                <AlertTriangle
+                  className={`mt-0.5 h-4 w-4 shrink-0 ${session.school?.status === "frozen" ? "text-amber-600" : "text-rose-600"}`}
+                />
+                {session.school?.status === "frozen" ? (
+                  <p className="text-sm text-amber-900">
+                    <strong>{session.school?.name}</strong> is deactivated — all staff and student
+                    logins are blocked. Your data is safe and nothing has been deleted; reactivate
+                    the account anytime to resume.
+                  </p>
+                ) : (
+                  <p className="text-sm text-rose-900">
+                    <strong>{session.school?.name}</strong> was deleted{" "}
+                    {session.school?.deletedAt
+                      ? `on ${new Date(session.school.deletedAt).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" })}`
+                      : ""}
+                    . Its data is kept and recoverable for 30 days — restore the account to keep
+                    it, otherwise it will be permanently removed.
+                  </p>
+                )}
+              </div>
+              <button
+                onClick={() => setFreezeModal(session.school?.status === "frozen" ? "reactivate" : "restore")}
+                className="inline-flex shrink-0 items-center gap-1.5 rounded-lg bg-emerald-600 px-3.5 py-1.5 text-xs font-bold text-white transition hover:bg-emerald-500"
+              >
+                <RefreshCw className="h-3.5 w-3.5" />{" "}
+                {session.school?.status === "frozen" ? "Reactivate school" : "Restore school"}
+              </button>
+            </div>
+          </div>
+        )}
 
         <div className="mx-auto max-w-7xl px-5 py-8">
           {/* Metric cards */}
@@ -1979,25 +2499,31 @@ export default function AdminDashboard() {
             </button>
           )}
 
-          {/* Tabs */}
+          {/* Tabs — horizontally scrollable on small screens so the strip
+              never pushes the page wider than the viewport */}
           <div className="mt-8 flex flex-wrap items-center justify-between gap-3">
-            <div className="flex gap-1 rounded-xl bg-navy-100 p-1">
-              {visibleTabs.map((t) => (
-                <button
-                  key={t.key}
-                  onClick={() => {
-                    setTab(t.key);
-                    history.replaceState(null, "", t.key === "overview" ? "/admin/dashboard" : `/admin/dashboard#${t.key}`);
-                  }}
-                  className={`rounded-lg px-4 py-2 text-sm font-semibold transition ${
-                    activeTab === t.key ? "bg-white text-navy-800 shadow-sm" : "text-navy-500 hover:text-navy-700"
-                  }`}
-                >
-                  {t.label}
-                </button>
-              ))}
+            <div className="-mx-1 max-w-full overflow-x-auto px-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+              {/* w-max + nowrap: single-line strip that scrolls on small screens.
+                  On desktop (lg) the strip reverts to filling the row and tabs
+                  wrap their labels as before, so nothing is cut off. */}
+              <div className="flex w-max gap-1 rounded-xl bg-navy-100 p-1 lg:w-full lg:flex-wrap">
+                {visibleTabs.map((t) => (
+                  <button
+                    key={t.key}
+                    onClick={() => {
+                      setTab(t.key);
+                      history.replaceState(null, "", t.key === "overview" ? "/admin/dashboard" : `/admin/dashboard#${t.key}`);
+                    }}
+                    className={`whitespace-nowrap rounded-lg px-4 py-2 text-sm font-semibold transition lg:whitespace-normal ${
+                      activeTab === t.key ? "bg-white text-navy-800 shadow-sm" : "text-navy-500 hover:text-navy-700"
+                    }`}
+                  >
+                    {t.label}
+                  </button>
+                ))}
+              </div>
             </div>
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               <div className="relative">
                 <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-navy-300" />
                 <input
@@ -2158,6 +2684,103 @@ export default function AdminDashboard() {
                     Start a new term
                   </button>
                 </div>
+              </div>
+            )}
+
+            {/* Danger zone — SUPER_ADMIN only. Three levels: freeze the account
+                (blocks logins, keeps ALL data, reactivatable), delete it (a
+                30-day recovery window — restorable, then purged), and the
+                permanent wipe (two-step confirm + exit survey). */}
+            {isSuper && (
+              <div className="mt-5 overflow-hidden rounded-2xl border border-rose-200 bg-rose-50/40 shadow-sm">
+                <div className="border-b border-navy-100 bg-white/60 px-6 py-4">
+                  <h3 className="flex items-center gap-2 text-sm font-bold text-rose-800">
+                    <AlertTriangle className="h-4 w-4" /> Danger zone
+                  </h3>
+                  <p className="mt-0.5 text-xs text-navy-400">
+                    Manage the whole {session?.school?.name} account. Freezing is reversible; deleting
+                    starts a 30-day recovery window.
+                  </p>
+                </div>
+
+                {/* Freeze / reactivate / restore — all reversible, no data lost. */}
+                <div className="flex flex-col gap-4 px-6 py-5 sm:flex-row sm:items-center sm:justify-between">
+                  <div className="flex items-start gap-3">
+                    <div
+                      className={`rounded-xl p-2.5 ${
+                        session.school?.status !== "active" ? "bg-emerald-100 text-emerald-600" : "bg-amber-100 text-amber-600"
+                      }`}
+                    >
+                      {session.school?.status !== "active" ? <RefreshCw className="h-5 w-5" /> : <Snowflake className="h-5 w-5" />}
+                    </div>
+                    <div>
+                      <h4 className="text-sm font-bold text-navy-800">
+                        {session.school?.status === "frozen"
+                          ? "Reactivate school account"
+                          : session.school?.status === "deleted"
+                            ? "Restore school account"
+                            : "Freeze school account"}
+                      </h4>
+                      <p className="mt-0.5 text-sm text-navy-500">
+                        {session.school?.status === "frozen"
+                          ? "All staff and student logins are currently blocked. Reactivating resumes them instantly — nothing was deleted."
+                          : session.school?.status === "deleted"
+                            ? "This school was deleted and its data is kept for a 30-day recovery window. Restoring revives the account and everything in it."
+                            : "Blocks all staff and student logins while keeping every byte of data. You can reactivate the account at any time."}
+                      </p>
+                    </div>
+                  </div>
+                  <button
+                    onClick={() =>
+                      setFreezeModal(
+                        session.school?.status === "frozen"
+                          ? "reactivate"
+                          : session.school?.status === "deleted"
+                            ? "restore"
+                            : "freeze"
+                      )
+                    }
+                    className={`inline-flex shrink-0 items-center gap-2 rounded-xl px-4 py-2.5 text-sm font-semibold text-white transition ${
+                      session.school?.status !== "active"
+                        ? "bg-emerald-600 hover:bg-emerald-500"
+                        : "bg-amber-500 hover:bg-amber-400"
+                    }`}
+                  >
+                    {session.school?.status !== "active" ? <RefreshCw className="h-4 w-4" /> : <Snowflake className="h-4 w-4" />}
+                    {session.school?.status === "frozen"
+                      ? "Reactivate school"
+                      : session.school?.status === "deleted"
+                        ? "Restore school"
+                        : "Freeze account"}
+                  </button>
+                </div>
+
+                {/* Permanent wipe — only for an active/frozen school (a deleted
+                    one is already in its recovery window). */}
+                {session.school?.status !== "deleted" && (
+                  <div className="flex flex-col gap-4 border-t border-rose-100 px-6 py-5 sm:flex-row sm:items-center sm:justify-between">
+                    <div className="flex items-start gap-3">
+                      <div className="rounded-xl bg-rose-100 p-2.5 text-rose-600">
+                        <Trash2 className="h-5 w-5" />
+                      </div>
+                      <div>
+                        <h4 className="text-sm font-bold text-rose-800">Deactivate school & delete data</h4>
+                        <p className="mt-0.5 text-sm text-navy-500">
+                          Delete the school — its data is kept for a 30-day recovery window, then
+                          permanently removed. You can restore the account anytime within the window.{" "}
+                          <strong className="text-rose-700">After that, there is no going back.</strong>
+                        </p>
+                      </div>
+                    </div>
+                    <button
+                      onClick={() => setExitStep("confirm")}
+                      className="inline-flex shrink-0 items-center gap-2 rounded-xl bg-rose-600 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-rose-500"
+                    >
+                      <Trash2 className="h-4 w-4" />
+                      Deactivate school & delete data
+                    </button>
+                  </div>
+                )}
               </div>
             )}
             </>
@@ -2562,6 +3185,20 @@ export default function AdminDashboard() {
                                 <Pencil className="h-4 w-4" />
                               </button>
                             )}
+                            <button
+                              onClick={() => openEdit(t)}
+                              title={`Edit ${t.name}'s details`}
+                              className="rounded-lg p-1.5 text-navy-300 transition hover:bg-brand-50 hover:text-brand-600"
+                            >
+                              <UserCog className="h-4 w-4" />
+                            </button>
+                            <button
+                              onClick={() => setDeleteTarget(t)}
+                              title={`Remove ${t.name} (left the school)`}
+                              className="rounded-lg p-1.5 text-navy-300 transition hover:bg-rose-50 hover:text-rose-600"
+                            >
+                              <Trash2 className="h-4 w-4" />
+                            </button>
                           </div>
                         </td>
                         <td className="px-6 py-4 text-navy-500">{t.email}</td>
@@ -2841,70 +3478,269 @@ export default function AdminDashboard() {
             <div className="mt-5 space-y-5 animate-fade-up">
               <div className="overflow-hidden rounded-2xl border border-navy-200/70 bg-white shadow-sm">
                 <div className="border-b border-navy-100 px-6 py-4">
-                  <h2 className="flex items-center gap-2 text-lg font-bold text-navy-800">
-                    <KeyRound className="h-5 w-5 text-brand-600" />
-                    Login Details
-                  </h2>
-                  <p className="text-sm text-navy-400">
-                    Every staff account and parent — with email and password reset.
-                    Students are excluded (their password is auto-derived as their
-                    name + class arm and the list would be long).
-                  </p>
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div>
+                      <h2 className="flex items-center gap-2 text-lg font-bold text-navy-800">
+                        <KeyRound className="h-5 w-5 text-brand-600" />
+                        Login Details
+                      </h2>
+                      <p className="mt-0.5 text-sm text-navy-400">
+                        Look up or reset any account&apos;s login — staff, parents and
+                        students, all from one place.
+                      </p>
+                    </div>
+                    <div className="flex w-fit gap-1 rounded-xl bg-navy-100 p-1">
+                      <button
+                        onClick={() => setLoginMode("staff")}
+                        className={`rounded-lg px-4 py-2 text-sm font-semibold transition ${
+                          loginMode === "staff" ? "bg-white text-navy-800 shadow-sm" : "text-navy-500 hover:text-navy-700"
+                        }`}
+                      >
+                        Staff &amp; parents
+                      </button>
+                      <button
+                        onClick={() => setLoginMode("students")}
+                        className={`rounded-lg px-4 py-2 text-sm font-semibold transition ${
+                          loginMode === "students" ? "bg-white text-navy-800 shadow-sm" : "text-navy-500 hover:text-navy-700"
+                        }`}
+                      >
+                        Students
+                      </button>
+                    </div>
+                  </div>
                 </div>
-                <div className="overflow-x-auto">
-                  <table className="w-full text-sm">
-                    <thead>
-                      <tr className="border-b border-navy-100 bg-navy-50/60 text-left text-xs font-semibold uppercase tracking-wider text-navy-400">
-                        <th className="px-6 py-3">User</th>
-                        <th className="px-6 py-3">Role</th>
-                        <th className="px-6 py-3">Class</th>
-                        <th className="px-6 py-3 text-right">Actions</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {loginUsers.map((u) => (
-                        <tr key={u.id} className="border-b border-navy-50 transition hover:bg-navy-50/40">
-                          <td className="px-6 py-3.5">
-                            <div className="flex items-center gap-3">
-                              <div className="flex h-9 w-9 items-center justify-center rounded-full bg-navy-800 text-sm font-bold text-white">
-                                {u.name.split(" ").map((w) => w[0]).join("").slice(0, 2).toUpperCase()}
-                              </div>
-                              <div>
-                                <p className="font-semibold text-navy-800">{u.name}</p>
-                                <p className="text-xs text-navy-400">{u.email}</p>
-                              </div>
-                            </div>
-                          </td>
-                          <td className="px-6 py-3.5">
-                            <span className={`inline-flex items-center rounded-full px-2.5 py-1 text-xs font-bold ring-1 ${ROLE_BADGES[u.role] || "bg-navy-100 text-navy-600"}`}>
-                              {ROLE_LABELS[u.role] || u.role}
-                            </span>
-                          </td>
-                          <td className="px-6 py-3.5 text-xs text-navy-500">
-                            {u.assignedClass || (u.assignedClasses?.length ? u.assignedClasses.join(", ") : "—")}
-                          </td>
-                          <td className="px-6 py-3.5 text-right">
-                            <button
-                              onClick={() => openReset(u)}
-                              title={`Reset ${u.name}'s password`}
-                              className="inline-flex items-center gap-1.5 rounded-lg bg-navy-800 px-3.5 py-2 text-xs font-semibold text-white transition hover:bg-navy-700"
-                            >
-                              <KeyRound className="h-3.5 w-3.5" />
-                              Reset password
-                            </button>
-                          </td>
+
+                {loginMode === "staff" ? (
+                  <div>
+                    {/* Staff & parents — count plus bulk CSV export of logins
+                        for printing/distribution */}
+                    <div className="flex flex-wrap items-center justify-between gap-2 border-b border-navy-100 px-6 py-3">
+                      <p className="text-xs font-medium text-navy-400">
+                        {loginUsers.length} staff &amp; parent account{loginUsers.length === 1 ? "" : "s"}
+                      </p>
+                      <div className="flex flex-wrap items-center gap-2">
+                        {loginUsers.length > 0 && (
+                          <button
+                            onClick={openStaffPrintSheet}
+                            title="Open a printable sheet with every staff & parent login — name and password side by side"
+                            className="inline-flex items-center gap-1.5 rounded-lg border border-navy-200 bg-white px-3 py-2 text-xs font-semibold text-navy-700 transition hover:border-brand-400 hover:text-brand-600"
+                          >
+                            <Printer className="h-3.5 w-3.5" /> Print sheet
+                          </button>
+                        )}
+                        {loginUsers.some((u) => u.role === "PARENT") && (
+                          <button
+                            onClick={exportParentLoginsCsv}
+                            title="Download parent logins — the password is any linked child's full name"
+                            className="inline-flex items-center gap-1.5 rounded-lg border border-navy-200 bg-white px-3 py-2 text-xs font-semibold text-navy-700 transition hover:border-brand-400 hover:text-brand-600"
+                          >
+                            <Users className="h-3.5 w-3.5" /> Export parent logins
+                          </button>
+                        )}
+                        {loginUsers.length > 0 && (
+                          <button
+                            onClick={exportStaffLoginsCsv}
+                            title="Download name, email, role, class and password for every staff & parent account"
+                            className="inline-flex items-center gap-1.5 rounded-lg border border-navy-200 bg-white px-3 py-2 text-xs font-semibold text-navy-700 transition hover:border-brand-400 hover:text-brand-600"
+                          >
+                            <Download className="h-3.5 w-3.5" /> Export CSV
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                    <div className="overflow-x-auto">
+                    <table className="w-full text-sm">
+                      <thead>
+                        <tr className="border-b border-navy-100 bg-navy-50/60 text-left text-xs font-semibold uppercase tracking-wider text-navy-400">
+                          <th className="px-6 py-3">User</th>
+                          <th className="px-6 py-3">Role</th>
+                          <th className="px-6 py-3">Class</th>
+                          <th className="px-6 py-3 text-right">Actions</th>
                         </tr>
-                      ))}
-                      {loginUsers.length === 0 && (
-                        <tr>
-                          <td colSpan={4} className="px-6 py-10 text-center text-navy-400">
-                            No accounts yet beyond the super admin.
-                          </td>
-                        </tr>
+                      </thead>
+                      <tbody>
+                        {loginUsers.map((u) => (
+                          <tr key={u.id} className="border-b border-navy-50 transition hover:bg-navy-50/40">
+                            <td className="px-6 py-3.5">
+                              <div className="flex items-center gap-3">
+                                <div className="flex h-9 w-9 items-center justify-center rounded-full bg-navy-800 text-sm font-bold text-white">
+                                  {u.name.split(" ").map((w) => w[0]).join("").slice(0, 2).toUpperCase()}
+                                </div>
+                                <div>
+                                  <p className="font-semibold text-navy-800">{u.name}</p>
+                                  <p className="text-xs text-navy-400">{u.email}</p>
+                                </div>
+                              </div>
+                            </td>
+                            <td className="px-6 py-3.5">
+                              <span className={`inline-flex items-center rounded-full px-2.5 py-1 text-xs font-bold ring-1 ${ROLE_BADGES[u.role] || "bg-navy-100 text-navy-600"}`}>
+                                {ROLE_LABELS[u.role] || u.role}
+                              </span>
+                            </td>
+                            <td className="px-6 py-3.5 text-xs text-navy-500">
+                              {u.assignedClass || (u.assignedClasses?.length ? u.assignedClasses.join(", ") : "—")}
+                            </td>
+                            <td className="px-6 py-3.5 text-right">
+                              <button
+                                onClick={() => openReset(u)}
+                                title={`Reset ${u.name}'s password`}
+                                className="inline-flex items-center gap-1.5 rounded-lg bg-navy-800 px-3.5 py-2 text-xs font-semibold text-white transition hover:bg-navy-700"
+                              >
+                                <KeyRound className="h-3.5 w-3.5" />
+                                Reset password
+                              </button>
+                            </td>
+                          </tr>
+                        ))}
+                        {loginUsers.length === 0 && (
+                          <tr>
+                            <td colSpan={4} className="px-6 py-10 text-center text-navy-400">
+                              No accounts yet beyond the super admin.
+                            </td>
+                          </tr>
+                        )}
+                      </tbody>
+                    </table>
+                    </div>
+                  </div>
+                ) : (
+                  <div>
+                    {/* Student search — name / email / class arm, plus bulk
+                        CSV export of logins for printing/distribution */}
+                    <div className="flex flex-wrap items-center gap-2 border-b border-navy-100 px-6 py-3">
+                      <div className="relative w-full max-w-sm flex-1">
+                        <Search className="pointer-events-none absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-navy-300" />
+                        <input
+                          value={loginStudentsSearch}
+                          onChange={(e) => setLoginStudentsSearch(e.target.value)}
+                          placeholder="Search students…"
+                          className="w-full rounded-xl border border-navy-200 bg-white py-2.5 pl-10 pr-4 text-sm text-navy-800 outline-none transition placeholder:text-navy-300 focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20"
+                        />
+                      </div>
+                      {loginClasses.length > 0 && (
+                        <select
+                          value={loginExportClass}
+                          onChange={(e) => setLoginExportClass(e.target.value)}
+                          title="Export one class arm at a time — pick a class to limit the CSV to those students"
+                          className="rounded-xl border border-navy-200 bg-white px-3 py-2.5 text-xs font-semibold text-navy-700 outline-none transition hover:border-brand-400 focus:border-brand-500"
+                        >
+                          <option value="">All classes</option>
+                          {loginClasses.map((c) => (
+                            <option key={c} value={c}>
+                              {c}
+                            </option>
+                          ))}
+                        </select>
                       )}
-                    </tbody>
-                  </table>
-                </div>
+                      {loginStudents.length > 0 && (
+                        <button
+                          onClick={openStudentPrintSheet}
+                          title="Open a printable sheet with every student's login — name and password side by side"
+                          className="inline-flex items-center gap-1.5 rounded-lg border border-navy-200 bg-white px-3 py-2 text-xs font-semibold text-navy-700 transition hover:border-brand-400 hover:text-brand-600"
+                        >
+                          <Printer className="h-3.5 w-3.5" /> Print sheet
+                        </button>
+                      )}
+                      {loginStudents.length > 0 && (
+                        <button
+                          onClick={exportStudentLoginsCsv}
+                          title={
+                            loginExportClass
+                              ? `Download name, email, class and password for every student in ${loginExportClass}`
+                              : "Download name, email, class and password for every student"
+                          }
+                          className="inline-flex items-center gap-1.5 rounded-lg border border-navy-200 bg-white px-3 py-2 text-xs font-semibold text-navy-700 transition hover:border-brand-400 hover:text-brand-600"
+                        >
+                          <Download className="h-3.5 w-3.5" /> Export CSV
+                        </button>
+                      )}
+                    </div>
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-sm">
+                        <thead>
+                          <tr className="border-b border-navy-100 bg-navy-50/60 text-left text-xs font-semibold uppercase tracking-wider text-navy-400">
+                            <th className="px-6 py-3">Student</th>
+                            <th className="px-6 py-3">Email</th>
+                            <th className="px-6 py-3">Class Arm</th>
+                            <th className="px-6 py-3">Password</th>
+                            <th className="px-6 py-3 text-right">Actions</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {filteredLoginStudents.map((s) => {
+                            const revealed = revealedPasswords.has(s.id);
+                            return (
+                              <tr key={s.id} className="border-b border-navy-50 transition hover:bg-navy-50/40">
+                                <td className="px-6 py-3.5">
+                                  <div className="flex items-center gap-3">
+                                    <div className="flex h-9 w-9 items-center justify-center rounded-full bg-emerald-50 text-sm font-bold text-emerald-600">
+                                      {s.name.split(" ").map((w) => w[0]).join("").slice(0, 2).toUpperCase()}
+                                    </div>
+                                    <p className="font-semibold text-navy-800">{s.name}</p>
+                                  </div>
+                                </td>
+                                <td className="px-6 py-3.5 text-navy-500">{s.email}</td>
+                                <td className="px-6 py-3.5">
+                                  <span className="rounded-md bg-navy-100 px-2 py-1 text-xs font-semibold text-navy-600">
+                                    {s.assignedClass || "Unassigned"}
+                                  </span>
+                                </td>
+                                <td className="px-6 py-3.5">
+                                  {s.generatedPassword ? (
+                                    revealed ? (
+                                      <span className="inline-flex items-center gap-2">
+                                        <code className="select-all rounded bg-navy-800 px-2 py-1 font-mono text-xs font-bold text-white">
+                                          {s.generatedPassword}
+                                        </code>
+                                        <button
+                                          onClick={() => toggleRevealPassword(s.id)}
+                                          title="Hide password"
+                                          className="rounded-lg p-1.5 text-navy-300 transition hover:bg-navy-100 hover:text-navy-600"
+                                        >
+                                          <EyeOff className="h-4 w-4" />
+                                        </button>
+                                      </span>
+                                    ) : (
+                                      <button
+                                        onClick={() => toggleRevealPassword(s.id)}
+                                        title="Show password"
+                                        className="inline-flex items-center gap-1.5 rounded-lg border border-navy-200 px-2.5 py-1.5 text-xs font-semibold text-navy-500 transition hover:border-brand-300 hover:text-brand-600"
+                                      >
+                                        <Eye className="h-3.5 w-3.5" />
+                                        Reveal
+                                      </button>
+                                    )
+                                  ) : (
+                                    <span className="text-xs text-navy-300">—</span>
+                                  )}
+                                </td>
+                                <td className="px-6 py-3.5 text-right">
+                                  <button
+                                    onClick={() => openReset(s)}
+                                    title={`Reset ${s.name}'s password`}
+                                    className="inline-flex items-center gap-1.5 rounded-lg bg-navy-800 px-3.5 py-2 text-xs font-semibold text-white transition hover:bg-navy-700"
+                                  >
+                                    <KeyRound className="h-3.5 w-3.5" />
+                                    Reset password
+                                  </button>
+                                </td>
+                              </tr>
+                            );
+                          })}
+                          {filteredLoginStudents.length === 0 && (
+                            <tr>
+                              <td colSpan={5} className="px-6 py-10 text-center text-navy-400">
+                                {loginStudentsLoaded
+                                  ? "No students match your search."
+                                  : "Loading students…"}
+                              </td>
+                            </tr>
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
           )}
@@ -4067,6 +4903,7 @@ export default function AdminDashboard() {
                     <tr className="border-b border-navy-100 bg-navy-50/60 text-xs font-semibold uppercase tracking-wider text-navy-400">
                       <th className="px-6 py-3">Student</th>
                       <th className="px-6 py-3">Email</th>
+                      <th className="px-6 py-3">Password</th>
                       <th className="px-6 py-3">Class Arm</th>
                       <th className="px-6 py-3">Fee Status</th>
                       <th className="px-6 py-3">Parent / Guardian</th>
@@ -4088,9 +4925,36 @@ export default function AdminDashboard() {
                             >
                               <KeyRound className="h-4 w-4" />
                             </button>
+                            {isSuper && (
+                              <>
+                                <button
+                                  onClick={() => openEdit(s)}
+                                  title={`Edit ${s.name}'s details`}
+                                  className="rounded-lg p-1.5 text-navy-300 transition hover:bg-brand-50 hover:text-brand-600"
+                                >
+                                  <UserCog className="h-4 w-4" />
+                                </button>
+                                <button
+                                  onClick={() => setDeleteTarget(s)}
+                                  title={`Remove ${s.name} (left the school)`}
+                                  className="rounded-lg p-1.5 text-navy-300 transition hover:bg-rose-50 hover:text-rose-600"
+                                >
+                                  <Trash2 className="h-4 w-4" />
+                                </button>
+                              </>
+                            )}
                           </div>
                         </td>
                         <td className="px-6 py-4 text-navy-500">{s.email}</td>
+                        <td className="px-6 py-4">
+                          {s.generatedPassword ? (
+                            <code className="select-all rounded bg-navy-800 px-2 py-1 font-mono text-xs font-bold text-white">
+                              {s.generatedPassword}
+                            </code>
+                          ) : (
+                            <span className="text-xs text-navy-300">—</span>
+                          )}
+                        </td>
                         <td className="px-6 py-4">
                           <span className="rounded-md bg-navy-100 px-2 py-1 text-xs font-semibold text-navy-600">
                             {s.assignedClass || "Unassigned"}
@@ -4164,6 +5028,252 @@ export default function AdminDashboard() {
           )}
         </div>
       </div>
+
+          {activeTab === "settings" && (
+            <div className="mt-5 overflow-hidden rounded-2xl border border-navy-200/70 bg-white shadow-sm">
+              <div className="border-b border-navy-100 px-6 py-4">
+                <h2 className="text-lg font-bold text-navy-800">School branding</h2>
+                <p className="text-sm text-navy-400">
+                  Change your school&apos;s logo and brand color anytime — they appear on report cards and
+                  across every portal.
+                </p>
+              </div>
+              <div className="grid gap-8 p-6 lg:grid-cols-2">
+                <div>
+                  <label className="block">
+                    <span className="mb-1.5 block text-sm font-medium text-navy-700">Brand color</span>
+                    <div className="flex flex-wrap items-center gap-3">
+                      {BRAND_COLORS.map((c) => (
+                        <button
+                          key={c}
+                          onClick={() => setSettingsDraft((d) => ({ ...d, brandColor: c }))}
+                          className={`h-10 w-10 rounded-xl ring-2 transition ${
+                            settingsDraft.brandColor === c
+                              ? "ring-navy-800 ring-offset-2"
+                              : "ring-transparent hover:scale-105"
+                          }`}
+                          style={{ backgroundColor: c }}
+                          aria-label={`Brand color ${c}`}
+                        />
+                      ))}
+                      <input
+                        type="color"
+                        value={settingsColorWell}
+                        onChange={(e) => setSettingsDraft((d) => ({ ...d, brandColor: e.target.value }))}
+                        className="h-10 w-14 cursor-pointer rounded-xl border border-navy-200 bg-white"
+                        aria-label="Custom brand color"
+                      />
+                      {/* Exact hex entry — every school has its own brand color,
+                          so the swatches are just a starting point. */}
+                      <div className="flex items-center gap-1 rounded-lg border border-navy-200 px-2.5 py-1.5">
+                        <span className="text-xs font-bold text-navy-400">#</span>
+                        <input
+                          value={
+                            settingsDraft.brandColor.startsWith("#")
+                              ? settingsDraft.brandColor.slice(1)
+                              : settingsDraft.brandColor
+                          }
+                          onChange={(e) => {
+                            const v = e.target.value.replace(/[^0-9a-fA-F]/g, "").slice(0, 6);
+                            setSettingsDraft((d) => ({ ...d, brandColor: v ? `#${v}` : "" }));
+                          }}
+                          onBlur={() => {
+                            // Normalize to a valid 6-digit hex, else fall back.
+                            if (!/^#[0-9a-fA-F]{6}$/.test(settingsDraft.brandColor)) {
+                              setSettingsDraft((d) => ({ ...d, brandColor: "#2563EB" }));
+                            }
+                          }}
+                          placeholder="2563EB"
+                          aria-label="Custom brand color (hex)"
+                          className="w-20 bg-transparent font-mono text-sm font-semibold text-navy-800 outline-none placeholder:font-sans placeholder:text-xs placeholder:font-medium placeholder:text-navy-300"
+                        />
+                      </div>
+                    </div>
+                  </label>
+
+                  <div className="mt-5">
+                    <span className="mb-1.5 block text-sm font-medium text-navy-700">School logo</span>
+                    <input
+                      ref={logoInputRef}
+                      type="file"
+                      accept="image/png,image/jpeg,image/svg+xml,image/webp"
+                      onChange={(e) => {
+                        handleImageFile(e.target.files?.[0], "logoUrl", setLogoError);
+                        e.target.value = ""; // allow re-picking the same file
+                      }}
+                      className="hidden"
+                    />
+                    {settingsDraft.logoUrl ? (
+                      <div className="flex flex-wrap items-center gap-3 rounded-xl border border-navy-200 p-3">
+                        <img
+                          src={settingsDraft.logoUrl}
+                          alt="School logo preview"
+                          className="h-14 w-14 rounded-lg border border-navy-100 bg-white object-contain"
+                        />
+                        <div className="min-w-0 flex-1">
+                          <p className="text-sm font-semibold text-navy-800">Logo uploaded</p>
+                          <p className="text-xs text-navy-400">Shown on report cards and in your portal.</p>
+                        </div>
+                        <div className="flex flex-wrap gap-2">
+                          <button
+                            type="button"
+                            onClick={() => logoInputRef.current?.click()}
+                            className="inline-flex items-center gap-1.5 rounded-lg border border-navy-200 bg-white px-3 py-2 text-xs font-semibold text-navy-700 transition hover:border-brand-400 hover:text-brand-600"
+                          >
+                            <Upload className="h-3.5 w-3.5" /> Replace
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setSettingsDraft((d) => ({ ...d, logoUrl: "" }))}
+                            className="inline-flex items-center gap-1.5 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-semibold text-rose-700 transition hover:bg-rose-100"
+                          >
+                            <X className="h-3.5 w-3.5" /> Remove
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => logoInputRef.current?.click()}
+                        className="flex w-full flex-col items-center gap-2 rounded-xl border-2 border-dashed border-navy-200 bg-navy-50/50 px-4 py-6 text-center transition hover:border-brand-400 hover:bg-brand-50/40"
+                      >
+                        <ImagePlus className="h-6 w-6 text-navy-300" />
+                        <span className="text-sm font-semibold text-navy-700">Upload your school&apos;s logo</span>
+                        <span className="text-xs text-navy-400">
+                          PNG, JPG, SVG or WebP · under 1 MB — no hosted URL needed.
+                        </span>
+                      </button>
+                    )}
+                    {logoError && <p className="mt-2 text-xs font-medium text-rose-600">{logoError}</p>}
+                  </div>
+
+                  <div className="mt-5">
+                    <span className="mb-1.5 block text-sm font-medium text-navy-700">School seal / signature</span>
+                    <input
+                      ref={sealInputRef}
+                      type="file"
+                      accept="image/png,image/jpeg,image/svg+xml,image/webp"
+                      onChange={(e) => {
+                        handleImageFile(e.target.files?.[0], "sealUrl", setSealError);
+                        e.target.value = ""; // allow re-picking the same file
+                      }}
+                      className="hidden"
+                    />
+                    {settingsDraft.sealUrl ? (
+                      <div className="flex flex-wrap items-center gap-3 rounded-xl border border-navy-200 p-3">
+                        <img
+                          src={settingsDraft.sealUrl}
+                          alt="School seal preview"
+                          className="h-14 w-14 rounded-full border border-navy-100 bg-white object-contain"
+                        />
+                        <div className="min-w-0 flex-1">
+                          <p className="text-sm font-semibold text-navy-800">Seal uploaded</p>
+                          <p className="text-xs text-navy-400">Printed on report cards next to the logo.</p>
+                        </div>
+                        <div className="flex flex-wrap gap-2">
+                          <button
+                            type="button"
+                            onClick={() => sealInputRef.current?.click()}
+                            className="inline-flex items-center gap-1.5 rounded-lg border border-navy-200 bg-white px-3 py-2 text-xs font-semibold text-navy-700 transition hover:border-brand-400 hover:text-brand-600"
+                          >
+                            <Upload className="h-3.5 w-3.5" /> Replace
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setSettingsDraft((d) => ({ ...d, sealUrl: "" }))}
+                            className="inline-flex items-center gap-1.5 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-semibold text-rose-700 transition hover:bg-rose-100"
+                          >
+                            <X className="h-3.5 w-3.5" /> Remove
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => sealInputRef.current?.click()}
+                        className="flex w-full flex-col items-center gap-2 rounded-xl border-2 border-dashed border-navy-200 bg-navy-50/50 px-4 py-6 text-center transition hover:border-brand-400 hover:bg-brand-50/40"
+                      >
+                        <BadgeCheck className="h-6 w-6 text-navy-300" />
+                        <span className="text-sm font-semibold text-navy-700">Upload your school seal or signature</span>
+                        <span className="text-xs text-navy-400">
+                          PNG, JPG, SVG or WebP · under 1 MB — printed on report cards.
+                        </span>
+                      </button>
+                    )}
+                    {sealError && <p className="mt-2 text-xs font-medium text-rose-600">{sealError}</p>}
+                  </div>
+
+                  {settingsError && (
+                    <p className="mt-4 rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-medium text-rose-700">
+                      {settingsError}
+                    </p>
+                  )}
+
+                  <button
+                    onClick={saveSettings}
+                    disabled={settingsSaving}
+                    className="mt-6 inline-flex items-center gap-2 rounded-xl bg-brand-600 px-5 py-2.5 text-sm font-semibold text-white shadow-lg shadow-brand-600/30 transition hover:bg-brand-500 disabled:opacity-60"
+                  >
+                    {settingsSaving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+                    Save branding
+                  </button>
+                  {settingsSaved && (
+                    <p className="mt-3 inline-flex items-center gap-1.5 text-sm font-semibold text-emerald-600">
+                      <CheckCircle2 className="h-4 w-4" /> Saved — visible across every portal now.
+                    </p>
+                  )}
+                </div>
+
+                {/* Live preview */}
+                <div className="h-fit overflow-hidden rounded-xl border border-navy-200">
+                  <div className="bg-navy-50 px-4 py-2 text-xs font-semibold uppercase tracking-wider text-navy-400">
+                    Live preview
+                  </div>
+                  <div className="p-5" style={{ backgroundColor: settingsDraft.brandColor }}>
+                    <div className="flex items-center justify-between rounded-lg bg-white p-4 shadow-lg">
+                      <div className="flex items-center gap-3">
+                        <div
+                          className="flex h-10 w-10 items-center justify-center overflow-hidden rounded-lg text-white"
+                          style={{ backgroundColor: settingsDraft.brandColor }}
+                        >
+                          {settingsDraft.logoUrl ? (
+                            <img
+                              src={settingsDraft.logoUrl}
+                              alt=""
+                              className="h-full w-full bg-white object-contain"
+                            />
+                          ) : (
+                            <School className="h-5 w-5" />
+                          )}
+                        </div>
+                        <div className="min-w-0">
+                          <p className="truncate text-sm font-bold text-navy-800">{session.school?.name}</p>
+                          <p className="text-xs text-navy-400">
+                            {session.school?.currentSession} · {session.school?.currentTerm}
+                          </p>
+                        </div>
+                      </div>
+                      <div className="flex shrink-0 items-center gap-2">
+                        {settingsDraft.sealUrl ? (
+                          <img
+                            src={settingsDraft.sealUrl}
+                            alt="School seal preview"
+                            className="h-10 w-10 rounded-full border-2 border-white bg-white object-contain shadow-sm"
+                          />
+                        ) : null}
+                        <span
+                          className="rounded-md px-2 py-1 text-xs font-bold text-white"
+                          style={{ backgroundColor: settingsDraft.brandColor }}
+                        >
+                          REPORT CARD
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
 
       {/* Report card viewer modal */}
       <ReportCardModal
@@ -4562,16 +5672,22 @@ export default function AdminDashboard() {
         open={modal !== null}
         onClose={() => {
           if (createdUserDisplay) closeCreatedUserDisplay();
-          else setModal(null);
+          else closeAddModal();
         }}
         title={
           createdUserDisplay
             ? "Student login details"
-            : modal === "teacher"
-              ? "Add teacher"
-              : modal === "staff"
-                ? "Add staff account"
-                : "Add student"
+            : editingUser
+              ? modal === "teacher"
+                ? "Edit teacher"
+                : modal === "staff"
+                  ? "Edit staff account"
+                  : "Edit student"
+              : modal === "teacher"
+                ? "Add teacher"
+                : modal === "staff"
+                  ? "Add staff account"
+                  : "Add student"
         }
       >
         {createdUserDisplay ? (
@@ -4622,17 +5738,37 @@ export default function AdminDashboard() {
               className={inputCls}
             />
           </label>
-          <label className="block">
-            <span className="mb-1.5 block text-sm font-medium text-navy-700">Email</span>
-            <input
-              type="email"
-              value={form.email}
-              onChange={(e) => setForm({ ...form, email: e.target.value })}
-              placeholder="email@school.edu"
-              className={inputCls}
-            />
-          </label>
-          {modal === "student" ? (
+          {editingUser ? (
+            <div className="rounded-xl border border-navy-100 bg-navy-50/60 p-3.5">
+              <span className="mb-1 block text-sm font-medium text-navy-700">Email</span>
+              <p className="text-sm text-navy-500">{form.email || "—"}</p>
+              <p className="mt-1.5 text-[11px] text-navy-400">
+                Email is the login identity and can&apos;t be changed here. To replace
+                this account (new email, new password), remove it and add the
+                replacement.
+              </p>
+            </div>
+          ) : (
+            <label className="block">
+              <span className="mb-1.5 block text-sm font-medium text-navy-700">Email</span>
+              <input
+                type="email"
+                value={form.email}
+                onChange={(e) => setForm({ ...form, email: e.target.value })}
+                placeholder="email@school.edu"
+                className={inputCls}
+              />
+            </label>
+          )}
+          {editingUser ? (
+            <div className="rounded-xl border border-navy-100 bg-navy-50/60 p-3.5">
+              <span className="mb-1 block text-sm font-medium text-navy-700">Password</span>
+              <p className="text-xs text-navy-500">
+                Managed via <strong className="text-navy-700">Reset password</strong> on the row — editing
+                details never touches the login.
+              </p>
+            </div>
+          ) : modal === "student" ? (
             <div className="rounded-xl border border-brand-200 bg-brand-50/50 p-3.5">
               <span className="mb-1 block text-sm font-medium text-navy-700">
                 Auto-generated password
@@ -4756,8 +5892,16 @@ export default function AdminDashboard() {
             disabled={saving}
             className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-brand-600 py-3 font-semibold text-white shadow-lg shadow-brand-600/30 transition hover:bg-brand-500 disabled:opacity-60"
           >
-            {saving ? <Loader2 className="h-5 w-5 animate-spin" /> : <Plus className="h-5 w-5" />}
-            Add {modal === "teacher" ? "teacher" : modal === "staff" ? "staff account" : "student"}
+            {saving ? (
+              <Loader2 className="h-5 w-5 animate-spin" />
+            ) : editingUser ? (
+              <Save className="h-5 w-5" />
+            ) : (
+              <Plus className="h-5 w-5" />
+            )}
+            {editingUser
+              ? "Save changes"
+              : `Add ${modal === "teacher" ? "teacher" : modal === "staff" ? "staff account" : "student"}`}
           </button>
         </div>
         )}
@@ -4845,6 +5989,273 @@ export default function AdminDashboard() {
           </div>
         )}
       </Modal>
+
+      {/* Remove-user confirmation — student left / teacher departed */}
+      <Modal
+        open={deleteTarget !== null}
+        onClose={() => !deletingUser && setDeleteTarget(null)}
+        title="Remove account"
+      >
+        {deleteTarget && (
+          <div className="space-y-4">
+            <div className="flex items-start gap-3 rounded-xl border border-rose-200 bg-rose-50 p-4">
+              <AlertTriangle className="h-5 w-5 shrink-0 text-rose-600" />
+              <div className="text-sm text-rose-700">
+                <p className="font-bold text-rose-800">This can&apos;t be undone.</p>
+                <p className="mt-1">
+                  {deleteTarget.role === "STUDENT"
+                    ? "Removing this student deletes their account, scores, attendance and fee records."
+                    : "Removing this teacher deletes their account and frees their timetable slots."}
+                </p>
+              </div>
+            </div>
+            <div className="flex items-center gap-3 rounded-xl border border-navy-100 bg-navy-50/60 px-4 py-3">
+              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-brand-50 text-sm font-bold text-brand-600">
+                {deleteTarget.name.split(" ").map((w) => w[0]).join("").slice(0, 2).toUpperCase()}
+              </div>
+              <div className="min-w-0">
+                <p className="truncate font-bold text-navy-800">{deleteTarget.name}</p>
+                <p className="truncate text-xs text-navy-400">
+                  {deleteTarget.email} · {ROLE_LABELS[deleteTarget.role] || deleteTarget.role}
+                </p>
+              </div>
+            </div>
+            <div className="flex gap-3">
+              <button
+                onClick={() => setDeleteTarget(null)}
+                disabled={deletingUser}
+                className="flex-1 rounded-xl border border-navy-200 bg-white py-2.5 text-sm font-semibold text-navy-700 transition hover:bg-navy-50 disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={confirmDeleteUser}
+                disabled={deletingUser}
+                className="inline-flex flex-1 items-center justify-center gap-2 rounded-xl bg-rose-600 py-2.5 text-sm font-semibold text-white transition hover:bg-rose-500 disabled:opacity-50"
+              >
+                {deletingUser ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}
+                Remove {deleteTarget.role === "STUDENT" ? "student" : "teacher"}
+              </button>
+            </div>
+          </div>
+        )}
+      </Modal>
+
+      {/* Freeze / reactivate / restore confirm. Freezing blocks all logins
+          while keeping every byte of data; restoring revives a deleted school
+          inside its 30-day recovery window. */}
+      {freezeModal && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-navy-950/70 p-4 backdrop-blur-sm"
+          onClick={() => !schoolBusy && setFreezeModal(null)}
+        >
+          <div
+            className="w-full max-w-md animate-fade-up rounded-2xl bg-white shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="p-6">
+              <div className="flex items-center gap-3">
+                <span
+                  className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-full ${
+                    freezeModal === "freeze" ? "bg-amber-100 text-amber-600" : "bg-emerald-100 text-emerald-600"
+                  }`}
+                >
+                  {freezeModal === "freeze" ? <Snowflake className="h-5 w-5" /> : <RefreshCw className="h-5 w-5" />}
+                </span>
+                <h2 className="text-lg font-bold text-navy-800">
+                  {freezeModal === "freeze"
+                    ? `Freeze ${session.school?.name}?`
+                    : freezeModal === "restore"
+                      ? `Restore ${session.school?.name}?`
+                      : `Reactivate ${session.school?.name}?`}
+                </h2>
+              </div>
+              <p className="mt-4 text-sm leading-relaxed text-navy-600">
+                {freezeModal === "freeze" ? (
+                  <>
+                    All staff and student logins will be blocked immediately.{" "}
+                    <strong>No data is deleted</strong> — students, teachers, scores, fees and
+                    timetables are all kept safe, and you can reactivate the account at any time
+                    by signing back in.
+                  </>
+                ) : freezeModal === "restore" ? (
+                  <>
+                    This school was deleted, but its data is fully intact. Restoring revives the
+                    account and everything in it — all logins resume working immediately.
+                  </>
+                ) : (
+                  <>
+                    All staff and student logins will resume working immediately. Your data has
+                    been kept safe while deactivated — nothing was deleted.
+                  </>
+                )}
+              </p>
+              <div className="mt-5 flex gap-3">
+                <button
+                  onClick={() => setFreezeModal(null)}
+                  disabled={schoolBusy}
+                  className="flex-1 rounded-xl border border-navy-200 bg-white py-2.5 text-sm font-semibold text-navy-700 transition hover:bg-navy-50 disabled:opacity-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={() =>
+                    flipSchoolStatus(freezeModal === "freeze" ? "deactivate" : freezeModal === "restore" ? "restore" : "reactivate")
+                  }
+                  disabled={schoolBusy}
+                  className={`inline-flex flex-1 items-center justify-center gap-2 rounded-xl py-2.5 text-sm font-semibold text-white transition disabled:opacity-50 ${
+                    freezeModal === "freeze" ? "bg-amber-500 hover:bg-amber-400" : "bg-emerald-600 hover:bg-emerald-500"
+                  }`}
+                >
+                  {schoolBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : freezeModal === "freeze" ? <Snowflake className="h-4 w-4" /> : <RefreshCw className="h-4 w-4" />}
+                  {freezeModal === "freeze"
+                    ? "Freeze account"
+                    : freezeModal === "restore"
+                      ? "Restore school"
+                      : "Reactivate school"}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* School exit flow — SUPER_ADMIN deactivates & permanently deletes the
+          tenant. Two protected steps: an un-undoable warning, then an exit
+          survey (recorded before the wipe) so we know why the school left. */}
+      {exitStep && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-navy-950/70 p-4 backdrop-blur-sm"
+          onClick={() => exitStep === "confirm" && setExitStep(null)}
+        >
+          <div
+            className="w-full max-w-md animate-fade-up rounded-2xl bg-white shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {exitStep === "confirm" && (
+              <div className="p-6">
+                <div className="flex items-center gap-3">
+                  <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-rose-100 text-rose-600">
+                    <AlertTriangle className="h-5 w-5" />
+                  </span>
+                  <h2 className="text-lg font-bold text-navy-800">Delete your school permanently?</h2>
+                </div>
+                <p className="mt-4 text-sm leading-relaxed text-navy-600">
+                  This will deactivate <strong>{session.school?.name}</strong> and delete all of its
+                  data — students, teachers, scores, attendance, fee records, timetables, report
+                  cards and archives.{" "}
+                  <strong className="text-rose-700">
+                    Your data is kept for a 30-day recovery window — sign back in as the super
+                    admin to restore everything before it is permanently removed.
+                  </strong>
+                </p>
+                <div className="mt-5 flex gap-3">
+                  <button
+                    onClick={() => setExitStep(null)}
+                    className="flex-1 rounded-xl border border-navy-200 bg-white py-2.5 text-sm font-semibold text-navy-700 transition hover:bg-navy-50"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={() => setExitStep("survey")}
+                    className="flex-1 rounded-xl bg-rose-600 py-2.5 text-sm font-semibold text-white transition hover:bg-rose-500"
+                  >
+                    I understand — continue
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {exitStep === "survey" && (
+              <div className="max-h-[calc(100vh-2rem)] overflow-y-auto p-6">
+                <h2 className="text-lg font-bold text-navy-800">We&apos;re sorry to see you go</h2>
+                <p className="mt-1 text-sm text-navy-500">
+                  Help us improve — why is <strong>{session.school?.name}</strong> leaving Edutrack?
+                </p>
+                <div className="mt-4 space-y-2">
+                  {EXIT_REASONS.map((r) => (
+                    <button
+                      key={r}
+                      type="button"
+                      onClick={() => setExitReason(r)}
+                      className={`flex w-full items-center gap-2.5 rounded-xl border px-3.5 py-2.5 text-left text-sm font-medium transition ${
+                        exitReason === r
+                          ? "border-rose-400 bg-rose-50 text-rose-800"
+                          : "border-navy-200 text-navy-700 hover:border-navy-300"
+                      }`}
+                    >
+                      <span
+                        className={`flex h-4 w-4 shrink-0 items-center justify-center rounded-full border-2 ${
+                          exitReason === r ? "border-rose-500" : "border-navy-300"
+                        }`}
+                      >
+                        {exitReason === r && <span className="h-2 w-2 rounded-full bg-rose-500" />}
+                      </span>
+                      {r}
+                    </button>
+                  ))}
+                </div>
+                <label className="mt-4 block">
+                  <span className="mb-1.5 block text-sm font-medium text-navy-700">Anything else? (optional)</span>
+                  <textarea
+                    value={exitFeedback}
+                    onChange={(e) => setExitFeedback(e.target.value)}
+                    rows={3}
+                    placeholder="Tell us what we could have done better…"
+                    className={inputCls}
+                  />
+                </label>
+                <div className="mt-5 flex gap-3">
+                  <button
+                    onClick={() => setExitStep("confirm")}
+                    disabled={exitSaving}
+                    className="rounded-xl border border-navy-200 bg-white px-4 py-2.5 text-sm font-semibold text-navy-700 transition hover:bg-navy-50 disabled:opacity-50"
+                  >
+                    Back
+                  </button>
+                  <button
+                    onClick={submitExitSurvey}
+                    disabled={!exitReason || exitSaving}
+                    className="inline-flex flex-1 items-center justify-center gap-2 rounded-xl bg-rose-600 py-2.5 text-sm font-semibold text-white transition hover:bg-rose-500 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {exitSaving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}
+                    Yes, delete my school permanently
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {exitStep === "done" && (
+              <div className="p-6 text-center">
+                <CheckCircle2 className="mx-auto h-12 w-12 text-emerald-500" />
+                <h2 className="mt-3 text-lg font-bold text-navy-800">Your school has been deleted</h2>
+                <p className="mt-1 text-sm text-navy-500">
+                  Nothing is gone yet — your data is kept for a{" "}
+                  <strong className="text-navy-700">30-day recovery period</strong>. Sign back in with
+                  your super admin account before{" "}
+                  <strong className="text-navy-700">
+                    {exitRestorableUntil
+                      ? new Date(exitRestorableUntil).toLocaleDateString(undefined, {
+                          year: "numeric",
+                          month: "long",
+                          day: "numeric",
+                        })
+                      : "the deadline"}
+                  </strong>{" "}
+                  to restore the account and keep everything. After that the data is permanently
+                  removed. Thank you for the feedback.
+                </p>
+                <button
+                  onClick={() => router.push("/")}
+                  className="mt-5 inline-flex w-full items-center justify-center gap-2 rounded-xl bg-navy-800 py-3 font-semibold text-white transition hover:bg-navy-700"
+                >
+                  Return to Edutrack
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Change-role confirmation modal */}
       <Modal
@@ -5305,6 +6716,15 @@ export default function AdminDashboard() {
           </div>
         </div>
       </Modal>
+
+      {/* Printable credentials sheet — preview + print node for paper handout */}
+      <PrintableCredentials
+        open={!!printSheet}
+        onClose={() => setPrintSheet(null)}
+        school={session.school?.name || ""}
+        title={printSheet?.title || ""}
+        rows={printSheet?.rows || []}
+      />
 
       {/* Toast */}
       {toast && (

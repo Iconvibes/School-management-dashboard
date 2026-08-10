@@ -16,7 +16,18 @@ const schoolSchema = new mongoose.Schema(
   {
     name: { type: String, required: true, trim: true },
     logoUrl: { type: String, default: "" },
+    // School seal / signature stamp image — printed on report cards next to
+    // the logo (base64 data URL, same upload rules as logoUrl).
+    sealUrl: { type: String, default: "" },
     brandColor: { type: String, default: "#2563EB" },
+    // "active" | "frozen" | "deleted" — the dashboard danger zone drives
+    // all three. "frozen" is soft deactivation (blocks all non-super-admin
+    // logins, reactivatable). "deleted" is the 30-day grace state after the
+    // admin deletes the school: data is kept and recoverable via restore
+    // until deletedAt + SCHOOL_DELETION_GRACE_MS, when the sweeper purges it.
+    status: { type: String, enum: ["active", "frozen", "deleted"], default: "active" },
+    // When the school was deleted — the start of the recovery grace period.
+    deletedAt: { type: Date, default: undefined },
     activeArms: { type: [String], default: [] },
     currentSession: { type: String, default: "2025/2026" },
     currentTerm: { type: String, default: "First Term" },

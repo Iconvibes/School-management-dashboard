@@ -59,6 +59,9 @@ export async function GET(request) {
       feePaid: u.feePaid,
       parentId: u.parentId || null,
       phone: u.phone || "",
+      // Auto-generated student password (name + class arm) — recorded at
+      // creation so the admin can look it up from the dashboard.
+      generatedPassword: u.generatedPassword || "",
     })),
     // Present only when the caller asked for a page (paged clients render
     // "X of Y" without a second round-trip).
@@ -113,6 +116,13 @@ export async function POST(request) {
   }
   if (String(userPassword).length < 6 && !generatedPassword) {
     return jsonError("Password must be at least 6 characters");
+  }
+  // Record the admin-chosen password so staff & parent logins can be
+  // exported from Login Details for bulk distribution — students already
+  // store their (auto-generated) password the same way, and the field
+  // documents "the account's current login password" on the User model.
+  if (generatedPassword === null) {
+    generatedPassword = String(userPassword);
   }
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(email))) {
     return jsonError("Please provide a valid email address");
@@ -169,6 +179,10 @@ export async function POST(request) {
     // modal). Students ignore these fields.
     subjects: body.subjects,
     assignedClasses: body.assignedClasses,
+    // Auto-generated student password — stored so the admin can look it up
+    // later (it's derived from name + class arm, so this is just recording
+    // the deterministic value for the dashboard).
+    generatedPassword,
   });
 
   // Never return the password hash — same strip the GET route applies.

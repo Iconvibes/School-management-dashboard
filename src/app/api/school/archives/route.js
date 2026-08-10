@@ -174,6 +174,7 @@ export async function GET(request) {
       name: school?.name || "",
       brandColor: school?.brandColor || "#2563EB",
       logoUrl: school?.logoUrl || "",
+      sealUrl: school?.sealUrl || "",
       currentSession: sessionName,
       currentTerm: term,
     },

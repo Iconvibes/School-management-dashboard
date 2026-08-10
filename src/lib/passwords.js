@@ -27,3 +27,25 @@ export function generatePassword(length = 10) {
   }
   return out;
 }
+
+/**
+ * Normalize a name into the predictable lowercase login form used across the
+ * app: lowercase, non-alphanumerics stripped, spaces removed. The same rule
+ * powers student auto-passwords ("Adam Tope" + "JSS1" → "adamtopejss1") and
+ * parent child-name passwords ("Adam Tope Johnson" → "adamtopejohnson").
+ */
+export function nameSlug(value) {
+  return String(value || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+/**
+ * Parent login check: a parent signs in with their email plus ANY linked
+ * child's full name (slugged — case/spacing-insensitive), so one parent with
+ * several children can use whichever child's name they remember. Returns true
+ * when `password` matches one of the children's names.
+ */
+export function matchesChildName(password, children) {
+  const attempt = nameSlug(password);
+  if (!attempt) return false;
+  return children.some((c) => nameSlug(c && c.name) === attempt);
+}

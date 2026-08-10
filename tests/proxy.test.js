@@ -168,7 +168,7 @@ describe("proxy — authenticated /login and /register redirect", () => {
   });
 });
 
-describe("proxy — onboarding and MFA branches", () => {
+describe("proxy — onboarding branch", () => {
   it("bounces anonymous visitors from /onboarding with next", () => {
     const res = proxy(fakeRequest("/onboarding"));
     assert.equal(res.status, 307);
@@ -184,17 +184,6 @@ describe("proxy — onboarding and MFA branches", () => {
     }
   });
 
-  it("renders /mfa/* for ticket holders and routes authenticated sessions home", () => {
-    // No session → the page renders; the API demands the pending MFA ticket.
-    assert.equal(proxy(fakeRequest("/mfa/setup")).status, 200);
-    assert.equal(proxy(fakeRequest("/mfa")).status, 200);
-    // A fully-authenticated session has already passed MFA — send it home.
-    for (const path of ["/mfa", "/mfa/setup"]) {
-      const res = proxy(fakeRequest(path, { role: ROLES.SUPER_ADMIN }));
-      assert.equal(res.status, 307, path);
-      assert.equal(redirectTarget(res), ROLE_HOME[ROLES.SUPER_ADMIN], path);
-    }
-  });
 });
 
 describe("proxy — loop prevention (redirects always converge)", () => {

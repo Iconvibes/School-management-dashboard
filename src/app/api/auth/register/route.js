@@ -1,8 +1,7 @@
 import { NextResponse } from "next/server";
 import { store } from "@/lib/store";
-import { setMfaCookie, jsonError } from "@/lib/auth";
+import { setAuthCookie, jsonError } from "@/lib/auth";
 import { checkRateLimit } from "@/lib/rate-limit";
-import { signMfaToken } from "@/lib/token";
 
 export async function POST(request) {
   // New-tenant guard: 5 school registrations per IP per hour.
@@ -45,14 +44,13 @@ export async function POST(request) {
   // Never leak the password hash back to the client
   const { password: _pw, ...safeUser } = user;
 
-  // The founding SUPER_ADMIN is staff, so no session yet — the first step of
-  // their life in the app is forced MFA self-enrollment (the pending ticket
-  // proves this browser just registered the tenant). After confirm, the real
-  // session is issued and they land on onboarding.
+  // The founding SUPER_ADMIN gets their session right away — the register
+  // page sends them straight to the /onboarding first-run wizard.
   const res = NextResponse.json(
-    { success: true, user: safeUser, school, mfaSetupRequired: true },
+    { success: true, user: safeUser, school, redirect: "/onboarding" },
     { status: 201 }
   );
-  setMfaCookie(res, signMfaToken({ userId: user.id, purpose: "enroll", attempts: 0 }));
+  // New accounts start at tokenVersion 0 (schema default / demo normalize).
+  setAuthCookie(res, { userId: user.id, role: user.role, schoolId: user.schoolId, tokenVersion: 0 });
   return res;
 }

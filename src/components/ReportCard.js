@@ -47,25 +47,45 @@ export default function ReportCard({ school, user, scores, summary, attendance }
         boxSizing: "border-box",
       }}
     >
-      {/* Header */}
+      {/* Header — school logo (or initials) left, seal right beside the term
+          box, the classic school-report layout. The seal reads as the
+          official stamp when the card is printed. */}
       <div style={{ display: "flex", alignItems: "center", gap: "20px", borderBottom: `4px solid ${brand}`, paddingBottom: "22px" }}>
-        <div
-          style={{
-            width: "64px",
-            height: "64px",
-            borderRadius: "14px",
-            background: brand,
-            color: "#ffffff",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            fontSize: "26px",
-            fontWeight: "800",
-            flexShrink: 0,
-          }}
-        >
-          {(school.name || "ES").split(" ").map((w) => w[0]).join("").slice(0, 2).toUpperCase()}
-        </div>
+        {school.logoUrl ? (
+          // eslint-disable-next-line @next/next/no-img-element -- plain <img> required for html2canvas CORS capture in the off-screen PDF node
+          <img
+            src={school.logoUrl}
+            alt={school.name || "School logo"}
+            style={{
+              width: "64px",
+              height: "64px",
+              borderRadius: "14px",
+              background: "#ffffff",
+              border: `1px solid ${brand}`,
+              objectFit: "contain",
+              flexShrink: 0,
+            }}
+            crossOrigin="anonymous"
+          />
+        ) : (
+          <div
+            style={{
+              width: "64px",
+              height: "64px",
+              borderRadius: "14px",
+              background: brand,
+              color: "#ffffff",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              fontSize: "26px",
+              fontWeight: "800",
+              flexShrink: 0,
+            }}
+          >
+            {initials}
+          </div>
+        )}
         <div style={{ flex: 1 }}>
           <div style={{ fontSize: "26px", fontWeight: "800", color: "#0f172a", letterSpacing: "-0.5px" }}>
             {school.name || "School Name"}
@@ -74,6 +94,23 @@ export default function ReportCard({ school, user, scores, summary, attendance }
             Student Academic Report · {school.currentSession || "2025/2026"}
           </div>
         </div>
+        {school.sealUrl ? (
+          // eslint-disable-next-line @next/next/no-img-element -- plain <img> required for html2canvas CORS capture in the off-screen PDF node
+          <img
+            src={school.sealUrl}
+            alt={`${school.name || "School"} seal`}
+            style={{
+              width: "64px",
+              height: "64px",
+              borderRadius: "50%",
+              background: "#ffffff",
+              border: `1px solid ${brand}`,
+              objectFit: "contain",
+              flexShrink: 0,
+            }}
+            crossOrigin="anonymous"
+          />
+        ) : null}
         <div
           style={{
             background: brand,

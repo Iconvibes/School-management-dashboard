@@ -1,14 +1,18 @@
 /**
  * Minimal, dependency-free CSV helpers for the import wizard.
  *
- * - parseCSV  : RFC-4180-ish parser. Handles quoted fields, escaped quotes
- *               (""), embedded commas/newlines inside quotes, CRLF line
- *               endings, a leading UTF-8 BOM, and `;` as an alternate
- *               delimiter (common when Excel is set to a European locale).
- * - toCSV     : serializes an array of string arrays with proper quoting.
+ * - parseCSV    : RFC-4180-ish parser. Handles quoted fields, escaped quotes
+ *                 (""), embedded commas/newlines inside quotes, CRLF line
+ *                 endings, a leading UTF-8 BOM, and `;` as an alternate
+ *                 delimiter (common when Excel is set to a European locale).
+ * - toCSV       : serializes an array of string arrays with proper quoting.
+ * - downloadBlob : saves a Blob to the user's disk from the browser.
  *
- * Both functions are pure and use no Node APIs, so they can run in the
+ * parseCSV/toCSV are pure and use no Node APIs, so they can run in the
  * browser (client-side template/credentials downloads) and under node --test.
+ * downloadBlob is the single browser-only exception — the anchor-click dance
+ * is the only way to trigger a client-side file save, so it lives here once
+ * instead of being copy-pasted across the admin pages.
  */
 
 /**
@@ -106,4 +110,22 @@ export function toCSV(rows) {
 /** Wrap CSV text with a UTF-8 BOM so Excel renders it correctly. */
 export function withBOM(csv) {
   return `\uFEFF${csv}`;
+}
+
+/**
+ * Save a Blob to the user's disk. The revoke is deferred so the browser has
+ * time to start reading the object URL (Safari in particular can drop a
+ * download that is revoked synchronously after click()).
+ * @param {string} filename
+ * @param {Blob} blob
+ */
+export function downloadBlob(filename, blob) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
 }

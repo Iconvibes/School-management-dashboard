@@ -26,6 +26,7 @@ import ReceiptModal from "@/components/ReceiptModal";
 import Modal from "@/components/Modal";
 import { gradeBadgeClasses, ordinal } from "@/lib/grading";
 import { summarizeFamilyFees } from "@/lib/family-fees";
+import { bounceToLogin } from "@/lib/auth-client";
 
 const naira = (n) =>
   new Intl.NumberFormat("en-NG", {
@@ -77,7 +78,7 @@ export default function ParentDashboard() {
       const meRes = await fetch("/api/auth/me");
       const meData = await meRes.json();
       if (!meData.user || meData.user.role !== "PARENT") {
-        router.replace("/login");
+        bounceToLogin(router);
         return;
       }
       setSession(meData);
@@ -191,19 +192,28 @@ export default function ParentDashboard() {
     <main className="flex min-h-screen flex-1 bg-navy-50">
       <Sidebar role="PARENT" open={sidebarOpen} onClose={() => setSidebarOpen(false)} />
 
-      <div className="flex-1 lg:pl-64">
+      <div className="min-w-0 flex-1 lg:pl-64">
         <header className="sticky top-0 z-30 flex h-16 items-center justify-between border-b border-navy-200/70 bg-white/80 px-5 backdrop-blur-lg">
-          <div className="flex items-center gap-3">
+          <div className="flex min-w-0 items-center gap-3">
             <button
               onClick={() => setSidebarOpen(true)}
               className="rounded-lg p-2 text-navy-600 hover:bg-navy-50 lg:hidden"
             >
               <Menu className="h-5 w-5" />
             </button>
-            <div>
-              <p className="text-sm font-bold text-navy-800">My Children</p>
-              <p className="text-xs text-navy-400">
-                {data?.school?.currentSession} · {data?.school?.currentTerm}
+            {/* The school's uploaded logo sits beside its name in every
+                portal header — branding follows the tenant everywhere. */}
+            {session?.school?.logoUrl && (
+              <img
+                src={session.school.logoUrl}
+                alt=""
+                className="h-7 w-7 shrink-0 rounded-lg bg-white object-contain ring-1 ring-navy-100"
+              />
+            )}
+            <div className="min-w-0">
+              <p className="truncate text-sm font-bold text-navy-800">{session?.school?.name}</p>
+              <p className="truncate text-xs text-navy-400">
+                {session?.school?.currentSession} · {session?.school?.currentTerm}
               </p>
             </div>
           </div>

@@ -38,3 +38,16 @@ export async function connectDB() {
   cached.conn = await cached.promise;
   return cached.conn;
 }
+
+/**
+ * Close the Mongo connection and reset the cache (graceful shutdown).
+ * No-op in demo mode or when nothing is connected, so it is safe to call
+ * from the server-boot SIGTERM handler in src/instrumentation.js.
+ */
+export async function closeDB() {
+  const cached = globalForMongoose.mongooseCache;
+  if (!cached?.conn) return;
+  await mongoose.disconnect();
+  cached.conn = null;
+  cached.promise = null;
+}

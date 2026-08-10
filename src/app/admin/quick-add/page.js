@@ -18,8 +18,9 @@ import {
 } from "lucide-react";
 import Logo from "@/components/Logo";
 import { parseNames } from "@/lib/quick-add";
-import { toCSV, withBOM } from "@/lib/csv";
+import { downloadBlob, toCSV, withBOM } from "@/lib/csv";
 import { can } from "@/lib/permissions";
+import { bounceToLogin } from "@/lib/auth-client";
 
 const inputCls =
   "w-full rounded-xl border border-navy-200 bg-white px-4 py-2.5 text-sm text-navy-800 outline-none transition focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20";
@@ -43,14 +44,7 @@ function downloadCredentials(credentials, classArm) {
     ]),
   ];
   const blob = new Blob([withBOM(toCSV(rows))], { type: "text/csv;charset=utf-8" });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = `edutrack-logins-${Date.now()}.csv`;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  URL.revokeObjectURL(url);
+  downloadBlob(`edutrack-logins-${Date.now()}.csv`, blob);
 }
 
 export default function QuickAddPage() {
@@ -68,7 +62,7 @@ export default function QuickAddPage() {
       .then((r) => r.json())
       .then((d) => {
         if (!d.user || !can(d.user.role, "students.manage")) {
-          router.replace("/login");
+          bounceToLogin(router);
           return;
         }
         setSession(d);

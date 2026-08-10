@@ -42,6 +42,7 @@ export async function POST(request) {
     userId: user.id,
     role: user.role,
     schoolId: user.schoolId,
+    tokenVersion: user.tokenVersion || 0,
   });
   return res;
 }

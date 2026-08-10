@@ -27,15 +27,19 @@ export async function GET() {
       assignedClasses: Array.isArray(user.assignedClasses) ? user.assignedClasses : [],
       payrollStatus: user.payrollStatus,
       feePaid: user.feePaid,
-      // Never the secret itself — the store strips it; this is the boolean
-      // the UI uses to show MFA status.
-      mfaEnabled: !!user.mfaEnabled,
     },
     school: {
       id: school?.id || session.schoolId,
       name: school?.name || "",
       logoUrl: school?.logoUrl || "",
+      sealUrl: school?.sealUrl || "",
       brandColor: school?.brandColor || "#2563EB",
+      // "active" | "frozen" | "deleted" — drives the deactivated/restore
+      // banners on the admin dashboard.
+      status: school?.status || "active",
+      // Start of the 30-day recovery window for a deleted school (the banner
+      // shows it and the deadline).
+      deletedAt: school?.deletedAt || null,
       activeArms: school?.activeArms || [],
       currentSession: school?.currentSession || "",
       currentTerm: school?.currentTerm || "",
