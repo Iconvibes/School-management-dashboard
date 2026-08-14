@@ -17,6 +17,7 @@
  * Passwords default to the wizard-provided defaultPassword (or the row's own).
  */
 import { parseCSV } from "./csv.js";
+import { generatePassword } from "./passwords.js";
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -291,16 +292,17 @@ export function planImport({
     );
     if (hitByName) return hitByName.key;
 
-    const email = uniqueEmail(emailSlug(name), domain, usedEmails);
-    const key = `new:${email}`;
+    // Name-only parent: NO email (they sign in with their name + a linked
+    // child's name as the password — see the parent-link sync in applyImport).
+    // The creation password is a random placeholder that the sync immediately
+    // replaces with the child's slugged name; it's never shown or exported.
+    const key = `new:${String(name).trim().toLowerCase()}`;
     parentRefs.set(key, {
       key,
       name,
-      email,
+      email: "",
       phone,
-      // Rows can carry their own passwords; fall back to the default only
-      // when the row has none (both are validated >= 6 chars upstream).
-      password: password || defaultPassword,
+      password: generatePassword(),
       isNew: true,
     });
     return key;
@@ -412,7 +414,7 @@ export function planImport({
 
     let parentKey = "";
     if (role === "STUDENT" && status === "ok" && (r.parentName.trim() || r.parentPhone.trim())) {
-      parentKey = ensureParent(r.parentName.trim(), r.parentPhone.trim(), r.password || defaultPassword);
+      parentKey = ensureParent(r.parentName.trim(), r.parentPhone.trim());
     }
 
     plans.push({
@@ -466,10 +468,20 @@ export function buildCredentials(role, plans, parentRefs, { skipParentKeys = new
   }
   for (const p of parentRefs) {
     if (!p.isNew || skipParentKeys.has(p.key)) continue;
+    // Name-only parents: the login password is ANY linked child's full name
+    // (case/spacing-insensitive at login) — the store's parent-link sync
+    // derives it from the child the moment the student is linked. List the
+    // children from the rows that referenced this parent, same convention as
+    // the Login Details export ("Amina Suleiman / Halima Suleiman"). The
+    // fallback placeholder is only shown if a parent somehow ended up with no
+    // linked child.
+    const children = plans
+      .filter((pl) => pl.parentKey === p.key && pl.status === "ok")
+      .map((pl) => pl.name);
     creds.push({
       name: p.name,
       email: p.email,
-      password: p.password,
+      password: children.length ? children.join(" / ") : p.password,
       role: "PARENT",
       assignedClass: "",
     });

@@ -1313,9 +1313,13 @@ describe("conflict health — keys, store round-trip, daily auto-scan, new-colli
     await scanPost(admin); // baseline clean scan
     await injectDoubleBooking(school.id, byEmail);
     // Age the record past the 24h window — the health read serves it as-is.
+    // Both timestamps derive from the REAL clock (not a hardcoded date, which
+    // goes stale as time passes): the record is aged 25h back, and the job's
+    // tick fires 24h+ after that, so it's unambiguously due.
+    const agedAt = new Date(Date.now() - 25 * 60 * 60 * 1000);
     const rec = await demoStore.getConflictScan(school.id);
     await demoStore.saveConflictScan(school.id, {
-      lastRunAt: new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString(),
+      lastRunAt: agedAt.toISOString(),
       conflicts: rec.conflicts,
       conflictKeys: rec.conflictKeys,
       newConflictKeys: rec.newConflictKeys,
@@ -1324,7 +1328,11 @@ describe("conflict health — keys, store round-trip, daily auto-scan, new-colli
     assert.equal(stale.body.conflictCount, 0, "stale record served unchanged — no lazy auto-scan");
     assert.equal(stale.body.neverScanned, false);
     // The job's next tick (due: 24h+ elapsed) re-scans and flags the collision.
-    const run = await runDueScans({ store: demoStore, now: new Date(2026, 7, 10, 2, 1, 0), scanHour: 2 });
+    const run = await runDueScans({
+      store: demoStore,
+      now: new Date(agedAt.getTime() + 24 * 60 * 60 * 1000 + 60 * 1000),
+      scanHour: 2,
+    });
     assert.equal(run.scanned, 1, "the due school got scanned by the job");
     const fresh = await healthGet(admin);
     assert.equal(fresh.body.conflictCount, 1);

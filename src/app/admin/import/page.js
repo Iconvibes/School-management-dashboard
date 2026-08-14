@@ -793,6 +793,12 @@ export default function ImportPage() {
                     <p className="mt-0.5 text-xs text-navy-500">
                       {result.credentials.length} logins generated. Download the CSV, print it,
                       and hand out the details — no need to type anything.
+                      {result.role === "STUDENT" && (
+                        <span className="mt-1 block">
+                          Parents have no email — they sign in with their name and any linked
+                          child&apos;s full name (shown in the password column).
+                        </span>
+                      )}
                     </p>
                   </div>
                 </div>

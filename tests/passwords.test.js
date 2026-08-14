@@ -9,7 +9,7 @@
  */
 import { describe, it, beforeEach } from "node:test";
 import assert from "node:assert/strict";
-import bcrypt from "bcryptjs";
+import bcrypt from "bcrypt";
 import { generatePassword, PASSWORD_MIN_LENGTH } from "../src/lib/passwords.js";
 import * as demoStore from "../src/lib/demo-store.js";
 

@@ -27,6 +27,11 @@ const notificationSchema = new mongoose.Schema(
     // meaning every admin counts as having read it. Each admin therefore sees
     // their OWN unread count, not the school's shared one.
     readBy: [{ type: String }],
+    // SOFT delete for the admin inbox: when an admin deletes a notification,
+    // it is stamped here instead of removed. Staff inbox queries hide it, but
+    // a parent's or student's own reminder copy stays visible — deleting from
+    // the admin's view never unsends a reminder. Absent = not deleted.
+    adminDeletedAt: { type: Date, default: undefined },
   },
   {
     timestamps: true,

@@ -24,6 +24,10 @@ export async function GET(request) {
     collected: rows.reduce((a, l) => a + l.paid, 0),
     outstanding: rows.reduce((a, l) => a + l.balance, 0),
     defaulters: rows.filter((l) => l.balance > 0).length,
+    // Remindable = defaulters + unbilled students (no fee structure, never
+    // marked paid) — powers the Send reminders action so a brand-new school
+    // can notify families before fee structures are keyed in.
+    remindable: rows.filter((l) => l.balance > 0 || (l.amount === 0 && !l.feePaid)).length,
     paid: rows.filter((l) => l.balance <= 0).length,
     // From the FULL ledger so it always matches the pendingPayments list below.
     pending: ledger.reduce((a, l) => a + (l.pending || 0), 0),

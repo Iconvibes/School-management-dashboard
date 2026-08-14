@@ -13,6 +13,10 @@
  *    the schedulers need Node timers + the full store, so Edge skips them.
  *  - NEXT_PHASE === "phase-production-build": skip during `next build` so a
  *    build never scans/writes the live demo store.
+ *  - RUN_JOBS !== "none": background jobs run on EXACTLY ONE instance. The
+ *    default is "primary" (unset → jobs run) so single-instance deploys, dev
+ *    and demo are unchanged; every additional replica sets RUN_JOBS=none so N
+ *    servers never run N conflict scans / deletion sweeps.
  *  - globalThis handles: dev hot-reloads re-run register(); the new instance
  *    stops the old tickers instead of stacking second ones.
  */
@@ -22,17 +26,24 @@ const g = globalThis;
 export async function register() {
   if (process.env.NEXT_RUNTIME !== "nodejs") return;
   if (process.env.NEXT_PHASE === "phase-production-build") return;
-  // Lazy imports: the Edge runtime ALSO evaluates instrumentation.js, and the
-  // scheduler modules pull in the store (node:crypto, fs, process.cwd()) which
-  // the Edge bundle can't load. Importing inside register() means the Edge
-  // compile never sees them — and this branch returns before they're needed.
-  const { startConflictScheduler } = await import("@/lib/conflict-scheduler");
-  const { startDeletionSweeper } = await import("@/lib/deletion-sweeper");
-  const { store } = await import("@/lib/store");
-  if (g.__conflictScheduler) g.__conflictScheduler.stop();
-  g.__conflictScheduler = startConflictScheduler({ store });
-  if (g.__deletionSweeper) g.__deletionSweeper.stop();
-  g.__deletionSweeper = startDeletionSweeper({ store });
+  // RUN_JOBS gate: only the designated primary replica starts the timers. A
+  // non-primary instance skips even the scheduler imports — no timers, no
+  // duplicate scans, no duplicate sweeps.
+  const isPrimary = process.env.RUN_JOBS !== "none";
+  if (isPrimary) {
+    // Lazy imports: the Edge runtime ALSO evaluates instrumentation.js, and
+    // the scheduler modules pull in the store (node:crypto, fs, process.cwd())
+    // which the Edge bundle can't load. Importing inside register() means the
+    // Edge compile never sees them — and this branch returns before they're
+    // needed.
+    const { startConflictScheduler } = await import("@/lib/conflict-scheduler");
+    const { startDeletionSweeper } = await import("@/lib/deletion-sweeper");
+    const { store } = await import("@/lib/store");
+    if (g.__conflictScheduler) g.__conflictScheduler.stop();
+    g.__conflictScheduler = startConflictScheduler({ store });
+    if (g.__deletionSweeper) g.__deletionSweeper.stop();
+    g.__deletionSweeper = startDeletionSweeper({ store });
+  }
 
   // Graceful shutdown (self-hosted `next start`): an orchestrator's SIGTERM
   // stops the background tickers and closes the Mongo connection before the

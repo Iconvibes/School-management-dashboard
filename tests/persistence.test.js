@@ -19,7 +19,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import bcrypt from "bcryptjs";
+import bcrypt from "bcrypt";
 import * as demoStore from "../src/lib/demo-store.js";
 
 const tmpFile = () =>

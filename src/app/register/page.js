@@ -114,12 +114,6 @@ export default function RegisterPage() {
               Create the school tenant and your super admin account.
             </p>
 
-            {error && (
-              <div className="mt-4 rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-medium text-rose-700">
-                {error}
-              </div>
-            )}
-
             <form onSubmit={handleSubmit} className="mt-6 space-y-4">
               <Field
                 icon={Building2}
@@ -159,6 +153,14 @@ export default function RegisterPage() {
                 onChange={set("confirm")}
                 placeholder="Repeat password"
               />
+              {/* Shared error — directly above the submit button so it's the
+                  last thing scanned before submitting, matching the login
+                  page placement. */}
+              {error && (
+                <div className="rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-medium text-rose-700">
+                  {error}
+                </div>
+              )}
               <button
                 type="submit"
                 disabled={loading}

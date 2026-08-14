@@ -26,6 +26,8 @@ import "../src/models/User.js";
 import "../src/models/Score.js";
 import "../src/models/FeeStructure.js";
 import "../src/models/FeePayment.js";
+import "../src/models/FeeCarryover.js";
+import "../src/models/ReminderBatch.js";
 import "../src/models/Attendance.js";
 import "../src/models/TimetableEntry.js";
 import "../src/models/ClassAlertPref.js";

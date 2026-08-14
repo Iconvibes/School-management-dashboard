@@ -1,6 +1,7 @@
 import { jsonError } from "@/lib/auth";
 import { store } from "@/lib/store";
 import { isDenied, requirePermission, requireClassScope } from "@/lib/policy";
+import { generatePassword } from "@/lib/passwords";
 
 export async function GET(request) {
   // BURSAR is included so their dashboard loads (the admin console fetches
@@ -88,8 +89,16 @@ export async function POST(request) {
   // Normalize case: clients may send "student"/"teacher" from UI state.
   const roleEnum = String(role || "").toUpperCase();
 
-  if (!name || !email || !roleEnum) {
-    return jsonError("Name, email and role are required");
+  // Name-only accounts: PARENT and TEACHER — the admin types JUST the name.
+  // A parent's password is any linked child's full name (set at link time);
+  // a teacher's password is the school name (derived at login). Every other
+  // role needs an email.
+  const nameOnlyRole = roleEnum === "PARENT" || roleEnum === "TEACHER";
+  if (!name || !roleEnum) {
+    return jsonError("Name and role are required");
+  }
+  if (!nameOnlyRole && !email) {
+    return jsonError("Email is required for this role");
   }
   // SUPER_ADMIN may create any role; REGISTRAR may build the student roster
   // (students + their parents); TEACHER may only add students.
@@ -106,10 +115,22 @@ export async function POST(request) {
   // always require an admin-chosen password.
   let userPassword = password;
   let generatedPassword = null;
+  // A name-only parent or teacher gets a random placeholder password — the
+  // real one is derived at login (a linked child's name for a parent, the
+  // school name for a teacher). It must NEVER be recorded as generatedPassword
+  // (the Login Details export would show a useless random string instead).
+  let placeholderPassword = false;
   if (roleEnum === "STUDENT" && !String(userPassword || "").trim()) {
     const slug = (s) => String(s || "").toLowerCase().replace(/[^a-z0-9]/g, "");
     generatedPassword = `${slug(name)}${slug(assignedClass)}`;
     userPassword = generatedPassword;
+  }
+  if (!String(userPassword || "") && nameOnlyRole) {
+    // No admin-chosen password for a name-only account: a random placeholder
+    // (the login route's name+child / name+school fallbacks do the real
+    // validation). Never shown, never exported.
+    userPassword = generatePassword();
+    placeholderPassword = true;
   }
   if (!String(userPassword || "")) {
     return jsonError("Password is required");
@@ -121,10 +142,12 @@ export async function POST(request) {
   // exported from Login Details for bulk distribution — students already
   // store their (auto-generated) password the same way, and the field
   // documents "the account's current login password" on the User model.
-  if (generatedPassword === null) {
+  // Skipped for name-only accounts: their placeholder is transient, and the
+  // login route derives the real password (child's name / school name).
+  if (generatedPassword === null && !placeholderPassword) {
     generatedPassword = String(userPassword);
   }
-  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(email))) {
+  if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(email))) {
     return jsonError("Please provide a valid email address");
   }
 
@@ -164,8 +187,34 @@ export async function POST(request) {
     }
   }
 
-  const existing = await store.findUserByEmailInSchool(session.schoolId, email);
-  if (existing) return jsonError("An account with this email already exists in your school");
+  if (email) {
+    const existing = await store.findUserByEmailInSchool(session.schoolId, email);
+    if (existing) return jsonError("An account with this email already exists in your school");
+  }
+  // A parent's or teacher's full name doubles as their login identifier
+  // (name-based login) — two accounts with the same name in one school would
+  // make that login ambiguous: the name lookup returns a single match and the
+  // other account would be silently shadowed. Reject the duplicate instead.
+  // Role- and tenant-scoped: a student sharing the name is fine, and the
+  // same name is fine in another school.
+  if (roleEnum === "PARENT" && name) {
+    const existingParent = await store.findParentByNameInSchool(session.schoolId, name);
+    if (existingParent) {
+      return jsonError(
+        `A parent named "${String(name).trim()}" already exists in your school. Select them under “Existing parent” instead.`,
+        409
+      );
+    }
+  }
+  if (roleEnum === "TEACHER" && name) {
+    const existingTeacher = await store.findTeacherByNameInSchool(session.schoolId, name);
+    if (existingTeacher) {
+      return jsonError(
+        `A teacher named "${String(name).trim()}" already exists in your school.`,
+        409
+      );
+    }
+  }
 
   const user = await store.createUser({
     schoolId: session.schoolId,

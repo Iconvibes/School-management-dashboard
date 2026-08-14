@@ -12,8 +12,6 @@ import {
   Plus,
   Search,
   X,
-  LayoutDashboard,
-  BarChart3,
   ShieldCheck,
   ChevronRight,
   FileText,
@@ -56,15 +54,20 @@ import {
   ImagePlus,
   School,
   BadgeCheck,
+  ArrowLeft,
+  LayoutDashboard,
 } from "lucide-react";
 import Sidebar from "@/components/Sidebar";
+import DashboardSkeleton from "@/components/DashboardSkeleton";
 import MetricCard from "@/components/MetricCard";
 import Modal from "@/components/Modal";
 import Logo from "@/components/Logo";
 import TopStudents from "@/components/TopStudents";
+import { AreaChart, DonutChart, DayBars } from "@/components/OverviewCharts";
 import ReportCardModal from "@/components/ReportCardModal";
 import PrintableCredentials from "@/components/PrintableCredentials";
 import ArmStreamSplitter from "@/components/ArmStreamSplitter";
+import OverviewTab from "@/components/admin/OverviewTab";
 import { armAlreadyExists } from "@/lib/arms";
 import { downloadBlob, toCSV, withBOM } from "@/lib/csv";
 import { getSubjects, gradeBadgeClasses, ordinal, TERMS } from "@/lib/grading";
@@ -83,6 +86,11 @@ import { bounceToLogin } from "@/lib/auth-client";
 import { compressImageFile } from "@/lib/image-upload";
 import { MANAGED_ROLES, ROLE_LABELS } from "@/lib/roles";
 import { sparklinePoints } from "@/lib/conflict-scan";
+import { payrollToggleDelta, negateToggleDelta } from "@/lib/toggles";
+import {
+  DEFAULT_REMINDER_MESSAGE,
+  DEFAULT_STUDENT_REMINDER_MESSAGE,
+} from "@/lib/notifications";
 
 const inputCls =
   "w-full rounded-xl border border-navy-200 bg-white px-4 py-2.5 text-sm text-navy-800 outline-none transition focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20";
@@ -228,6 +236,8 @@ export default function AdminDashboard() {
   const [reminderModal, setReminderModal] = useState(null); // null | "all" | studentId
   const [reminderSending, setReminderSending] = useState(false);
   const [reminderResult, setReminderResult] = useState(null); // { sent, skipped } after send
+  const [reminderMessage, setReminderMessage] = useState(DEFAULT_REMINDER_MESSAGE); // editable parent template
+  const [reminderStudentMessage, setReminderStudentMessage] = useState(DEFAULT_STUDENT_REMINDER_MESSAGE); // no-parent student template
   // Reconcile & forward — push student-addressed reminders to newly linked parents
   const [pendingReconciles, setPendingReconciles] = useState([]);
   const [reconcileModal, setReconcileModal] = useState(false);
@@ -242,10 +252,12 @@ export default function AdminDashboard() {
     mode: "select", // "select" | "create"
     parentId: "",
     name: "",
-    email: "",
-    password: "",
     phone: "",
   });
+  // After a successful link, the modal swaps to a success panel showing the
+  // auto-derived password (the linked student's full name) so the admin can
+  // read it straight to the parent. null = no result shown.
+  const [linkResult, setLinkResult] = useState(null); // { parentName, password }
   const [linkSaving, setLinkSaving] = useState(false);
   // Reset-password state
   const [resetTarget, setResetTarget] = useState(null); // user being reset
@@ -365,12 +377,15 @@ export default function AdminDashboard() {
   const [archAlumni, setArchAlumni] = useState([]);
   const [archAlumniLoading, setArchAlumniLoading] = useState(false);
   const [archAlumniLoaded, setArchAlumniLoaded] = useState(false);
-  // Settings (branding) tab — the SUPER_ADMIN rebrands after onboarding:
-  // logo + seal upload and a flexible brand color, saved via PATCH /api/school.
+  // Settings tab — the SUPER_ADMIN configures the school after onboarding:
+  // branding (logo + seal + brand color) and notification preferences, saved
+  // via PATCH /api/school.
   const [settingsDraft, setSettingsDraft] = useState({
     brandColor: "#2563EB",
     logoUrl: "",
     sealUrl: "",
+    notificationRetentionDays: 90,
+    reconcileDeletedReminders: false,
   });
   const [settingsSaving, setSettingsSaving] = useState(false);
   const [settingsError, setSettingsError] = useState("");
@@ -533,6 +548,8 @@ export default function AdminDashboard() {
           brandColor: data.school?.brandColor || "#2563EB",
           logoUrl: data.school?.logoUrl || "",
           sealUrl: data.school?.sealUrl || "",
+          notificationRetentionDays: Number(data.school?.notificationRetentionDays) || 90,
+          reconcileDeletedReminders: data.school?.reconcileDeletedReminders === true,
         });
         setSettingsError("");
         setSettingsSaved(false);
@@ -744,37 +761,76 @@ export default function AdminDashboard() {
     })();
   }, [router]);
 
+  // Optimistic instant toggles: the badge flips immediately, a failed PATCH
+  // reverts it (with the error toast), and pendingToggleRef guards against
+  // double-clicks while a flip is in flight so a slow network can't stack
+  // two PATCHes for one click. Money and irreversible actions (payments,
+  // confirmations, deletions) deliberately stay pessimistic.
+  const pendingToggleRef = useRef(new Set());
+
   async function togglePayroll(id, current) {
+    if (pendingToggleRef.current.has(id)) return;
     const next = current === "PAID" ? "PENDING" : "PAID";
-    const res = await fetch(`/api/users/${id}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ payrollStatus: next }),
-    });
-    if (res.ok) {
-      setTeachers((ts) =>
-        ts.map((t) => (t.id === id ? { ...t, payrollStatus: next } : t))
-      );
+    const delta = payrollToggleDelta(next);
+    const undo = negateToggleDelta(delta);
+    // Flip now — the badge and the Overview stat cards update instantly.
+    setTeachers((ts) => ts.map((t) => (t.id === id ? { ...t, payrollStatus: next } : t)));
+    setStats((s) => ({
+      ...s,
+      payrollPaid: s.payrollPaid + delta.payrollPaid,
+      payrollPending: s.payrollPending + delta.payrollPending,
+    }));
+    pendingToggleRef.current.add(id);
+    try {
+      const res = await fetch(`/api/users/${id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ payrollStatus: next }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || "Failed to update payroll status");
+      }
+      showToast(`Payroll marked ${next === "PAID" ? "Paid" : "Pending"}`);
+    } catch (err) {
+      // Revert via the inverse delta — concurrent updates to OTHER rows are
+      // preserved because the revert applies to live state, not a snapshot.
+      setTeachers((ts) => ts.map((t) => (t.id === id ? { ...t, payrollStatus: current } : t)));
       setStats((s) => ({
         ...s,
-        payrollPaid: s.payrollPaid + (next === "PAID" ? 1 : -1),
-        payrollPending: s.payrollPending + (next === "PENDING" ? 1 : -1),
+        payrollPaid: s.payrollPaid + undo.payrollPaid,
+        payrollPending: s.payrollPending + undo.payrollPending,
       }));
-      showToast(`Payroll marked ${next === "PAID" ? "Paid" : "Pending"}`);
+      showToast(err.message || "Failed to update payroll status");
+    } finally {
+      pendingToggleRef.current.delete(id);
     }
   }
 
   async function toggleFee(id, current) {
-    const res = await fetch(`/api/users/${id}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ feePaid: !current }),
-    });
-    if (res.ok) {
-      setStudents((ss) =>
-        ss.map((s) => (s.id === id ? { ...s, feePaid: !current } : s))
-      );
-      showToast(!current ? "Fee marked as collected" : "Fee marked as unpaid");
+    const key = `fee:${id}`;
+    if (pendingToggleRef.current.has(key)) return;
+    const next = !current;
+    // Flip now — the Paid/Unpaid chip updates instantly.
+    setStudents((ss) => ss.map((s) => (s.id === id ? { ...s, feePaid: next } : s)));
+    pendingToggleRef.current.add(key);
+    try {
+      const res = await fetch(`/api/users/${id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ feePaid: next }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || "Failed to update fee status");
+      }
+      showToast(next ? "Fee marked as collected" : "Fee marked as unpaid");
+    } catch (err) {
+      // Exact restore of the pre-flip value — the chip snaps back.
+      setStudents((ss) => ss.map((s) => (s.id === id ? { ...s, feePaid: current } : s)));
+      showToast(err.message || "Failed to update fee status");
+    } finally {
+      pendingToggleRef.current.delete(key);
     }
   }
 
@@ -840,10 +896,14 @@ export default function AdminDashboard() {
         }));
       }
 
-      // When a student is created with an auto-generated password (name+class),
-      // show the login details in the modal before closing — the admin needs
-      // to hand the password to the student right away.
-      if (data.generatedPassword) {
+      // When a student is created with a password, show the login details in
+      // the modal before closing — the admin needs to hand the credentials to
+      // the student right away. Gated on the STUDENT role: the server also
+      // records the admin-chosen password as generatedPassword for teachers &
+      // staff (for the Login Details export), and that must NOT open this
+      // popup — the admin just typed that password themselves, and the toast
+      // below confirms the creation.
+      if (roleEnum === "STUDENT" && data.generatedPassword) {
         setCreatedUserDisplay({
           name: data.user.name,
           email: data.user.email,
@@ -1095,19 +1155,67 @@ export default function AdminDashboard() {
   );
 
   const parentNameById = Object.fromEntries(parents.map((p) => [p.id, p.name]));
+  // Case/whitespace-insensitive match against the loaded parent list — used
+  // by the live "already exists" hint under the New-parent name field and by
+  // the duplicate guard in linkParent (the server enforces the same rule).
+  const findParentByName = (name) =>
+    parents.find(
+      (p) =>
+        p.role === "PARENT" &&
+        String(p.name || "").trim().toLowerCase() === String(name || "").trim().toLowerCase()
+    );
+  // Phone is the secondary dedupe key (the importer normalizes the same
+  // way): digits only, so "0803 123 4567" and "+2348031234567" are one
+  // number. Empty input never matches — a parent with no phone can't be
+  // hit by a blank field.
+  const normPhone = (p) => String(p || "").replace(/\D/g, "");
+  const findParentByPhone = (phone) => {
+    const norm = normPhone(phone);
+    if (!norm) return null;
+    return parents.find((p) => p.role === "PARENT" && normPhone(p.phone) === norm);
+  };
 
   async function linkParent(studentId) {
     setLinkSaving(true);
     try {
       let parentId = linkForm.parentId;
       if (linkForm.mode === "create") {
+        // Name-only parents: the admin types just the full name — no email,
+        // no password. The password is derived automatically from the linked
+        // student's full name (the PATCH below triggers the store's
+        // parent-link sync).
+        if (!String(linkForm.name || "").trim()) {
+          throw new Error("Please enter the parent's full name");
+        }
+        // Friendly duplicate check against the loaded parent list (the
+        // server enforces the same rule authoritatively — this just guides
+        // the admin straight to the existing account instead of an error).
+        // A parent's name is their login identifier, so a second account
+        // with the same name would be silently shadowed by name-based login.
+        const dup = findParentByName(linkForm.name);
+        if (dup) {
+          setLinkForm((f) => ({ ...f, mode: "select", parentId: dup.id }));
+          showToast(`“${dup.name}” already exists — link them instead of creating a duplicate.`);
+          return;
+        }
+        // Phone is the secondary dedupe key — if the typed phone already
+        // belongs to another parent (and the name didn't match anyone),
+        // guide to that account too. The admin can still create a fresh
+        // account by clearing the phone field (a shared number is the one
+        // legit reason to skip).
+        const phoneDup = findParentByPhone(linkForm.phone);
+        if (phoneDup) {
+          setLinkForm((f) => ({ ...f, mode: "select", parentId: phoneDup.id }));
+          showToast(
+            `“${phoneDup.name}” already uses this phone — link them instead of creating a duplicate.`
+          );
+          return;
+        }
         const res = await fetch("/api/users", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             name: linkForm.name,
-            email: linkForm.email,
-            password: linkForm.password,
             role: "PARENT",
             phone: linkForm.phone,
           }),
@@ -1128,8 +1236,17 @@ export default function AdminDashboard() {
       if (!res2.ok) throw new Error(data2.error || "Failed to link parent");
 
       setStudents((ss) => ss.map((s) => (s.id === studentId ? { ...s, parentId } : s)));
-      setLinkModal(null);
-      setLinkForm({ mode: "select", parentId: "", name: "", email: "", password: "", phone: "" });
+      // Surface the auto-derived password right in the modal: the linked
+      // student's full name is exactly what the parent types to sign in
+      // (case and spacing don't matter). The modal stays open on a success
+      // panel so the admin can hand the credentials to the parent.
+      const studentName = students.find((s) => s.id === studentId)?.name;
+      const parentName =
+        linkForm.mode === "create"
+          ? String(linkForm.name || "").trim()
+          : parents.find((p) => p.id === linkForm.parentId)?.name || "Parent";
+      setLinkResult({ parentName, password: studentName || "" });
+      setLinkForm({ mode: "select", parentId: "", name: "", phone: "" });
       showToast("Parent linked to student");
     } catch (err) {
       showToast(err.message);
@@ -1166,6 +1283,18 @@ export default function AdminDashboard() {
           ? prev.map((s) => (s.classArm === classArm ? data.structure : s))
           : [...prev, data.structure];
       });
+      // Recompute the ledger + totals right away: students in this arm are now
+      // billed, so the ledger rows (and the Send reminders count) must reflect
+      // it without a manual page refresh.
+      const params = new URLSearchParams();
+      if (feeClass) params.set("classArm", feeClass);
+      if (feeDefaultersOnly) params.set("defaulters", "1");
+      const lr = await fetch(`/api/fees?${params}`);
+      const ld = await lr.json();
+      setFeeLedger(ld.ledger || []);
+      setFeeTotals(ld.totals || null);
+      const sr = await fetch("/api/admin/stats");
+      setStats((await sr.json()).stats);
       showToast(`Fee for ${classArm} updated`);
     } catch (err) {
       showToast(err.message);
@@ -1174,22 +1303,54 @@ export default function AdminDashboard() {
     }
   }
 
+  // Prefill the Send reminder modal with the school's saved wording (falling
+  // back to the built-in defaults) so the admin never retypes it. Called each
+  // time the modal opens — the parent message and the no-parent student
+  // message are loaded independently.
+  async function loadReminderTemplates() {
+    try {
+      const res = await fetch("/api/school/reminder-templates");
+      if (!res.ok) return;
+      const { templates } = await res.json();
+      setReminderMessage(
+        (templates?.parent && String(templates.parent).trim()) || DEFAULT_REMINDER_MESSAGE
+      );
+      setReminderStudentMessage(
+        (templates?.student && String(templates.student).trim()) || DEFAULT_STUDENT_REMINDER_MESSAGE
+      );
+    } catch {
+      // Keep the current wording on any failure — never blank the modal.
+    }
+  }
+
   async function sendReminders(scope) {
     // scope: "all" (every defaulter) or a single studentId (one student's row)
     setReminderSending(true);
     setReminderResult(null);
+    // Idempotency key for THIS send attempt — if the request is retried (a
+    // double click, a network replay), the API replays the recorded result
+    // instead of notifying anyone twice. A fresh key = a legitimately new send.
+    const batchId =
+      typeof crypto !== "undefined" && crypto.randomUUID
+        ? crypto.randomUUID()
+        : `batch-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     try {
       const res = await fetch("/api/fees/reminders", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(scope === "all" ? {} : { studentIds: [scope] }),
+        body: JSON.stringify({
+          ...(scope === "all" ? {} : { studentIds: [scope] }),
+          message: reminderMessage,
+          messageStudent: reminderStudentMessage,
+          batchId,
+        }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Failed to send reminders");
       setReminderResult(data);
       if (data.sent?.length > 0) {
         showToast(
-          `Reminder${data.sent.length === 1 ? "" : "s"} sent to ${data.sent.length} parent${data.sent.length === 1 ? "" : "s"}`
+          `Reminder${data.sent.length === 1 ? "" : "s"} sent to ${data.sent.length} parent${data.sent.length === 1 ? "" : "s"} — wording saved as this school's default`
         );
       }
       // Refresh the audit trail — the sends are logged there.
@@ -1269,6 +1430,16 @@ export default function AdminDashboard() {
       currency: "NGN",
       maximumFractionDigits: 0,
     }).format(Number(n) || 0);
+
+  // Fee card delta — last 7 days vs the 7 before, from the collection timeline.
+  const feeDelta = useMemo(() => {
+    const tl = stats?.collectionTimeline || [];
+    if (tl.length < 8) return null;
+    const recent = tl.slice(-7).reduce((a, d) => a + (d.amount || 0), 0);
+    const prev = tl.slice(-14, -7).reduce((a, d) => a + (d.amount || 0), 0);
+    if (!prev) return null;
+    return Math.round(((recent - prev) / prev) * 100);
+  }, [stats?.collectionTimeline]);
 
   // ---- Timetable helpers ---------------------------------------------------
   const ttByKey = useMemo(() => {
@@ -1482,8 +1653,9 @@ export default function AdminDashboard() {
     setSettingsError("");
     setSettingsSaved(false);
     try {
-      // Branding fields only — the PATCH route re-validates the logo and seal
-      // (image data, ≤ 2 MB) exactly as it does for onboarding.
+      // Branding + notification fields — the PATCH route re-validates the
+      // logo and seal (image data, ≤ 2 MB) and the retention window exactly
+      // as it does for onboarding.
       const res = await fetch("/api/school", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
@@ -1491,10 +1663,12 @@ export default function AdminDashboard() {
           brandColor: settingsDraft.brandColor,
           logoUrl: settingsDraft.logoUrl,
           sealUrl: settingsDraft.sealUrl,
+          notificationRetentionDays: settingsDraft.notificationRetentionDays,
+          reconcileDeletedReminders: settingsDraft.reconcileDeletedReminders,
         }),
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Failed to save branding");
+      if (!res.ok) throw new Error(data.error || "Failed to save settings");
       // Mirror into the session so headers, report cards and every portal pick
       // it up immediately without a reload.
       setSession((s) => ({
@@ -1504,10 +1678,12 @@ export default function AdminDashboard() {
           brandColor: settingsDraft.brandColor,
           logoUrl: settingsDraft.logoUrl,
           sealUrl: settingsDraft.sealUrl,
+          notificationRetentionDays: settingsDraft.notificationRetentionDays,
+          reconcileDeletedReminders: settingsDraft.reconcileDeletedReminders,
         },
       }));
       setSettingsSaved(true);
-      showToast("School branding updated");
+      showToast("School settings updated");
     } catch (err) {
       setSettingsError(err.message);
     } finally {
@@ -1762,7 +1938,7 @@ export default function AdminDashboard() {
         })
         .catch(() => {});
       showToast(
-        `Started ${data.school?.currentSession} · ${data.school?.currentTerm} — archived ${c.scoresArchived || 0} scores and ${c.attendanceArchived || 0} attendance registers; cloned ${c.feesCloned || 0} fee structures and ${c.timetableCloned || 0} timetable slots`
+        `Started ${data.school?.currentSession} · ${data.school?.currentTerm} — archived ${c.scoresArchived || 0} scores and ${c.attendanceArchived || 0} attendance registers; cloned ${c.feesCloned || 0} fee structures and ${c.timetableCloned || 0} timetable slots; carried ${c.carryovers || 0} unpaid balances and sent ${c.remindersSent || 0} automatic reminders`
       );
       setRolloverOpen(false);
       setRolloverPreview(null);
@@ -1920,7 +2096,12 @@ export default function AdminDashboard() {
         u.email || "",
         ROLE_LABELS[u.role] || u.role || "",
         u.assignedClass || (u.assignedClasses?.length ? u.assignedClasses.join(" | ") : "") || "",
-        u.generatedPassword || "",
+        // Teachers bootstrap with the school name (derived at login), but
+        // once they set their OWN password it's recorded in generatedPassword
+        // — the export shows whichever currently applies.
+        u.role === "TEACHER"
+          ? u.generatedPassword || session.school?.name || ""
+          : u.generatedPassword || "",
       ]),
     ];
     const csv = withBOM(toCSV(rows));
@@ -2010,7 +2191,9 @@ export default function AdminDashboard() {
         password:
           u.role === "PARENT"
             ? (childrenByParent[u.id] || []).filter(Boolean).join(" / ") || u.generatedPassword || ""
-            : u.generatedPassword || "",
+            : u.role === "TEACHER"
+              ? session.school?.name || ""
+              : u.generatedPassword || "",
       })),
     });
   }
@@ -2172,11 +2355,7 @@ export default function AdminDashboard() {
   }
 
   if (loading) {
-    return (
-      <main className="flex flex-1 items-center justify-center bg-navy-50">
-        <Loader2 className="h-8 w-8 animate-spin text-brand-600" />
-      </main>
-    );
+    return <DashboardSkeleton />;
   }
 
   // Role gates for the shared admin console — permission-driven so the UI
@@ -2236,20 +2415,34 @@ export default function AdminDashboard() {
               <Menu className="h-5 w-5" />
             </button>
             {/* The school's uploaded logo sits beside its name in every
-                portal header — branding follows the tenant everywhere. */}
-            {session.school?.logoUrl && (
-              <img
-                src={session.school.logoUrl}
-                alt=""
-                className="h-7 w-7 shrink-0 rounded-lg bg-white object-contain ring-1 ring-navy-100"
-              />
-            )}
-            <div className="min-w-0">
-              <p className="truncate text-sm font-bold text-navy-800">{session.school?.name}</p>
-              <p className="truncate text-xs text-navy-400">
-                {session.school?.currentSession} · {session.school?.currentTerm}
-              </p>
-            </div>
+                portal header — branding follows the tenant everywhere.
+                Clicking the name returns to the dashboard Overview from any
+                tab (the logo-to-home convention). */}
+            <button
+              onClick={() => {
+                setTab("overview");
+                history.replaceState(null, "", "/admin/dashboard");
+              }}
+              title="Back to dashboard"
+              className="group flex min-w-0 items-center gap-3 text-left"
+            >
+              {session.school?.logoUrl && (
+                <img
+                  src={session.school.logoUrl}
+                  alt=""
+                  className="h-7 w-7 shrink-0 rounded-lg bg-white object-contain ring-1 ring-navy-100"
+                />
+              )}
+              <span className="min-w-0">
+                <span className="flex items-center gap-1.5 truncate text-sm font-bold text-navy-800 transition group-hover:text-brand-600">
+                  {activeTab !== "overview" && <ArrowLeft className="h-3.5 w-3.5 shrink-0" />}
+                  {session.school?.name}
+                </span>
+                <span className="truncate text-xs text-navy-400">
+                  {session.school?.currentSession} · {session.school?.currentTerm}
+                </span>
+              </span>
+            </button>
           </div>
           <div className="flex items-center gap-3">
             <span className="hidden items-center gap-1.5 rounded-full bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-700 ring-1 ring-emerald-600/20 sm:flex">
@@ -2324,8 +2517,9 @@ export default function AdminDashboard() {
               icon={Wallet}
               label="Fee Collection"
               value={`${stats.feeRate}%`}
-              sub={`${stats.feeCollected} of ${stats.totalStudents} students paid`}
+              sub={`${stats.feeCollected} of ${stats.totalStudents} students paid · ${naira(stats.feeCollectedAmount)} collected`}
               accent="emerald"
+              spark={stats.collectionTimeline?.map((t) => t.amount)}
             />
             <MetricCard
               icon={CreditCard}
@@ -2581,209 +2775,22 @@ export default function AdminDashboard() {
 
           {/* Overview */}
           {activeTab === "overview" && (
-            <>
-            <div className="mt-5 grid gap-5 lg:grid-cols-3">
-              <div className="rounded-2xl border border-navy-200/70 bg-white p-6 shadow-sm lg:col-span-2">
-                <div className="flex items-center gap-2">
-                  <BarChart3 className="h-5 w-5 text-brand-600" />
-                  <h2 className="text-lg font-bold text-navy-800">Class distribution</h2>
-                </div>
-                <div className="mt-5 space-y-4">
-                  {Object.entries(stats.classDistribution || {}).map(([arm, count]) => (
-                    <div key={arm}>
-                      <div className="flex justify-between text-sm">
-                        <span className="font-medium text-navy-700">{arm}</span>
-                        <span className="text-navy-400">{count} students</span>
-                      </div>
-                      <div className="mt-1.5 h-2.5 overflow-hidden rounded-full bg-navy-100">
-                        <div
-                          className="h-full rounded-full bg-gradient-to-r from-brand-500 to-brand-400 transition-all"
-                          style={{ width: `${(count / maxArm) * 100}%` }}
-                        />
-                      </div>
-                    </div>
-                  ))}
-                  {Object.keys(stats.classDistribution || {}).length === 0 && (
-                    <p className="text-sm text-navy-400">No students yet. Add students to see distribution.</p>
-                  )}
-                </div>
-              </div>
-
-              <div className="rounded-2xl border border-navy-200/70 bg-gradient-to-br from-navy-900 to-navy-800 p-6 text-white shadow-sm">
-                <LayoutDashboard className="h-6 w-6 text-brand-300" />
-                <h2 className="mt-3 text-lg font-bold">Quick actions</h2>
-                <p className="mt-1 text-sm text-navy-300">
-                  Manage your school from one place.
-                </p>
-                <div className="mt-5 space-y-2.5">
-                  {[
-                    ...(canRoster
-                      ? [
-                          { label: "Import students & teachers (CSV)", action: () => router.push("/admin/import") },
-                          { label: "Quick-add students (paste names)", action: () => router.push("/admin/quick-add") },
-                          { label: "Start from class sizes (paper register)", action: () => router.push("/admin/placeholders") },
-                        ]
-                      : []),
-                    ...(canRoster
-                      ? [{ label: "Manage students & fees", action: () => setTab("students") }]
-                      : []),
-                    ...(canFees
-                      ? [{ label: "Manage fees & ledger", action: () => setTab("fees") }]
-                      : []),
-                    ...(canReports
-                      ? [{ label: "View report cards", action: () => setTab("reports") }]
-                      : []),
-                    ...(isSuper
-                      ? [
-                          { label: "Manage teachers & payroll", action: () => setTab("teachers") },
-                          { label: "Add a teacher", action: () => setModal("teacher") },
-                        ]
-                      : []),
-                    ...(canRoster
-                      ? [{ label: "Add a student", action: () => setModal("student") }]
-                      : []),
-                  ].map((a) => (
-                    <button
-                      key={a.label}
-                      onClick={a.action}
-                      className="flex w-full items-center justify-between rounded-xl bg-white/5 px-4 py-3 text-sm font-medium text-navy-100 ring-1 ring-white/10 transition hover:bg-white/10 hover:text-white"
-                    >
-                      {a.label}
-                      <ChevronRight className="h-4 w-4 text-navy-300" />
-                    </button>
-                  ))}
-                </div>
-              </div>
-            </div>
-
-            {/* Term rollover — SUPER_ADMIN moves the school to a new term */}
-            {isSuper && (
-              <div className="mt-5 overflow-hidden rounded-2xl border border-navy-200/70 bg-white shadow-sm">
-                <div className="flex flex-col gap-4 p-6 sm:flex-row sm:items-center sm:justify-between">
-                  <div className="flex items-start gap-3">
-                    <div className="rounded-xl bg-brand-50 p-2.5 text-brand-600">
-                      <CalendarDays className="h-5 w-5" />
-                    </div>
-                    <div>
-                      <h3 className="text-sm font-bold text-navy-800">Term rollover</h3>
-                      <p className="mt-0.5 text-sm text-navy-400">
-                        Currently on{" "}
-                        <strong className="text-navy-600">
-                          {session?.school?.currentSession} · {session?.school?.currentTerm}
-                        </strong>
-                        . Starting a new term archives this term&apos;s scores &amp; attendance and carries
-                        your fee structures and timetable forward.
-                      </p>
-                    </div>
-                  </div>
-                  <button
-                    onClick={openRollover}
-                    className="inline-flex shrink-0 items-center gap-2 rounded-xl bg-navy-800 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-navy-700"
-                  >
-                    <CalendarDays className="h-4 w-4" />
-                    Start a new term
-                  </button>
-                </div>
-              </div>
-            )}
-
-            {/* Danger zone — SUPER_ADMIN only. Three levels: freeze the account
-                (blocks logins, keeps ALL data, reactivatable), delete it (a
-                30-day recovery window — restorable, then purged), and the
-                permanent wipe (two-step confirm + exit survey). */}
-            {isSuper && (
-              <div className="mt-5 overflow-hidden rounded-2xl border border-rose-200 bg-rose-50/40 shadow-sm">
-                <div className="border-b border-navy-100 bg-white/60 px-6 py-4">
-                  <h3 className="flex items-center gap-2 text-sm font-bold text-rose-800">
-                    <AlertTriangle className="h-4 w-4" /> Danger zone
-                  </h3>
-                  <p className="mt-0.5 text-xs text-navy-400">
-                    Manage the whole {session?.school?.name} account. Freezing is reversible; deleting
-                    starts a 30-day recovery window.
-                  </p>
-                </div>
-
-                {/* Freeze / reactivate / restore — all reversible, no data lost. */}
-                <div className="flex flex-col gap-4 px-6 py-5 sm:flex-row sm:items-center sm:justify-between">
-                  <div className="flex items-start gap-3">
-                    <div
-                      className={`rounded-xl p-2.5 ${
-                        session.school?.status !== "active" ? "bg-emerald-100 text-emerald-600" : "bg-amber-100 text-amber-600"
-                      }`}
-                    >
-                      {session.school?.status !== "active" ? <RefreshCw className="h-5 w-5" /> : <Snowflake className="h-5 w-5" />}
-                    </div>
-                    <div>
-                      <h4 className="text-sm font-bold text-navy-800">
-                        {session.school?.status === "frozen"
-                          ? "Reactivate school account"
-                          : session.school?.status === "deleted"
-                            ? "Restore school account"
-                            : "Freeze school account"}
-                      </h4>
-                      <p className="mt-0.5 text-sm text-navy-500">
-                        {session.school?.status === "frozen"
-                          ? "All staff and student logins are currently blocked. Reactivating resumes them instantly — nothing was deleted."
-                          : session.school?.status === "deleted"
-                            ? "This school was deleted and its data is kept for a 30-day recovery window. Restoring revives the account and everything in it."
-                            : "Blocks all staff and student logins while keeping every byte of data. You can reactivate the account at any time."}
-                      </p>
-                    </div>
-                  </div>
-                  <button
-                    onClick={() =>
-                      setFreezeModal(
-                        session.school?.status === "frozen"
-                          ? "reactivate"
-                          : session.school?.status === "deleted"
-                            ? "restore"
-                            : "freeze"
-                      )
-                    }
-                    className={`inline-flex shrink-0 items-center gap-2 rounded-xl px-4 py-2.5 text-sm font-semibold text-white transition ${
-                      session.school?.status !== "active"
-                        ? "bg-emerald-600 hover:bg-emerald-500"
-                        : "bg-amber-500 hover:bg-amber-400"
-                    }`}
-                  >
-                    {session.school?.status !== "active" ? <RefreshCw className="h-4 w-4" /> : <Snowflake className="h-4 w-4" />}
-                    {session.school?.status === "frozen"
-                      ? "Reactivate school"
-                      : session.school?.status === "deleted"
-                        ? "Restore school"
-                        : "Freeze account"}
-                  </button>
-                </div>
-
-                {/* Permanent wipe — only for an active/frozen school (a deleted
-                    one is already in its recovery window). */}
-                {session.school?.status !== "deleted" && (
-                  <div className="flex flex-col gap-4 border-t border-rose-100 px-6 py-5 sm:flex-row sm:items-center sm:justify-between">
-                    <div className="flex items-start gap-3">
-                      <div className="rounded-xl bg-rose-100 p-2.5 text-rose-600">
-                        <Trash2 className="h-5 w-5" />
-                      </div>
-                      <div>
-                        <h4 className="text-sm font-bold text-rose-800">Deactivate school & delete data</h4>
-                        <p className="mt-0.5 text-sm text-navy-500">
-                          Delete the school — its data is kept for a 30-day recovery window, then
-                          permanently removed. You can restore the account anytime within the window.{" "}
-                          <strong className="text-rose-700">After that, there is no going back.</strong>
-                        </p>
-                      </div>
-                    </div>
-                    <button
-                      onClick={() => setExitStep("confirm")}
-                      className="inline-flex shrink-0 items-center gap-2 rounded-xl bg-rose-600 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-rose-500"
-                    >
-                      <Trash2 className="h-4 w-4" />
-                      Deactivate school & delete data
-                    </button>
-                  </div>
-                )}
-              </div>
-            )}
-            </>
+            <OverviewTab
+              stats={stats}
+              feeDelta={feeDelta}
+              maxArm={maxArm}
+              session={session}
+              isSuper={isSuper}
+              canRoster={canRoster}
+              canFees={canFees}
+              canReports={canReports}
+              router={router}
+              onNavigate={setTab}
+              onOpenModal={setModal}
+              onOpenRollover={openRollover}
+              onFreeze={setFreezeModal}
+              onDelete={() => setExitStep("confirm")}
+            />
           )}
 
           {/* Previous Terms */}
@@ -2904,7 +2911,7 @@ export default function AdminDashboard() {
                                   {t.session} · {t.term}
                                 </p>
                                 <p className="mt-0.5 text-xs text-navy-400">
-                                  {t.scoreCount} score records · {t.attendanceCount} attendance registers
+                                  {t.students || 0} students · {t.scoreCount} score records · {t.attendanceCount} attendance registers
                                 </p>
                               </div>
                               <ChevronRight
@@ -2930,7 +2937,7 @@ export default function AdminDashboard() {
                                         archArm === arm.classArm ? "text-white/80" : "text-navy-400"
                                       }`}
                                     >
-                                      {arm.scoreCount} scores · {arm.attendanceCount} registers
+                                      {arm.students || 0} students · {arm.scoreCount} scores · {arm.attendanceCount} registers
                                     </p>
                                   </button>
                                 ))}
@@ -4477,16 +4484,17 @@ export default function AdminDashboard() {
                   onClick={() => {
                     setReminderModal("all");
                     setReminderResult(null);
+                    loadReminderTemplates();
                   }}
-                  disabled={(feeTotals?.defaulters ?? 0) === 0}
-                  title="Send a fee reminder to every parent with an outstanding balance"
+                  disabled={(feeTotals?.remindable ?? 0) === 0}
+                  title="Send a fee reminder to every parent with an outstanding balance (or unpaid fees)"
                   className="inline-flex items-center gap-1.5 rounded-xl border border-violet-300 bg-violet-50 px-4 py-2 text-sm font-semibold text-violet-700 transition hover:border-violet-400 hover:bg-violet-100 disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   <BellRing className="h-4 w-4" />
                   Send reminders
-                  {(feeTotals?.defaulters ?? 0) > 0 && (
+                  {(feeTotals?.remindable ?? 0) > 0 && (
                     <span className="rounded-full bg-violet-600 px-1.5 py-0.5 text-[10px] font-bold text-white">
-                      {feeTotals.defaulters}
+                      {feeTotals.remindable}
                     </span>
                   )}
                 </button>
@@ -4616,6 +4624,11 @@ export default function AdminDashboard() {
                             <span className={`font-bold ${l.balance > 0 ? "text-amber-600" : "text-navy-300"}`}>
                               {naira(l.balance)}
                             </span>
+                            {l.carryover > 0 && (
+                              <p className="mt-0.5 text-[10px] font-medium text-violet-600">
+                                includes {naira(l.carryover)} carried from last term
+                              </p>
+                            )}
                           </td>
                           <td className="px-6 py-3.5">
                             <span
@@ -4631,11 +4644,12 @@ export default function AdminDashboard() {
                           </td>
                           <td className="px-6 py-3.5">
                             <div className="flex items-center justify-end gap-2">
-                              {l.balance > 0 && (
+                              {(l.balance > 0 || (l.amount === 0 && !l.feePaid)) && (
                                 <button
                                   onClick={() => {
                                     setReminderModal(l.studentId);
                                     setReminderResult(null);
+                                    loadReminderTemplates();
                                   }}
                                   title={`Send a fee reminder to ${l.name}'s parent`}
                                   className="inline-flex items-center gap-1.5 rounded-lg border border-violet-300 bg-violet-50 px-3.5 py-2 text-xs font-semibold text-violet-700 transition hover:border-violet-400 hover:bg-violet-100"
@@ -5030,12 +5044,22 @@ export default function AdminDashboard() {
       </div>
 
           {activeTab === "settings" && (
-            <div className="mt-5 overflow-hidden rounded-2xl border border-navy-200/70 bg-white shadow-sm">
+            <>
+              <button
+                onClick={() => {
+                  setTab("overview");
+                  history.replaceState(null, "", "/admin/dashboard");
+                }}
+                className="mt-5 inline-flex items-center gap-1.5 rounded-lg text-sm font-semibold text-navy-500 transition hover:text-brand-600"
+              >
+                <ArrowLeft className="h-4 w-4" /> Back to dashboard
+              </button>
+              <div className="mt-3 overflow-hidden rounded-2xl border border-navy-200/70 bg-white shadow-sm">
               <div className="border-b border-navy-100 px-6 py-4">
-                <h2 className="text-lg font-bold text-navy-800">School branding</h2>
+                <h2 className="text-lg font-bold text-navy-800">School settings</h2>
                 <p className="text-sm text-navy-400">
-                  Change your school&apos;s logo and brand color anytime — they appear on report cards and
-                  across every portal.
+                  Branding (logo, seal and brand color) appears on report cards and across every
+                  portal. Notification preferences keep the admin inbox lean.
                 </p>
               </div>
               <div className="grid gap-8 p-6 lg:grid-cols-2">
@@ -5203,6 +5227,58 @@ export default function AdminDashboard() {
                     {sealError && <p className="mt-2 text-xs font-medium text-rose-600">{sealError}</p>}
                   </div>
 
+                  <div className="mt-6">
+                    <span className="mb-1.5 block text-sm font-medium text-navy-700">Notification history</span>
+                    <p className="mb-2 text-xs text-navy-400">
+                      Auto-archive notifications older than this many days — the inbox stays lean,
+                      and the history stays viewable from the bell&apos;s Archived tab. Parent and
+                      student reminders are never affected.
+                    </p>
+                    <div className="flex items-center gap-3">
+                      <input
+                        type="number"
+                        min={1}
+                        max={3650}
+                        value={settingsDraft.notificationRetentionDays}
+                        onChange={(e) =>
+                          setSettingsDraft((d) => ({
+                            ...d,
+                            notificationRetentionDays: Number(e.target.value) || 1,
+                          }))
+                        }
+                        aria-label="Notification retention in days"
+                        className="w-24 rounded-lg border border-navy-200 bg-white px-3 py-2 text-sm font-semibold text-navy-800 outline-none transition focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20"
+                      />
+                      <span className="text-sm text-navy-500">days</span>
+                    </div>
+                  </div>
+
+                  <div className="mt-6">
+                    <label className="flex cursor-pointer items-start gap-3">
+                      <input
+                        type="checkbox"
+                        checked={settingsDraft.reconcileDeletedReminders}
+                        onChange={(e) =>
+                          setSettingsDraft((d) => ({
+                            ...d,
+                            reconcileDeletedReminders: e.target.checked,
+                          }))
+                        }
+                        className="mt-0.5 h-4 w-4 shrink-0 rounded border-navy-300 accent-brand-600"
+                      />
+                      <span className="min-w-0">
+                        <span className="block text-sm font-medium text-navy-700">
+                          Keep deleted reminders in Reconcile &amp; forward
+                        </span>
+                        <span className="mt-0.5 block text-xs text-navy-400">
+                          When off, a reminder you delete from the inbox is also removed from the
+                          Reconcile &amp; forward list. Turn it on to keep deleted reminders eligible
+                          for forwarding if the student&apos;s parent is linked later.
+                        </span>
+                      </span>
+                    </label>
+                  </div>
+
                   {settingsError && (
                     <p className="mt-4 rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-medium text-rose-700">
                       {settingsError}
@@ -5215,11 +5291,11 @@ export default function AdminDashboard() {
                     className="mt-6 inline-flex items-center gap-2 rounded-xl bg-brand-600 px-5 py-2.5 text-sm font-semibold text-white shadow-lg shadow-brand-600/30 transition hover:bg-brand-500 disabled:opacity-60"
                   >
                     {settingsSaving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
-                    Save branding
+                    Save settings
                   </button>
                   {settingsSaved && (
                     <p className="mt-3 inline-flex items-center gap-1.5 text-sm font-semibold text-emerald-600">
-                      <CheckCircle2 className="h-4 w-4" /> Saved — visible across every portal now.
+                      <CheckCircle2 className="h-4 w-4" /> Saved — applied across every portal now.
                     </p>
                   )}
                 </div>
@@ -5273,6 +5349,7 @@ export default function AdminDashboard() {
                 </div>
               </div>
             </div>
+            </>
           )}
 
       {/* Report card viewer modal */}
@@ -5290,7 +5367,10 @@ export default function AdminDashboard() {
       {/* Link parent modal */}
       <Modal
         open={linkModal !== null}
-        onClose={() => setLinkModal(null)}
+        onClose={() => {
+          setLinkModal(null);
+          setLinkResult(null);
+        }}
         title="Link parent / guardian"
         wide
       >
@@ -5305,6 +5385,40 @@ export default function AdminDashboard() {
               The parent gets portal access to this student&apos;s report cards, attendance and fee balance.
             </p>
           </div>
+
+          {/* Success panel — the auto-derived password, right where the
+              admin can read it to the parent. */}
+          {linkResult ? (
+            <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-5 text-center">
+              <CheckCircle2 className="mx-auto h-10 w-10 text-emerald-500" />
+              <p className="mt-3 text-sm font-bold text-navy-800">Parent linked</p>
+              <p className="mt-1 text-xs text-navy-500">
+                {linkResult.parentName} can now sign into{" "}
+                {filteredStudents.find((s) => s.id === linkModal)?.name || "this student"}
+                &apos;s portal.
+              </p>
+              <div className="mt-4 rounded-lg bg-white px-4 py-3 text-left shadow-sm ring-1 ring-navy-100">
+                <p className="text-xs font-semibold uppercase tracking-wider text-navy-400">Parent name</p>
+                <p className="mt-0.5 text-sm font-bold text-navy-800">{linkResult.parentName}</p>
+                <p className="mt-3 text-xs font-semibold uppercase tracking-wider text-navy-400">Password</p>
+                <p className="mt-0.5 text-sm font-bold text-emerald-700">{linkResult.password}</p>
+                <p className="mt-2 text-xs leading-relaxed text-navy-500">
+                  The password is the student&apos;s full name — case and spacing don&apos;t matter.
+                  Tell the parent to sign in with their name above and this password.
+                </p>
+              </div>
+              <button
+                onClick={() => {
+                  setLinkModal(null);
+                  setLinkResult(null);
+                }}
+                className="mt-4 inline-flex w-full items-center justify-center gap-2 rounded-xl bg-brand-600 py-3 font-semibold text-white shadow-lg shadow-brand-600/30 transition hover:bg-brand-500"
+              >
+                <CheckCircle2 className="h-5 w-5" /> Done
+              </button>
+            </div>
+          ) : (
+            <>
 
           {/* Mode toggle */}
           <div className="grid grid-cols-2 gap-2 rounded-xl bg-navy-50 p-1">
@@ -5345,7 +5459,9 @@ export default function AdminDashboard() {
                   </span>
                   <span className="min-w-0 flex-1">
                     <span className="block truncate font-semibold text-navy-800">{p.name}</span>
-                    <span className="block truncate text-xs text-navy-400">{p.email}</span>
+                    <span className="block truncate text-xs text-navy-400">
+                      {p.email || "Signs in with name + child's name"}
+                    </span>
                   </span>
                   {linkForm.parentId === p.id && <CheckCircle2 className="h-4 w-4 shrink-0 text-brand-600" />}
                 </button>
@@ -5366,49 +5482,57 @@ export default function AdminDashboard() {
                   placeholder="e.g. Mrs. Folake Adebayo"
                   className={inputCls}
                 />
+                {/* Live duplicate hint — warns before the admin even hits
+                    the button; clicking through still switches to linking the
+                    existing account instead of creating a duplicate. */}
+                {findParentByName(linkForm.name) && (
+                  <p className="mt-1.5 flex items-start gap-1.5 rounded-lg border border-amber-200 bg-amber-50 px-2.5 py-1.5 text-xs font-medium text-amber-800">
+                    <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                    This name already exists — link them instead of creating a duplicate.
+                  </p>
+                )}
+                <p className="mt-1.5 text-xs text-navy-400">
+                  No email or password needed — once linked, the parent signs in with this name
+                  and the student&apos;s full name as the password.
+                </p>
               </label>
               <label className="block">
-                <span className="mb-1.5 block text-sm font-medium text-navy-700">Email</span>
+                <span className="mb-1.5 block text-sm font-medium text-navy-700">Phone (optional)</span>
                 <input
-                  type="email"
-                  value={linkForm.email}
-                  onChange={(e) => setLinkForm({ ...linkForm, email: e.target.value })}
-                  placeholder="parent@example.com"
+                  value={linkForm.phone}
+                  onChange={(e) => setLinkForm({ ...linkForm, phone: e.target.value })}
+                  placeholder="e.g. 0803 123 4567"
                   className={inputCls}
                 />
+                {/* Live duplicate hint for the phone — the secondary dedupe
+                    key, matched digit-only so formatting can't hide a
+                    duplicate. Warns as the admin types; clicking through
+                    still guides to the existing account. */}
+                {findParentByPhone(linkForm.phone) && (
+                  <p className="mt-1.5 flex items-start gap-1.5 rounded-lg border border-amber-200 bg-amber-50 px-2.5 py-1.5 text-xs font-medium text-amber-800">
+                    <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                    This phone belongs to {findParentByPhone(linkForm.phone).name} — link them
+                    instead of creating a duplicate.
+                  </p>
+                )}
               </label>
-              <div className="grid grid-cols-2 gap-3">
-                <label className="block">
-                  <span className="mb-1.5 block text-sm font-medium text-navy-700">Temporary password</span>
-                  <input
-                    type="text"
-                    value={linkForm.password}
-                    onChange={(e) => setLinkForm({ ...linkForm, password: e.target.value })}
-                    placeholder="At least 6 characters"
-                    className={inputCls}
-                  />
-                </label>
-                <label className="block">
-                  <span className="mb-1.5 block text-sm font-medium text-navy-700">Phone (optional)</span>
-                  <input
-                    value={linkForm.phone}
-                    onChange={(e) => setLinkForm({ ...linkForm, phone: e.target.value })}
-                    placeholder="e.g. 0803 123 4567"
-                    className={inputCls}
-                  />
-                </label>
-              </div>
             </div>
           )}
 
           <button
             onClick={() => linkParent(filteredStudents.find((s) => s.id === linkModal)?.id)}
-            disabled={linkSaving || (linkForm.mode === "select" && !linkForm.parentId)}
+            disabled={
+              linkSaving ||
+              (linkForm.mode === "select" && !linkForm.parentId) ||
+              (linkForm.mode === "create" && !String(linkForm.name || "").trim())
+            }
             className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-brand-600 py-3 font-semibold text-white shadow-lg shadow-brand-600/30 transition hover:bg-brand-500 disabled:opacity-60"
           >
             {linkSaving ? <Loader2 className="h-5 w-5 animate-spin" /> : <HeartHandshake className="h-5 w-5" />}
             {linkForm.mode === "create" ? "Create parent & link" : "Link parent"}
           </button>
+            </>
+          )}
         </div>
       </Modal>
 
@@ -5579,8 +5703,8 @@ export default function AdminDashboard() {
               {reminderModal === "all" ? (
                 <>
                   This will notify the parent of{" "}
-                  <strong>{feeTotals?.defaulters ?? 0} student{(feeTotals?.defaulters ?? 0) === 1 ? "" : "s"}</strong>{" "}
-                  with an outstanding balance. Students without a linked parent are reminded directly.
+                  <strong>{feeTotals?.remindable ?? 0} student{(feeTotals?.remindable ?? 0) === 1 ? "" : "s"}</strong>{" "}
+                  with an outstanding balance or unpaid fees. Students without a linked parent are reminded directly.
                 </>
               ) : (
                 <>
@@ -5590,10 +5714,60 @@ export default function AdminDashboard() {
                 </>
               )}
             </p>
+            <div className="space-y-3">
+              <label className="block">
+                <span className="mb-1.5 flex items-center justify-between text-sm font-medium text-navy-700">
+                  Message to parents
+                  <button
+                    type="button"
+                    onClick={() => setReminderMessage(DEFAULT_REMINDER_MESSAGE)}
+                    className="inline-flex items-center gap-1 text-xs font-semibold text-violet-600 transition hover:text-violet-500"
+                  >
+                    <RotateCcw className="h-3 w-3" />
+                    Reset to default
+                  </button>
+                </span>
+                <textarea
+                  value={reminderMessage}
+                  onChange={(e) => setReminderMessage(e.target.value)}
+                  rows={6}
+                  maxLength={4000}
+                  className={`${inputCls} resize-y leading-relaxed`}
+                />
+              </label>
+              <label className="block">
+                <span className="mb-1.5 flex items-center justify-between text-sm font-medium text-navy-700">
+                  Message to students (no linked parent)
+                  <button
+                    type="button"
+                    onClick={() => setReminderStudentMessage(DEFAULT_STUDENT_REMINDER_MESSAGE)}
+                    className="inline-flex items-center gap-1 text-xs font-semibold text-violet-600 transition hover:text-violet-500"
+                  >
+                    <RotateCcw className="h-3 w-3" />
+                    Reset to default
+                  </button>
+                </span>
+                <textarea
+                  value={reminderStudentMessage}
+                  onChange={(e) => setReminderStudentMessage(e.target.value)}
+                  rows={5}
+                  maxLength={4000}
+                  className={`${inputCls} resize-y leading-relaxed`}
+                />
+              </label>
+              <span className="block text-[11px] leading-relaxed text-navy-400">
+                Placeholders (both messages): <code className="rounded bg-navy-100 px-1 py-0.5">{"{name}"}</code> recipient ·{" "}
+                <code className="rounded bg-navy-100 px-1 py-0.5">{"{student}"}</code> student ·{" "}
+                <code className="rounded bg-navy-100 px-1 py-0.5">{"{class}"}</code> class ·{" "}
+                <code className="rounded bg-navy-100 px-1 py-0.5">{"{balance}"}</code> amount ·{" "}
+                <code className="rounded bg-navy-100 px-1 py-0.5">{"{school}"}</code> school name
+              </span>
+            </div>
             <p className="rounded-xl bg-violet-50 px-4 py-3 text-xs text-violet-700 ring-1 ring-violet-600/20">
               <BellRing className="mr-1 inline h-3.5 w-3.5" />
-              The parent sees the reminder on their portal — students without a parent get it
-              directly on their dashboard. Every send is recorded in the audit trail.
+              Parents get the first message on their portal; students without a parent get the second on
+              their dashboard.              What you send is saved as this school&apos;s default — term-rollover reminders
+              reuse it. Every send is recorded in the audit trail.
             </p>
             <button
               onClick={() => sendReminders(reminderModal)}
@@ -5738,7 +5912,15 @@ export default function AdminDashboard() {
               className={inputCls}
             />
           </label>
-          {editingUser ? (
+          {editingUser && modal === "teacher" ? (
+            <div className="rounded-xl border border-violet-200 bg-violet-50/50 p-3.5">
+              <span className="mb-1 block text-sm font-medium text-navy-700">Name-only account</span>
+              <p className="text-xs text-navy-500">
+                Teachers have no email or password — they sign in with their name and the
+                school name as the password.
+              </p>
+            </div>
+          ) : editingUser ? (
             <div className="rounded-xl border border-navy-100 bg-navy-50/60 p-3.5">
               <span className="mb-1 block text-sm font-medium text-navy-700">Email</span>
               <p className="text-sm text-navy-500">{form.email || "—"}</p>
@@ -5746,6 +5928,16 @@ export default function AdminDashboard() {
                 Email is the login identity and can&apos;t be changed here. To replace
                 this account (new email, new password), remove it and add the
                 replacement.
+              </p>
+            </div>
+          ) : modal === "teacher" ? (
+            <div className="rounded-xl border border-violet-200 bg-violet-50/50 p-3.5">
+              <span className="mb-1 block text-sm font-medium text-navy-700">No email, no password</span>
+              <p className="text-xs text-navy-500">
+                Teachers sign in with their full name and{" "}
+                <strong className="text-navy-700">the school name</strong> as the password —{" "}
+                {session.school?.name || "your school's name"} — so the admin only types the
+                name here.
               </p>
             </div>
           ) : (
@@ -5760,7 +5952,14 @@ export default function AdminDashboard() {
               />
             </label>
           )}
-          {editingUser ? (
+          {editingUser && modal === "teacher" ? (
+            <div className="rounded-xl border border-navy-100 bg-navy-50/60 p-3.5">
+              <span className="mb-1 block text-sm font-medium text-navy-700">Teacher login</span>
+              <p className="text-xs text-navy-500">
+                The teacher signs in with their name and the school name as the password.
+              </p>
+            </div>
+          ) : editingUser ? (
             <div className="rounded-xl border border-navy-100 bg-navy-50/60 p-3.5">
               <span className="mb-1 block text-sm font-medium text-navy-700">Password</span>
               <p className="text-xs text-navy-500">
@@ -5777,6 +5976,14 @@ export default function AdminDashboard() {
                 The password is <strong className="text-navy-700">name + class arm</strong>, all lowercase and
                 unspaced — e.g. <code className="rounded bg-white px-1 py-0.5 font-mono text-[11px] text-navy-700">
                   {form.name || "adamtope"}{form.assignedClass || "jss1"}</code>
+              </p>
+            </div>
+          ) : modal === "teacher" ? (
+            <div className="rounded-xl border border-navy-100 bg-navy-50/60 p-3.5">
+              <span className="mb-1 block text-sm font-medium text-navy-700">Teacher login</span>
+              <p className="text-xs text-navy-500">
+                The teacher signs in with their name and the school name as the password —
+                nothing to hand out.
               </p>
             </div>
           ) : (
@@ -6476,6 +6683,10 @@ export default function AdminDashboard() {
               <li>
                 Fee structures and the weekly timetable <strong>carry over</strong> to the new term.
               </li>
+              <li>
+                Every student&apos;s <strong>unpaid balance carries into the new term</strong> and is added
+                to the new fee — those students/parents get an <strong>automatic reminder</strong>.
+              </li>
               <li>Every student&apos;s fee status resets — nothing is paid for the new term yet.</li>
             </ul>
           </div>
@@ -6530,6 +6741,8 @@ export default function AdminDashboard() {
                 <li>💰 {rolloverPreview.feesCloned || 0} fee structures cloned</li>
                 <li>🗓 {rolloverPreview.timetableCloned || 0} timetable slots carried over</li>
                 <li>👥 {rolloverPreview.studentsReset || 0} students reset to unpaid</li>
+                <li>🔁 {rolloverPreview.carryovers || 0} student{(rolloverPreview.carryovers || 0) === 1 ? "" : "s"} carry an unpaid balance into the new term</li>
+                <li>🔔 Automatic fee reminders sent to each of those students/parents</li>
               </ul>
             </div>
           )}

@@ -52,6 +52,11 @@ export async function POST(request, { params }) {
     // Keep the Login Details lookup current: the reset password is recorded
     // so the admin can always look up (and export) what any account now is.
     generatedPassword: newPassword,
+    // A teacher reset returns them to the school-name bootstrap: passwordSet
+    // flips back to false, so the school-name login (and the school name as
+    // "current password" in change-password) works again until they set a
+    // new password of their own.
+    ...(target.role === "TEACHER" ? { passwordSet: false } : {}),
   });
   if (!user) return jsonError("User not found", 404);
 

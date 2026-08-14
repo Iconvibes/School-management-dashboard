@@ -79,6 +79,7 @@ describe("rolloverTerm — archive + clone semantics", () => {
     assert.equal(dry.counts.feesCloned, 12);
     assert.ok(dry.counts.timetableCloned > 0);
     assert.ok(dry.counts.studentsReset > 0);
+    assert.ok(dry.counts.carryovers > 0, "seed defaulters carry balances into the new term");
 
     // Nothing mutated.
     assert.equal((await demoStore.getSchoolById(school.id)).currentTerm, "First Term");
@@ -146,7 +147,7 @@ describe("rolloverTerm — archive + clone semantics", () => {
     assert.ok(students.every((s) => !s.feePaid));
   });
 
-  it("old-term payments stop satisfying the new term's ledger", async () => {
+  it("old-term payments stop satisfying the new term's ledger, and the unpaid balance carries", async () => {
     const school = await seededSchool();
     const ledgerBefore = await demoStore.getFeeLedger(school.id);
     const kunle = ledgerBefore.find((l) => l.email === "k.adebayo@edutrack.app");
@@ -156,12 +157,37 @@ describe("rolloverTerm — archive + clone semantics", () => {
 
     const ledgerAfter = await demoStore.getFeeLedger(school.id);
     const kunle2 = ledgerAfter.find((l) => l.email === "k.adebayo@edutrack.app");
-    // Structure cloned (185,000) but NO payment counts — the seeded First-Term
-    // payments are out of scope for Second Term.
-    assert.equal(kunle2.amount, 185000);
+    // The seeded First-Term payments are out of scope for Second Term (paid 0),
+    // but the unpaid First-Term balance (111,000) CARRIES into Second Term and
+    // is ADDED to the cloned new fee (185,000) → billed 296,000.
+    assert.equal(kunle2.carryover, 111000);
+    assert.equal(kunle2.amount, 296000);
     assert.equal(kunle2.paid, 0);
-    assert.equal(kunle2.balance, 185000);
+    assert.equal(kunle2.balance, 296000);
     assert.equal(kunle2.feePaid, false);
+  });
+
+  it("carries unpaid balances into the new term; fully paid students carry nothing", async () => {
+    const school = await seededSchool();
+    await demoStore.rolloverTerm(school.id, { newTerm: "Second Term" });
+
+    const ledger = await demoStore.getFeeLedger(school.id);
+    const kunle = ledger.find((l) => l.email === "k.adebayo@edutrack.app");
+    assert.equal(kunle.carryover, 111000, "unpaid First-Term balance rolls forward");
+    assert.equal(kunle.amount, 296000, "new fee + carried balance are added together");
+    assert.equal(kunle.balance, 296000);
+
+    // Chidinma paid First Term in full — nothing carries, new fee only.
+    const chidinma = ledger.find((l) => l.email === "c.obi@edutrack.app");
+    assert.equal(chidinma.carryover, 0);
+    assert.equal(chidinma.amount, 185000);
+    assert.equal(chidinma.balance, 185000);
+
+    // A payment in the new term pays down the combined balance.
+    await demoStore.recordFeePayment({ schoolId: school.id, studentId: kunle.studentId, amount: 50000 });
+    const kunle3 = (await demoStore.getFeeLedger(school.id)).find((l) => l.email === "k.adebayo@edutrack.app");
+    assert.equal(kunle3.paid, 50000);
+    assert.equal(kunle3.balance, 246000);
   });
 
   it("attendance summary is term-scoped — the new term starts at zero", async () => {
@@ -229,6 +255,8 @@ describe("rolloverTerm — archive + clone semantics", () => {
     assert.equal(structures.filter((f) => f.term === "First Term").length, 12);
     assert.equal(structures.filter((f) => f.term === "Second Term").length, 12);
     assert.equal(structures.filter((f) => f.term === "Third Term").length, 12);
+    // Second-Term unpaid balances (everyone — nothing was paid) carry again.
+    assert.ok(third.counts.carryovers > 0, "unpaid Second-Term balances carry into Third Term");
   });
 });
 
@@ -265,6 +293,85 @@ describe("POST /api/school/rollover — through the real API", () => {
     const stored = await demoStore.getSchoolById(school.id);
     assert.equal(stored.currentTerm, "Second Term");
     assert.equal((await demoStore.getScoresBySchool(school.id)).length, 0);
+  });
+
+  it("sends automatic reminders at rollover to carried students' parents (and students without a parent)", async () => {
+    const school = await seededSchool();
+    const admin = await demoStore.findUserByEmailInSchool(school.id, "admin@edutrack.app");
+    __setSessionToken(signToken({ userId: admin.id, role: admin.role, schoolId: school.id }));
+
+    const res = await postRollover(admin, { newTerm: "Second Term" });
+    assert.equal(res.status, 200);
+    assert.ok(res.body.counts.carryovers > 0, "seed defaulters carry balances");
+    assert.equal(
+      res.body.counts.remindersSent,
+      res.body.counts.carryovers,
+      "one automatic reminder per carried student"
+    );
+
+    const all = await demoStore.listNotifications(school.id, admin.id);
+    const reminders = all.filter((n) => n.kind === "fee_reminder");
+    assert.equal(reminders.length, res.body.counts.carryovers);
+
+    // Parent-linked carried student (Kunle → Folake): parent-addressed copy.
+    const parent = await demoStore.findUserByEmail("p.adebayo@edutrack.app");
+    const parentMine = reminders.filter((n) => (n.to || []).includes(parent.email));
+    assert.ok(parentMine.length >= 1, "Folake gets a reminder for Kunle's carried balance");
+    // The reminder carries the FULL new-term outstanding (new fee + carried).
+    assert.ok(parentMine[0].body.includes("₦296,000"), "combined balance in the reminder");
+
+    // Parent-less carried student (Tobi): student-addressed copy.
+    const studentMine = reminders.filter((n) => (n.to || []).includes("t.alade@edutrack.app"));
+    assert.ok(studentMine.length >= 1, "parent-less carried student reminded directly");
+    assert.ok(studentMine[0].body.includes("Hi Tobi Alade,"), "student-addressed copy");
+
+    // Every automatic send is on the audit trail.
+    const trail = await demoStore.listFeeAudit(school.id);
+    const auto = trail.filter(
+      (e) => e.action === "REMINDER_SENT" && e.note.includes("Automatic reminder at term rollover")
+    );
+    assert.equal(auto.length, res.body.counts.carryovers);
+  });
+
+  it("rollover automatic reminders use the school's saved reminder templates", async () => {
+    const school = await seededSchool();
+    const admin = await demoStore.findUserByEmailInSchool(school.id, "admin@edutrack.app");
+    __setSessionToken(signToken({ userId: admin.id, role: admin.role, schoolId: school.id }));
+
+    // The school saved its own wording (parent + student variants) — rollover
+    // reminders must use it instead of the built-in copy.
+    await demoStore.updateSchool(school.id, {
+      reminderTemplates: {
+        parent: "Dear {name}, the carried balance for {student} is {balance} — {school}",
+        student: "Hi {name}, your carried balance is {balance} — {school}",
+      },
+    });
+
+    const res = await postRollover(admin, { newTerm: "Second Term" });
+    assert.equal(res.status, 200);
+    assert.ok(res.body.counts.remindersSent > 0);
+
+    const all = await demoStore.listNotifications(school.id, admin.id);
+    const reminders = all.filter((n) => n.kind === "fee_reminder");
+
+    // Parent-addressed copy carries the school's parent template.
+    const parent = await demoStore.findUserByEmail("p.adebayo@edutrack.app");
+    const parentMine = reminders.filter((n) => (n.to || []).includes(parent.email));
+    assert.ok(parentMine.length >= 1, "Folake gets the automatic reminder");
+    assert.ok(
+      parentMine[0].body.includes("Dear Mrs. Folake Adebayo, the carried balance for Kunle Adebayo"),
+      "parent template rendered with placeholders"
+    );
+    assert.ok(parentMine[0].body.includes("Greenfield International School"), "{school} filled");
+
+    // Parent-less carried student gets the STUDENT variant, never the parent one.
+    const studentMine = reminders.filter((n) => (n.to || []).includes("t.alade@edutrack.app"));
+    assert.ok(studentMine.length >= 1, "parent-less carried student reminded directly");
+    assert.ok(
+      studentMine[0].body.includes("Hi Tobi Alade, your carried balance is"),
+      "student template rendered"
+    );
+    assert.ok(!studentMine[0].body.includes("Dear"), "parent wording never leaks into the student copy");
   });
 
   it("rejects a same-term roll with 400", async () => {

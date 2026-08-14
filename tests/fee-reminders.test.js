@@ -99,6 +99,77 @@ describe("buildFeeReminder", () => {
     assert.ok(!n.body.includes("parent portal (Pay Now)"));
   });
 
+  it("uses a custom message template with per-recipient placeholders", () => {
+    const custom = `Hi {name},\n\nJust a nudge from {school}: {student} ({class}) still owes {balance}.\n\nPlease clear it soon.`;
+    const n = buildFeeReminder({ ...base, message: custom });
+    assert.equal(n.kind, "fee_reminder");
+    assert.ok(n.subject.includes("Fee reminder · Kunle Adebayo"), "subject stays auto-generated");
+    assert.ok(n.body.includes("Hi Mrs. Folake Adebayo,"), "{name} → parent name");
+    assert.ok(n.body.includes("Kunle Adebayo (SS1 Science)"), "{student} + {class} filled");
+    assert.ok(n.body.includes("owes ₦74,000"), "{balance} → naira");
+    assert.ok(n.body.includes("Greenfield International School"), "{school} → school name");
+    assert.ok(!n.body.includes("{"), "no unresolved placeholders left");
+
+    // Same template, no parent → addressed to the student.
+    const studentCopy = buildFeeReminder({
+      student: { name: "No Parent Kid", assignedClass: "SS1 Arts" },
+      balance: 102000,
+      schoolName: "Greenfield International School",
+      message: custom,
+    });
+    assert.ok(studentCopy.body.includes("Hi No Parent Kid,"), "{name} → student name");
+    assert.ok(studentCopy.body.includes("No Parent Kid (SS1 Arts)"), "student line filled");
+    assert.ok(studentCopy.body.includes("owes ₦102,000"));
+  });
+
+  it("falls back to the built-in copy when the message is blank", () => {
+    const n = buildFeeReminder({ ...base, message: "   " });
+    assert.ok(n.body.includes("Student: Kunle Adebayo — SS1 Science"), "built-in parent copy");
+  });
+
+  it("keeps parent and student wording SEPARATE via message + messageStudent", () => {
+    const parentCopy = "PAY UP {name} — {student} owes {balance}";
+    const studentCopy = "DEAR {name}, please settle {balance} at the office";
+
+    // Parent-addressed copy uses the parent template, never the student one.
+    const parentNote = buildFeeReminder({ ...base, message: parentCopy, messageStudent: studentCopy });
+    assert.ok(parentNote.body.includes("PAY UP Mrs. Folake Adebayo"), "parent variant for parents");
+    assert.ok(!parentNote.body.includes("DEAR"), "student variant does not leak into the parent copy");
+
+    // No parent → the STUDENT template is used instead.
+    const studentNote = buildFeeReminder({
+      student: { name: "No Parent Kid", assignedClass: "SS1 Arts" },
+      balance: 102000,
+      schoolName: "Greenfield International School",
+      message: parentCopy,
+      messageStudent: studentCopy,
+    });
+    assert.ok(studentNote.body.includes("DEAR No Parent Kid,"), "student variant for students");
+    assert.ok(!studentNote.body.includes("PAY UP"), "parent variant does not leak into the student copy");
+    assert.ok(studentNote.body.includes("₦102,000"), "placeholders still filled in the student variant");
+  });
+
+  it("falls back to the single message for students when no student variant is given (legacy)", () => {
+    const custom = "Hi {name}, settle {balance} for {student}";
+    // Old callers pass only `message` — students must still get it.
+    const studentNote = buildFeeReminder({
+      student: { name: "No Parent Kid", assignedClass: "SS1 Arts" },
+      balance: 50000,
+      message: custom,
+    });
+    assert.ok(studentNote.body.includes("Hi No Parent Kid,"));
+    assert.ok(studentNote.body.includes("₦50,000"));
+
+    // A BLANK student variant also falls back to the parent message.
+    const blankStudent = buildFeeReminder({
+      student: { name: "No Parent Kid", assignedClass: "SS1 Arts" },
+      balance: 50000,
+      message: custom,
+      messageStudent: "   ",
+    });
+    assert.ok(blankStudent.body.includes("Hi No Parent Kid,"), "blank student variant → parent message");
+  });
+
   it("explicit recipient wins over inference", () => {
     // parent present + recipient "student" → student copy; and vice versa.
     const studentCopy = buildFeeReminder({
@@ -121,17 +192,45 @@ describe("buildFeeReminder", () => {
 
 // ---- the send sequence (what POST /api/fees/reminders does) ---------------------
 
-async function sendReminders(studentIds = null) {
-  const ledger = await demoStore.getFeeLedger(school.id);
-  const allStudents = await demoStore.listUsers({ schoolId: school.id, role: "STUDENT" });
-  const schoolObj = await demoStore.getSchoolById(school.id);
-  const adminUser = await demoStore.findUserById(admin.id);
+async function sendReminders(
+  studentIds = null,
+  message = "",
+  { schoolId = school.id, actorId = admin.id, messageStudent = "", batchId = "" } = {}
+) {
+  // Mirror the route's idempotency gate: a batchId already on record replays
+  // the stored result and touches nothing (no notifications, no audits).
+  if (batchId) {
+    const existing = await demoStore.getReminderBatchByKey(schoolId, "manual", batchId);
+    if (existing) {
+      return { ...(existing.result || { sent: [], skipped: [] }), replayed: true };
+    }
+  }
 
-  const defaulters = ledger.filter((l) => l.balance > 0);
+  const ledger = await demoStore.getFeeLedger(schoolId);
+  const allStudents = await demoStore.listUsers({ schoolId, role: "STUDENT" });
+  const schoolObj = await demoStore.getSchoolById(schoolId);
+  const adminUser = await demoStore.findUserById(actorId);
+
+  // Mirror the route: remindable = defaulters + unbilled students (no fee
+  // structure, never marked paid). Paid students are never reminded.
+  const owing = ledger.filter((l) => l.balance > 0 || (l.amount === 0 && !l.feePaid));
   const targets = studentIds
-    ? defaulters.filter((l) => studentIds.includes(l.studentId))
-    : defaulters;
+    ? owing.filter((l) => studentIds.includes(l.studentId))
+    : owing;
   const studentById = Object.fromEntries(allStudents.map((s) => [s.id, s]));
+
+  // Mirror the route: a non-blank message is persisted as the school's
+  // reminderTemplates (parent variant; student variant separately), so the
+  // modal prefills it next time and rollover reminders reuse it.
+  if (message || messageStudent) {
+    const existing = schoolObj.reminderTemplates || {};
+    await demoStore.updateSchool(schoolId, {
+      reminderTemplates: {
+        parent: message || existing.parent || "",
+        student: messageStudent || existing.student || "",
+      },
+    });
+  }
 
   const sent = [];
   const skipped = [];
@@ -146,12 +245,19 @@ async function sendReminders(studentIds = null) {
     const toStudent = !parent;
     const recipient = toStudent ? student : parent;
     const noParentReason = student.parentId ? "parent account missing" : "no parent linked";
-    const note = buildFeeReminder({ student, parent: toStudent ? null : parent, balance: entry.balance, schoolName: schoolObj.name });
-    await demoStore.createNotification({ schoolId: school.id, ...note, to: [recipient.email], amount: entry.balance });
+    const note = buildFeeReminder({
+      student,
+      parent: toStudent ? null : parent,
+      balance: entry.balance,
+      schoolName: schoolObj.name,
+      message,
+      messageStudent,
+    });
+    await demoStore.createNotification({ schoolId, ...note, to: [recipient.email], amount: entry.balance });
     await demoStore.logFeeAudit({
-      schoolId: school.id,
+      schoolId,
       action: "REMINDER_SENT",
-      actorId: admin.id,
+      actorId,
       actorName: adminUser.name,
       actorRole: "SUPER_ADMIN",
       studentId: student.id,
@@ -173,7 +279,17 @@ async function sendReminders(studentIds = null) {
         : { kind: "parent", id: parent.id, name: parent.name },
     });
   }
-  return { sent, skipped };
+  const result = { sent, skipped };
+  if (batchId) {
+    await demoStore.saveReminderBatch({
+      schoolId,
+      kind: "manual",
+      key: batchId,
+      studentIds: targets.map((t) => t.studentId),
+      result,
+    });
+  }
+  return result;
 }
 
 describe("fee reminder send flow", () => {
@@ -275,6 +391,144 @@ describe("fee reminder send flow", () => {
     assert.equal(entry.note, "Fee reminder sent to student Ghost Parent Kid (parent account missing)");
   });
 
+  it("sends the admin's custom message, substituted per recipient", async () => {
+    const kunle = students.find((s) => s.parentId === parent.id);
+    assert.ok(kunle, "seed links Folake to a student");
+    const custom = "Hi {name}, please settle {balance} for {student}. — {school}";
+    const result = await sendReminders([kunle.id], custom);
+    assert.equal(result.sent.length, 1);
+
+    const all = await demoStore.listNotifications(school.id, admin.id);
+    const reminder = all.find((n) => n.kind === "fee_reminder");
+    assert.ok(reminder, "a fee_reminder notification exists");
+    assert.ok(reminder.body.includes("Hi Mrs. Folake Adebayo,"));
+    assert.ok(reminder.body.includes("Kunle Adebayo"));
+    assert.ok(reminder.body.includes("₦"));
+    assert.ok(reminder.body.includes("Greenfield International School"));
+    assert.ok(!reminder.body.includes("{"), "no unresolved placeholders");
+  });
+
+  it("sends the student variant to parent-less students and auto-saves both templates", async () => {
+    const orphan = await demoStore.createUser({
+      schoolId: school.id,
+      name: "Variant Kid",
+      email: "variant.kid@edutrack.app",
+      password: "student123",
+      role: "STUDENT",
+      assignedClass: "SS1 Arts",
+    });
+    const parentCopy = "Parent template {name}";
+    const studentCopy = "Student template {name}";
+
+    const result = await sendReminders([orphan.id], parentCopy, {
+      messageStudent: studentCopy,
+    });
+    assert.equal(result.sent.length, 1);
+
+    // The no-parent student receives the STUDENT wording, not the parent one.
+    const all = await demoStore.listNotifications(school.id, admin.id);
+    const reminder = all.find((n) => n.kind === "fee_reminder");
+    assert.ok(reminder.body.includes("Student template Variant Kid"));
+    assert.ok(!reminder.body.includes("Parent template"), "parent wording never leaks into the student copy");
+
+    // Both variants are persisted as the school's templates.
+    const stored = await demoStore.getSchoolById(school.id);
+    assert.equal(stored.reminderTemplates.parent, parentCopy);
+    assert.equal(stored.reminderTemplates.student, studentCopy);
+  });
+
+  it("replaying the same batchId never notifies anyone twice", async () => {
+    const kid = await demoStore.createUser({
+      schoolId: school.id,
+      name: "Dedup Kid",
+      email: "dedup.kid@edutrack.app",
+      password: "student123",
+      role: "STUDENT",
+      assignedClass: "SS1 Science",
+    });
+    await demoStore.updateUser(kid.id, { parentId: parent.id });
+
+    const first = await sendReminders([kid.id], "", { batchId: "batch-1" });
+    assert.equal(first.sent.length, 1);
+    assert.equal(first.replayed, undefined, "first send is not a replay");
+
+    // The parent received exactly one reminder so far.
+    const all = await demoStore.listNotifications(school.id, parent.id);
+    assert.equal(all.filter((n) => n.kind === "fee_reminder").length, 1);
+
+    // Retrying the SAME batchId — the exact scenario a double click or a
+    // network retry produces — replays the stored result and sends nothing.
+    const retry = await sendReminders([kid.id], "", { batchId: "batch-1" });
+    assert.equal(retry.replayed, true, "the retry is a replay");
+    assert.equal(retry.sent.length, 1, "stored result replayed");
+    assert.equal(retry.sent[0].studentName, "Dedup Kid");
+
+    const after = await demoStore.listNotifications(school.id, parent.id);
+    assert.equal(
+      after.filter((n) => n.kind === "fee_reminder").length,
+      1,
+      "no second notification was created"
+    );
+    const trail = await demoStore.listFeeAudit(school.id);
+    assert.equal(
+      trail.filter((e) => e.action === "REMINDER_SENT").length,
+      1,
+      "no duplicate audit entries either"
+    );
+
+    // A FRESH batchId is a legitimately new send — the same student can be
+    // reminded again deliberately.
+    const second = await sendReminders([kid.id], "", { batchId: "batch-2" });
+    assert.equal(second.replayed, undefined);
+    assert.equal(second.sent.length, 1);
+    const final = await demoStore.listNotifications(school.id, parent.id);
+    assert.equal(final.filter((n) => n.kind === "fee_reminder").length, 2);
+  });
+
+  it("reminds every student of a brand-new school (no fee structures yet)", async () => {
+    // A freshly created test school has students but no fee structures — every
+    // student is "unbilled" (amount 0, balance 0) and must still be remindable.
+    const { school: fresh, user: freshAdmin } = await demoStore.createSchoolAndAdmin({
+      schoolName: "Fresh Test Academy",
+      adminName: "Test Admin",
+      email: "test.admin@fresh.academy",
+      password: "admin123",
+    });
+    const student = await demoStore.createUser({
+      schoolId: fresh.id,
+      name: "Fresh Kid",
+      email: "fresh.kid@fresh.academy",
+      password: "student123",
+      role: "STUDENT",
+      assignedClass: "SS1 Science",
+    });
+    const parent = await demoStore.createUser({
+      schoolId: fresh.id,
+      name: "Fresh Mum",
+      email: "fresh.mum@fresh.academy",
+      password: "parent123",
+      role: "PARENT",
+    });
+    await demoStore.updateUser(student.id, { parentId: parent.id });
+
+    const ledger = await demoStore.getFeeLedger(fresh.id);
+    assert.equal(ledger.length, 1);
+    assert.equal(ledger[0].balance, 0, "unbilled — nothing billed yet");
+    assert.equal(ledger[0].feePaid, false);
+
+    const result = await sendReminders([student.id], "", {
+      schoolId: fresh.id,
+      actorId: freshAdmin.id,
+    });
+    assert.equal(result.sent.length, 1, "an unbilled student is remindable");
+    assert.equal(result.sent[0].recipient.kind, "parent");
+
+    const all = await demoStore.listNotifications(fresh.id, freshAdmin.id);
+    const reminder = all.find((n) => n.kind === "fee_reminder");
+    assert.ok(reminder, "a fee_reminder notification exists");
+    assert.deepEqual(reminder.to, [parent.email]);
+  });
+
   it("paid students are never reminded even if explicitly requested", async () => {
     // students[0] is Kunle — seed gives him a FULL payment (i % 3 !== 0 → paid).
     const ledger = await demoStore.getFeeLedger(school.id);
@@ -374,10 +628,14 @@ describe("fee reminder parent visibility", () => {
 async function reconcileAndForward() {
   const ledger = await demoStore.getFeeLedger(school.id);
   const balanceByStudentId = Object.fromEntries(ledger.map((l) => [l.studentId, l.balance]));
-  const all = await demoStore.listNotifications(school.id, admin.id);
+  const schoolObj = await demoStore.getSchoolById(school.id);
+  const all = await demoStore.listNotifications(school.id, admin.id, {
+    // Mirror the route: the school's setting decides whether reminders the
+    // admin deleted from the inbox stay forwardable.
+    includeDeleted: schoolObj?.reconcileDeletedReminders === true,
+  });
   const allStudents = await demoStore.listUsers({ schoolId: school.id, role: "STUDENT" });
   const allParents = await demoStore.listUsers({ schoolId: school.id, role: "PARENT" });
-  const schoolObj = await demoStore.getSchoolById(school.id);
   const adminUser = await demoStore.findUserById(admin.id);
 
   const parentById = Object.fromEntries(allParents.map((p) => [p.id, p]));

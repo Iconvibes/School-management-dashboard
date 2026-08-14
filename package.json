@@ -12,10 +12,12 @@
     "restore": "node scripts/restore.mjs",
     "verify-backup": "node scripts/verify-backup.mjs",
     "ensure-indexes": "node --import ./tests/register-aliases.js scripts/ensure-indexes.mjs",
-    "load-test": "node scripts/load-test.mjs"
+    "load-test": "node scripts/load-test.mjs",
+    "defense-docs": "node scripts/make-defense-docs.mjs",
+    "audit-html": "node scripts/make-audit-html.mjs"
   },
   "dependencies": {
-    "bcryptjs": "^3.0.3",
+    "bcrypt": "^6.0.0",
     "html2canvas": "^1.4.1",
     "jsonwebtoken": "^9.0.3",
     "jspdf": "^4.2.1",
@@ -24,7 +26,8 @@
     "next": "16.3.0",
     "nodemailer": "^9.0.5",
     "react": "19.2.8",
-    "react-dom": "19.2.8"
+    "react-dom": "19.2.8",
+    "redis": "^6.2.1"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",

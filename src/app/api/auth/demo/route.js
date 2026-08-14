@@ -13,23 +13,27 @@ import { ROLE_HOME } from "@/lib/portal-guard";
  * demo super admin.
  */
 export async function POST(request) {
-  const limited = checkRateLimit({
-    request,
-    windowMs: 15 * 60 * 1000,
-    max: 10,
-    prefix: "auth-demo",
-  });
-  if (limited) return limited;
+  // Failures-only guard: successful demo clicks (the whole point of the
+  // button) never consume budget, so exploring the demo repeatedly can't
+  // lock itself out. The failures below are environmental (mode/seed/account
+  // missing), not credential guessing.
+  const limited = () =>
+    checkRateLimit({
+      request,
+      windowMs: 15 * 60 * 1000,
+      max: 10,
+      prefix: "auth-demo",
+    });
 
   if (!isDemoMode()) {
-    return jsonError("The demo school is only available in demo mode", 403);
+    return (await limited()) || jsonError("The demo school is only available in demo mode", 403);
   }
   if (!demoSeedEnabled()) {
-    return jsonError("The demo school is disabled on this deployment", 403);
+    return (await limited()) || jsonError("The demo school is disabled on this deployment", 403);
   }
 
   const user = await store.findUserByEmail("admin@edutrack.app");
-  if (!user) return jsonError("Demo account not found", 404);
+  if (!user) return (await limited()) || jsonError("Demo account not found", 404);
 
   const school = await store.getSchoolById(user.schoolId);
 

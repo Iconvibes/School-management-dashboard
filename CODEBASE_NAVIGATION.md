@@ -96,7 +96,7 @@ Every API route does `import { store } from "@/lib/store"` and calls functions o
 | Users | `listUsers({schoolId, role, classArm})`, `createUser`, `updateUser`, `deleteUser`, `getChildren(parentId)` |
 | Scores | `saveScores`, `getScoresByClassSubject`, `getScoresByStudent`, `getScoresBySchool` |
 | Dashboard | `getDashboardStats(schoolId)` |
-| Fees | `getFeeStructures`, `saveFeeStructure`, `getFeeLedger`, `recordFeePayment({...status="CONFIRMED"})`, `confirmFeePayment` |
+| Fees | `getFeeStructures`, `saveFeeStructure`, `getFeeLedger` (amount = structure + carried balance), `recordFeePayment({...status="CONFIRMED"})`, `confirmFeePayment` |
 | Attendance | `getAttendance`, `saveAttendance`, `getStudentAttendanceSummary` |
 | Leads | `createLead`, `listLeads` |
 
@@ -142,6 +142,7 @@ Used only in Mongo mode. Each is a schema + `toJSON` transformer that strips sen
 | `FeeStructure.js` | `schoolId`, `classArm`, `amount`, `session`, `term` |
 | `FeePayment.js` | `schoolId`, `studentId`, `amount`, `method`, `note`, `receiptNo`, `status` (`PENDING`/`CONFIRMED`), `session`, `term` |
 | `TermArchive.js` | rolled-over term snapshots: `schoolId`, `session`, `term`, `kind` (`score`/`attendance`/`student`), `classArm` + per-kind payload rows (the `student` roster rows snapshot each enrolled student's name so archived report cards survive deletions) |
+| `ReminderBatch.js` | idempotency records for reminder sends: `schoolId`, `kind` (`manual`/`rollover`), `key`, `studentIds[]`, `result` — unique `(schoolId, kind, key)` so a retried send or double rollover replays the stored result instead of notifying twice |
 | `Lead.js` | contact/demo form submissions |
 
 **Adding a field to a model?** You must also: (1) add it to `demo-store.js`'s seed/objects, (2) add it to `mongo-store.js`'s queries/creates, (3) surface it in the API route + UI. All four layers.
@@ -290,8 +291,14 @@ Every route: (1) reads the session, (2) rejects unauthenticated with 401, (3) ch
 | GET | `/api/reports/[studentId]` | Full data for one report card | SUPER_ADMIN, TEACHER, PARENT (own child) |
 | GET | `/api/fees` | Fee ledger + totals + pending payments | SUPER_ADMIN |
 | GET/POST | `/api/fees/structures` | Fee structures per class arm | SUPER_ADMIN |
+| POST | `/api/fees/reminders` | Send fee reminders (optional `message`/`messageStudent`; non-blank wording auto-saved as the school's templates; optional `batchId` makes the send idempotent — a retried key replays the recorded result, never re-notifying) | SUPER_ADMIN, BURSAR |
+| GET/PUT | `/api/school/reminder-templates` | Read/save the school's { parent, student } reminder wording | SUPER_ADMIN, BURSAR |
+| — | `ReminderBatch` (model) | Idempotency records for reminder sends: unique (schoolId, kind, key) — `manual` keys are client batchIds, `rollover` keys are deterministic `rollover:<schoolId>:<session>:<term>`. Rollover automatic reminders replay an existing batch instead of re-notifying. | — |
 | GET | `/api/fees/payments` | Payment history | SUPER_ADMIN |
 | PATCH | `/api/fees/payments?id=` | **Confirm** a pending parent payment | SUPER_ADMIN |
+| GET | `/api/notifications` | Admin inbox list + unread count (per-admin read state) | SUPER_ADMIN |
+| POST | `/api/notifications/read` | Mark notifications read for the calling admin | SUPER_ADMIN |
+| POST | `/api/notifications/delete` | SOFT-delete notifications by `{ ids }` — hidden from the admin inbox only; parent/student reminder copies survive (stamped `adminDeletedAt`) | SUPER_ADMIN |
 | GET | `/api/parent/children` | Parent's linked children + fee summaries | PARENT |
 | POST | `/api/parent/pay` | Parent pays fee (creates PENDING) | PARENT |
 | GET | `/api/admin/stats` | Overview metric cards | SUPER_ADMIN |
@@ -318,11 +325,12 @@ Every route: (1) reads the session, (2) rejects unauthenticated with 401, (3) ch
 - `onboarding/page.js` → pick class arms, session, term, brand color → PATCH `/api/school` → redirect to `/admin/dashboard`.
 - The dashboard's class-arm dropdowns all read `session.school.activeArms` — **configure arms here first**, or teachers/admins have nothing to select.
 
-### Admin dashboard — `src/app/admin/dashboard/page.js` (the biggest file, ~1300 lines)
+### Admin dashboard — `src/app/admin/dashboard/page.js` (big client component, being split into per-tab components)
 One big client component with a `tab` state — **the tabs are `overview`, `teachers`, `students`, `fees`, `reports`** (URL hash also drives them, e.g. `#fees`).
 - Fetches: `/api/auth/me`, `/api/admin/stats`, `/api/users`, `/api/fees`, `/api/reports`.
 - Contains the add-teacher/add-student/parent modals, payroll toggles, fee structures, fee ledger with the pending-payments panel, report-card generation list.
 - **Note:** `createUser(role)` uppercases the role before POSTing — keep that if you touch it.
+- **Extraction in progress:** the Overview tab now lives in `src/components/admin/OverviewTab.js` — a presentational component receiving `stats`, `feeDelta`, `maxArm`, `session`, the permission flags (`isSuper`/`canRoster`/`canFees`/`canReports`), `router`, and callbacks (`onNavigate`, `onOpenModal`, `onOpenRollover`, `onFreeze`, `onDelete`). The dashboard keeps ALL state; the component only renders. Future tabs should follow the same `src/components/admin/<Tab>.js` pattern.
 
 ### Teacher dashboard — `src/app/teacher/dashboard/page.js`
 Tabs (via state + hash): **Grading Matrix** (batch score entry), **Attendance** (daily register), **Report Cards** (ranked students + generate PDF).
@@ -593,5 +601,12 @@ npm run start      # serve the production build
 5. Test the flow in the browser with a demo account, and ideally register a fresh school and repeat the flow there (new schools start with zero data — great for catching empty-state bugs).
 
 ---
+
+## Maintenance conventions
+
+- **Defense document (standing rule):** after EVERY code change, append the change to the
+  Changelog in `docs/Project-Defense-Document.md` (with today's date), update any affected
+  sections, then run `npm run defense-docs` to regenerate
+  `docs/Project-Defense-Document.pdf` / `.docx`.
 
 *Last updated: August 2026. If something in the app moved, trust the code — but this map shows you exactly where to look.*

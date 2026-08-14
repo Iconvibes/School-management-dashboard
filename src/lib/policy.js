@@ -15,6 +15,7 @@
 
 import { getSession, jsonError } from "@/lib/auth";
 import { store } from "@/lib/store";
+import { cacheDel, cacheDelMany, cacheGet, cacheSet } from "@/lib/cache";
 import {
   can,
   mayEditUser,
@@ -36,6 +37,54 @@ const MSG = Object.freeze({
 /** True when a guard returned a Response the route should return. */
 export function isDenied(result) {
   return result instanceof Response;
+}
+
+// ---- Auth-snapshot cache (traffic audit §6.2) -------------------------------
+//
+// The per-request revalidation is the hottest read in the app at 08:00 — the
+// same user's /api/auth/me hits again and again — so the lean snapshot is
+// cached for 60s. The cache is tokenVersion-aware: a snapshot is only served
+// when its version matches the token's claim, so ANY version bump forces a
+// fresh fetch even if the matching cacheDel was missed. The explicit DELs
+// below make password changes, role re-rolls and school freezes take effect
+// instantly; the version check + TTL are the safety net.
+const AUTH_SNAPSHOT_TTL_SECONDS = 60;
+const authSnapshotKey = (userId) => `auth:${userId}`;
+
+/**
+ * The user row for the auth guard, cached when a cache driver is active.
+ * Returns the lean snapshot (no PII — findAuthSnapshot already selects only
+ * role/schoolId/arms/tokenVersion and the school status is re-read by the
+ * store call itself), or null when the account is gone.
+ */
+async function loadAuthSnapshot(userId, tokenVersion) {
+  const key = authSnapshotKey(userId);
+  const cached = await cacheGet(key);
+  if (cached && (cached.tokenVersion || 0) === (tokenVersion || 0)) {
+    return cached;
+  }
+  const user = await store.findAuthSnapshot(userId);
+  if (user) await cacheSet(key, user, AUTH_SNAPSHOT_TTL_SECONDS);
+  return user;
+}
+
+/**
+ * Drop one account's cached snapshot — call after any change that alters
+ * what the snapshot carries (password change, role re-roll, scope edits).
+ */
+export async function invalidateAuthSnapshot(userId) {
+  await cacheDel(authSnapshotKey(userId));
+}
+
+/**
+ * Drop every cached snapshot in a school — a freeze, restore or deletion
+ * changes schoolStatus for ALL users, so a cached "active" snapshot must
+ * never outlive the flip. Runs on the rare admin status route, so the
+ * per-user id list is a one-off cost.
+ */
+export async function invalidateSchoolAuthSnapshots(schoolId) {
+  const ids = await store.getSchoolUserIds(schoolId);
+  if (ids.length) await cacheDelMany(ids.map(authSnapshotKey));
 }
 
 /**
@@ -72,7 +121,7 @@ export async function requireAuth(roles, session) {
   // at 10k concurrent users it must not pay for the full user shape.
   let user;
   try {
-    user = await store.findAuthSnapshot(session.userId);
+    user = await loadAuthSnapshot(session.userId, session.tokenVersion);
   } catch {
     return jsonError(MSG.sessionInvalid, 401);
   }
@@ -164,7 +213,7 @@ export async function requireClassScope(session, { classArm, subject, mode = "va
   if (session.role !== ROLES.TEACHER) return { classArm, teacher: null };
 
   // Snapshot (not the full row): only the scope fields are needed here.
-  const teacher = await store.findAuthSnapshot(session.userId);
+  const teacher = await loadAuthSnapshot(session.userId, session.tokenVersion);
   if (!teacher) return jsonError("Account no longer exists", 401);
 
   const arms = teacher.assignedClasses?.length ? teacher.assignedClasses : [];

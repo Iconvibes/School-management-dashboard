@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
+import DashboardSkeleton from "@/components/DashboardSkeleton";
 import {
   Menu,
   Loader2,
@@ -200,11 +201,7 @@ export default function StudentDashboard() {
   };
 
   if (loading) {
-    return (
-      <main className="flex flex-1 items-center justify-center bg-navy-50">
-        <Loader2 className="h-8 w-8 animate-spin text-brand-600" />
-      </main>
-    );
+    return <DashboardSkeleton />;
   }
 
   const brand = session.school?.brandColor || "#2563EB";

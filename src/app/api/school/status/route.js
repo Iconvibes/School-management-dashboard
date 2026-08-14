@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server.js";
 import { jsonError } from "@/lib/auth";
 import { store } from "@/lib/store";
-import { isDenied, requirePermission } from "@/lib/policy";
+import { invalidateSchoolAuthSnapshots, isDenied, requirePermission } from "@/lib/policy";
 import { sendMail } from "@/lib/mailer";
 
 /**
@@ -36,6 +36,11 @@ export async function POST(request) {
 
   const school = await store.setSchoolStatus(session.schoolId, status);
   if (!school) return jsonError("School not found", 404);
+
+  // Every cached auth snapshot carries the school's status — a freeze,
+  // reactivation or restore must be visible to all users on their very next
+  // request, never one TTL later.
+  await invalidateSchoolAuthSnapshots(session.schoolId);
 
   // Safety confirmation: alert the school's SUPER_ADMIN(s) whenever the
   // account is frozen, reactivated or restored. Best-effort — a mailer outage

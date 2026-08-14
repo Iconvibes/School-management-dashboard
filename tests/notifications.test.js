@@ -197,6 +197,221 @@ describe("notifications demo-store", () => {
     assert.deepEqual(others, []);
   });
 
+  it("deletes specific notifications and keeps the rest (tenant-scoped)", async () => {
+    const a = await demoStore.createNotification({
+      schoolId: school.id,
+      kind: "fee_payment",
+      to: ["admin@edutrack.app"],
+      subject: "Keep me",
+      preview: "p",
+      body: "b",
+    });
+    const b = await demoStore.createNotification({
+      schoolId: school.id,
+      kind: "fee_reminder",
+      to: ["admin@edutrack.app"],
+      subject: "Delete me",
+      preview: "p",
+      body: "b",
+    });
+
+    const removed = await demoStore.deleteNotifications(school.id, [b.id]);
+    assert.equal(removed, 1);
+    const list = await demoStore.listNotifications(school.id, admin.id);
+    assert.deepEqual(list.map((n) => n.subject), ["Keep me"]);
+
+    // Tenant scope: deleting ids that belong to another school is a no-op.
+    const other = await demoStore.createNotification({
+      schoolId: "sch_other",
+      kind: "info",
+      to: [],
+      subject: "Stranger",
+      preview: "p",
+      body: "b",
+    });
+    assert.equal(await demoStore.deleteNotifications(school.id, [other.id]), 0);
+    assert.equal(
+      (await demoStore.listNotifications("sch_other", admin.id)).length,
+      1,
+      "another school's notification is untouched"
+    );
+
+    // An empty or unknown id list is a no-op.
+    assert.equal(await demoStore.deleteNotifications(school.id, []), 0);
+    assert.equal(await demoStore.deleteNotifications(school.id, ["not_nope"]), 0);
+  });
+
+  it("soft delete hides from staff but parent/student reminder copies survive", async () => {
+    const parent = await demoStore.findUserById(
+      (await demoStore.listUsers({ schoolId: school.id, role: "PARENT" }))[0].id
+    );
+    const student = await demoStore.findUserById(
+      (await demoStore.listUsers({ schoolId: school.id, role: "STUDENT" }))[0].id
+    );
+    const toParent = await demoStore.createNotification({
+      schoolId: school.id,
+      kind: "fee_reminder",
+      to: [parent.email],
+      subject: "Parent copy",
+      preview: "p",
+      body: "b",
+    });
+    const toStudent = await demoStore.createNotification({
+      schoolId: school.id,
+      kind: "fee_reminder",
+      to: [student.email],
+      subject: "Student copy",
+      preview: "p",
+      body: "b",
+    });
+
+    // Admin deletes BOTH from the inbox…
+    assert.equal(await demoStore.deleteNotifications(school.id, [toParent.id, toStudent.id]), 2);
+    assert.deepEqual(
+      (await demoStore.listNotifications(school.id, admin.id)).map((n) => n.subject),
+      [],
+      "hidden from the admin inbox"
+    );
+    assert.deepEqual(
+      (await demoStore.listNotifications(school.id, admin2.id)).map((n) => n.subject),
+      [],
+      "hidden from every staff view"
+    );
+    // …but the parent and student views (which the portal routes filter by
+    // recipient email) still contain the soft-deleted reminders.
+    const parentSubjects = (await demoStore.listNotifications(school.id, parent.id)).map((n) => n.subject);
+    assert.ok(parentSubjects.includes("Parent copy"), "parent keeps their reminder");
+    const studentSubjects = (await demoStore.listNotifications(school.id, student.id)).map((n) => n.subject);
+    assert.ok(studentSubjects.includes("Student copy"), "student keeps their reminder");
+
+    // Soft delete is idempotent — re-deleting already-hidden ids is a no-op.
+    assert.equal(await demoStore.deleteNotifications(school.id, [toParent.id]), 0);
+
+    // The reconcile flow can OPT IN to seeing deleted rows (the school's
+    // "keep deleted reminders forwardable" setting): includeDeleted restores
+    // them for staff without touching the default inbox view.
+    const withDeleted = await demoStore.listNotifications(school.id, admin.id, {
+      includeDeleted: true,
+    });
+    assert.deepEqual(
+      withDeleted.map((n) => n.subject).sort(),
+      ["Parent copy", "Student copy"],
+      "includeDeleted shows soft-deleted rows to staff"
+    );
+    assert.deepEqual(
+      (await demoStore.listNotifications(school.id, admin.id)).map((n) => n.subject),
+      [],
+      "the default staff view still hides them"
+    );
+  });
+
+  it("auto-archives notifications older than the school's retention window", async () => {
+    const fresh = await demoStore.createNotification({
+      schoolId: school.id,
+      kind: "fee_payment",
+      to: ["admin@edutrack.app"],
+      subject: "Fresh",
+      preview: "p",
+      body: "b",
+    });
+    const old = await demoStore.createNotification({
+      schoolId: school.id,
+      kind: "fee_reminder",
+      to: ["admin@edutrack.app"],
+      subject: "Old",
+      preview: "p",
+      body: "b",
+    });
+    demoStore.__persistNow();
+    // Age the second one beyond the 90-day default by rewriting the snapshot
+    // (the same technique the legacy-read test uses) — createNotification
+    // always stamps "now".
+    const data = JSON.parse(fs.readFileSync(file, "utf8"));
+    data.notifications.find((n) => n.id === old.id).createdAt = new Date(
+      Date.now() - 200 * 24 * 60 * 60 * 1000
+    ).toISOString();
+    fs.writeFileSync(file, JSON.stringify(data));
+    demoStore.__reloadDemoStore();
+
+    // Staff inbox hides the old one, keeps the fresh one…
+    const inbox = await demoStore.listNotifications(school.id, admin.id);
+    assert.deepEqual(inbox.map((n) => n.subject), ["Fresh"], "inbox stays lean");
+    // …the archived view is the history (old only)…
+    const archived = await demoStore.listNotifications(school.id, admin.id, { view: "archived" });
+    assert.deepEqual(archived.map((n) => n.subject), ["Old"], "history is not lost");
+    // …and a parent's view is untouched by archiving.
+    const parent = await demoStore.findUserById(
+      (await demoStore.listUsers({ schoolId: school.id, role: "PARENT" }))[0].id
+    );
+    const parentList = await demoStore.listNotifications(school.id, parent.id);
+    assert.deepEqual(parentList.map((n) => n.subject).sort(), ["Fresh", "Old"]);
+
+    // Archived rows don't count toward the admin's unread total.
+    assert.equal(
+      await demoStore.markNotificationsRead(school.id, admin.id, []),
+      1,
+      "only the fresh (in-inbox) row is unread"
+    );
+
+    // The retention window is per-school and configurable: tighten it to 1
+    // day, then age the "Fresh" row to 2 days old — the same data now falls
+    // into the archive, proving the cutoff follows the school's setting.
+    await demoStore.updateSchool(school.id, { notificationRetentionDays: 1 });
+    demoStore.__persistNow();
+    const tightened = JSON.parse(fs.readFileSync(file, "utf8"));
+    tightened.notifications.find((n) => n.id === fresh.id).createdAt = new Date(
+      Date.now() - 2 * 24 * 60 * 60 * 1000
+    ).toISOString();
+    fs.writeFileSync(file, JSON.stringify(tightened));
+    demoStore.__reloadDemoStore();
+    assert.deepEqual(
+      (await demoStore.listNotifications(school.id, admin.id)).map((n) => n.subject),
+      [],
+      "1-day retention archives everything now"
+    );
+    assert.deepEqual(
+      (await demoStore.listNotifications(school.id, admin.id, { view: "archived" }))
+        .map((n) => n.subject)
+        .sort(),
+      ["Fresh", "Old"],
+      "tightened retention grows the archive"
+    );
+
+    // An admin-explicitly-deleted row never resurfaces in the archived view.
+    await demoStore.deleteNotifications(school.id, [old.id]);
+    assert.deepEqual(
+      (await demoStore.listNotifications(school.id, admin.id, { view: "archived" })).map((n) => n.subject),
+      ["Fresh"],
+      "soft-deleted rows stay hidden even from history"
+    );
+  });
+
+  it("deletions survive a simulated restart", async () => {
+    await demoStore.createNotification({
+      schoolId: school.id,
+      kind: "fee_payment",
+      to: ["admin@edutrack.app"],
+      subject: "Survivor",
+      preview: "p",
+      body: "b",
+    });
+    const doomed = await demoStore.createNotification({
+      schoolId: school.id,
+      kind: "fee_reminder",
+      to: ["admin@edutrack.app"],
+      subject: "Doomed",
+      preview: "p",
+      body: "b",
+    });
+    await demoStore.deleteNotifications(school.id, [doomed.id]);
+
+    demoStore.__persistNow();
+    demoStore.__reloadDemoStore();
+
+    const list = await demoStore.listNotifications(school.id, admin.id);
+    assert.deepEqual(list.map((n) => n.subject), ["Survivor"], "deleted stays deleted across a restart");
+  });
+
   it("notifications survive a simulated restart (persistence)", async () => {
     await demoStore.createNotification({
       schoolId: school.id,

@@ -49,3 +49,15 @@ export function matchesChildName(password, children) {
   if (!attempt) return false;
   return children.some((c) => nameSlug(c && c.name) === attempt);
 }
+
+/**
+ * Teacher login check: a teacher signs in with their full name plus the
+ * SCHOOL NAME as the password (slugged — case/spacing-insensitive), so a
+ * school rename never locks anyone out. Returns true when `password` matches
+ * the current school name.
+ */
+export function matchesSchoolName(password, schoolName) {
+  const attempt = nameSlug(password);
+  if (!attempt) return false;
+  return nameSlug(schoolName) === attempt;
+}

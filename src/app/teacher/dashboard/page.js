@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+import DashboardSkeleton from "@/components/DashboardSkeleton";
 import {
   Menu,
   Loader2,
@@ -24,6 +25,7 @@ import {
   AlarmClock,
   X,
   Printer,
+  KeyRound,
 } from "lucide-react";
 import Sidebar from "@/components/Sidebar";
 import TopStudents from "@/components/TopStudents";
@@ -70,6 +72,12 @@ export default function TeacherDashboard() {
   const [saving, setSaving] = useState(false);
   const [toast, setToast] = useState("");
   const [search, setSearch] = useState("");
+  // Change password modal — teachers bootstrap with the school name as their
+  // password, then can set their own from here.
+  const [pwModalOpen, setPwModalOpen] = useState(false);
+  const [pwForm, setPwForm] = useState({ current: "", next: "", confirm: "" });
+  const [pwSaving, setPwSaving] = useState(false);
+  const [pwError, setPwError] = useState("");
   // Add student modal
   const [addModal, setAddModal] = useState(false);
   const [addSaving, setAddSaving] = useState(false);
@@ -503,12 +511,45 @@ export default function TeacherDashboard() {
     }
   }
 
+  // Self-service password change: verify current, set new, sign the new
+  // session in (other sessions are revoked server-side).
+  async function savePassword() {
+    setPwError("");
+    if (!pwForm.current || !pwForm.next) {
+      setPwError("Please fill in your current and new password.");
+      return;
+    }
+    if (pwForm.next.length < 6) {
+      setPwError("New password must be at least 6 characters.");
+      return;
+    }
+    if (pwForm.next !== pwForm.confirm) {
+      setPwError("The two new-password fields don't match.");
+      return;
+    }
+    setPwSaving(true);
+    try {
+      const res = await fetch("/api/auth/change-password", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ currentPassword: pwForm.current, newPassword: pwForm.next }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setPwError(data.error || "Could not change password.");
+        return;
+      }
+      setPwModalOpen(false);
+      setPwForm({ current: "", next: "", confirm: "" });
+      setToast("Password updated — you're now signed in with your new password.");
+      setTimeout(() => setToast(""), 4000);
+    } finally {
+      setPwSaving(false);
+    }
+  }
+
   if (loading) {
-    return (
-      <main className="flex flex-1 items-center justify-center bg-navy-50">
-        <Loader2 className="h-8 w-8 animate-spin text-brand-600" />
-      </main>
-    );
+    return <DashboardSkeleton />;
   }
 
   return (
@@ -544,6 +585,16 @@ export default function TeacherDashboard() {
             <span className="hidden items-center gap-1.5 rounded-full bg-brand-50 px-3 py-1 text-xs font-semibold text-brand-700 ring-1 ring-brand-600/20 sm:flex">
               <ShieldCheck className="h-3.5 w-3.5" /> Teacher
             </span>
+            <button
+              onClick={() => {
+                setPwError("");
+                setPwModalOpen(true);
+              }}
+              title="Change password"
+              className="rounded-lg p-2 text-navy-500 transition hover:bg-navy-50 hover:text-navy-700"
+            >
+              <KeyRound className="h-4.5 w-4.5" />
+            </button>
             <div className="flex h-9 w-9 items-center justify-center rounded-full bg-gradient-to-br from-brand-500 to-brand-700 text-sm font-bold text-white">
               {session.user.name.split(" ").map((w) => w[0]).join("").slice(0, 2).toUpperCase()}
             </div>
@@ -1289,6 +1340,74 @@ export default function TeacherDashboard() {
         attendance={reportPayload?.attendance}
         fileName={reportPayload?.student?.name?.toLowerCase().replace(/[^a-z]+/g, "-")}
       />
+
+      {/* Change password modal — teachers bootstrap with the school name,
+          then set their own password. The hint stays here (behind auth),
+          never on the public login page. */}
+      <Modal
+        open={pwModalOpen}
+        onClose={() => {
+          if (pwSaving) return;
+          setPwModalOpen(false);
+          setPwError("");
+          setPwForm({ current: "", next: "", confirm: "" });
+        }}
+        title="Change password"
+      >
+        <div className="space-y-4">
+          <div className="flex items-start gap-2 rounded-xl border border-navy-100 bg-navy-50/60 px-4 py-3 text-sm text-navy-600">
+            <KeyRound className="mt-0.5 h-4 w-4 shrink-0 text-brand-600" />
+            <span>
+              Until you set your own password, your current password is your{" "}
+              <strong className="text-navy-700">school&apos;s name</strong>. Setting your own
+              password turns the school name off — only your password will work from then on.
+            </span>
+          </div>
+          {pwError && (
+            <p className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-2.5 text-sm font-medium text-rose-700">
+              {pwError}
+            </p>
+          )}
+          <label className="block">
+            <span className="mb-1.5 block text-sm font-medium text-navy-700">Current password</span>
+            <input
+              type="password"
+              value={pwForm.current}
+              onChange={(e) => setPwForm({ ...pwForm, current: e.target.value })}
+              placeholder="Your current password"
+              className="w-full rounded-xl border border-navy-200 bg-white px-4 py-2.5 text-sm text-navy-800 outline-none transition focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20"
+            />
+          </label>
+          <label className="block">
+            <span className="mb-1.5 block text-sm font-medium text-navy-700">New password</span>
+            <input
+              type="password"
+              value={pwForm.next}
+              onChange={(e) => setPwForm({ ...pwForm, next: e.target.value })}
+              placeholder="At least 6 characters"
+              className="w-full rounded-xl border border-navy-200 bg-white px-4 py-2.5 text-sm text-navy-800 outline-none transition focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20"
+            />
+          </label>
+          <label className="block">
+            <span className="mb-1.5 block text-sm font-medium text-navy-700">Confirm new password</span>
+            <input
+              type="password"
+              value={pwForm.confirm}
+              onChange={(e) => setPwForm({ ...pwForm, confirm: e.target.value })}
+              placeholder="Repeat the new password"
+              className="w-full rounded-xl border border-navy-200 bg-white px-4 py-2.5 text-sm text-navy-800 outline-none transition focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20"
+            />
+          </label>
+          <button
+            onClick={savePassword}
+            disabled={pwSaving}
+            className="flex w-full items-center justify-center gap-2 rounded-xl bg-brand-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-brand-700 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {pwSaving ? <Loader2 className="h-4 w-4 animate-spin" /> : <KeyRound className="h-4 w-4" />}
+            {pwSaving ? "Saving…" : "Update password"}
+          </button>
+        </div>
+      </Modal>
 
       {/* Add student modal */}
       <Modal

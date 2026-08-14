@@ -1,0 +1,67 @@
+# EduTrack — scaled deployment stack
+#
+#   app    : Next.js standalone, stateless — scale the replica count freely.
+#            Sessions are JWTs, so the load balancer needs NO stickiness.
+#   mongo  : single-node for staging; production should use Atlas/managed
+#            Mongo with a read replica (see EduTrack-Traffic-Audit.md §5).
+#   redis  : shared rate limits + auth/stats caches. REQUIRED before
+#            running more than one app replica (per-instance rate budgets).
+#
+# Bring up:  docker compose -f deploy/docker-compose.yml up -d --scale app=4
+# Deploy step: docker compose exec -T app sh -c 'npm run ensure-indexes'
+#   (against the real MONGODB_URI, not this compose Mongo, in production)
+
+services:
+  app:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    environment: &app_env
+      MONGODB_URI: ${MONGODB_URI:-mongodb://mongo:27017/edutrack}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379}
+      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in .env}
+      NODE_ENV: production
+      # 25–50 per instance: N instances × pool must fit inside Mongo's
+      # connection budget (8 × 100 = 800 would exhaust a small tier).
+      MONGODB_POOL_SIZE: ${MONGODB_POOL_SIZE:-25}
+      # Native bcrypt runs compares on libuv threads — this is its pool.
+      UV_THREADPOOL_SIZE: "8"
+      RUN_JOBS: ${RUN_JOBS:-primary}   # "primary" on exactly ONE replica, "none" on the rest
+      SENTRY_DSN: ${SENTRY_DSN:-}
+      SENTRY_AUTH_TOKEN: ${SENTRY_AUTH_TOKEN:-}
+    ports:
+      - "3000:3000"
+    deploy:
+      replicas: ${APP_REPLICAS:-2}
+    depends_on:
+      mongo:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # Production: use Atlas/managed Mongo instead of this staging node.
+  mongo:
+    image: mongo:8
+    volumes:
+      - mongo-data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.runCommand({ping:1}).ok"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  redis:
+    image: redis:7-alpine
+    command: redis-server --appendonly yes
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  mongo-data:
+  redis-data:

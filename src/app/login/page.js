@@ -21,6 +21,7 @@ import {
   Check,
   Building2,
   ChevronRight,
+  User,
 } from "lucide-react";
 import Logo from "@/components/Logo";
 
@@ -39,9 +40,13 @@ const DEMO_CREDENTIALS = [
   { role: "SUPER_ADMIN", email: "admin@edutrack.app", password: "admin123" },
   { role: "BURSAR", email: "bursar@edutrack.app", password: "bursar123" },
   { role: "REGISTRAR", email: "registrar@edutrack.app", password: "registrar123" },
-  { role: "TEACHER", email: "a.okafor@edutrack.app", password: "teacher123" },
+  // Teachers sign in with their NAME + the SCHOOL NAME as the password — the
+  // seeded teacher's password is the demo school's name.
+  { role: "TEACHER", name: "Mrs. Adaeze Okafor", password: "Greenfield International School" },
   { role: "STUDENT", email: "k.adebayo@edutrack.app", password: "student123" },
-  { role: "PARENT", email: "p.adebayo@edutrack.app", password: "parent123" },
+  // Parents sign in with their NAME + any child's full name as the password
+  // — the seed parent's password is her son's name, Kunle Adebayo.
+  { role: "PARENT", name: "Mrs. Folake Adebayo", password: "Kunle Adebayo" },
 ];
 
 const SCHOOL_KEY = "edutrack_last_school";
@@ -54,7 +59,7 @@ export default function LoginPage() {
   const [results, setResults] = useState([]);
   const [searching, setSearching] = useState(false);
   const [role, setRole] = useState("SUPER_ADMIN");
-  const [form, setForm] = useState({ email: "", password: "" });
+  const [form, setForm] = useState({ email: "", name: "", password: "" });
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const searchDebounce = useRef(null);
@@ -157,7 +162,7 @@ export default function LoginPage() {
   function fillDemo(demo) {
     selectSchool(DEMO_SCHOOL);
     setRole(demo.role);
-    setForm({ email: demo.email, password: demo.password });
+    setForm({ email: demo.email || "", name: demo.name || "", password: demo.password });
   }
 
   async function handleSubmit(e) {
@@ -335,54 +340,6 @@ export default function LoginPage() {
                   </div>
                 </div>
 
-                {/* Frozen / deleted-school notice — shown BEFORE credentials are
-                    typed so staff see why they can't sign in. The SUPER_ADMIN is
-                    the exception (they can still sign in to reactivate or restore),
-                    so the wording adapts to the selected portal role. */}
-                {schoolStatus && (
-                  <div
-                    className={`mt-4 flex items-start gap-2.5 rounded-xl border px-4 py-3 ${
-                      schoolStatus === "frozen" ? "border-amber-200 bg-amber-50" : "border-rose-200 bg-rose-50"
-                    }`}
-                  >
-                    <Info
-                      className={`mt-0.5 h-4 w-4 shrink-0 ${schoolStatus === "frozen" ? "text-amber-600" : "text-rose-600"}`}
-                    />
-                    {schoolStatus === "frozen" ? (
-                      <p className="text-sm leading-relaxed text-amber-900">
-                        {role === "SUPER_ADMIN" ? (
-                          <>
-                            <strong>{school.name}</strong>&apos;s account is currently deactivated —
-                            staff and student sign-ins are blocked. As the school administrator you
-                            can still sign in to reactivate it.
-                          </>
-                        ) : (
-                          <>
-                            <strong>{school.name}</strong>&apos;s account is currently deactivated —
-                            staff and student sign-ins are blocked. Please contact your school
-                            administrator to reactivate it.
-                          </>
-                        )}
-                      </p>
-                    ) : (
-                      <p className="text-sm leading-relaxed text-rose-900">
-                        {role === "SUPER_ADMIN" ? (
-                          <>
-                            <strong>{school.name}</strong> was deleted and is pending permanent
-                            removal. Its data is kept for 30 days — as the school administrator you
-                            can still sign in to restore it.
-                          </>
-                        ) : (
-                          <>
-                            <strong>{school.name}</strong> was deleted and is pending permanent
-                            removal. Please contact your school administrator to restore it.
-                          </>
-                        )}
-                      </p>
-                    )}
-                  </div>
-                )}
-
                 <h1 className="mt-5 text-2xl font-extrabold tracking-tight text-navy-800">Welcome back</h1>
                 <p className="mt-1.5 text-sm text-navy-500">Choose your portal and sign in.</p>
 
@@ -405,19 +362,40 @@ export default function LoginPage() {
                 </div>
 
                 <form onSubmit={handleSubmit} className="mt-5 space-y-4">
-                  <label className="block">
-                    <span className="mb-1.5 block text-sm font-medium text-navy-700">Email</span>
-                    <div className="relative">
-                      <Mail className="pointer-events-none absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-navy-300" />
-                      <input
-                        type="email"
-                        value={form.email}
-                        onChange={(e) => setForm({ ...form, email: e.target.value })}
-                        placeholder="you@school.edu"
-                        className="w-full rounded-xl border border-navy-200 bg-white py-3 pl-11 pr-4 text-sm text-navy-800 outline-none transition placeholder:text-navy-300 focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20"
-                      />
-                    </div>
-                  </label>
+                  {role === "PARENT" || role === "TEACHER" ? (
+                    <label className="block">
+                      <span className="mb-1.5 block text-sm font-medium text-navy-700">
+                        {role === "TEACHER" ? "Teacher full name" : "Parent full name"}
+                      </span>
+                      <div className="relative">
+                        <User className="pointer-events-none absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-navy-300" />
+                        <input
+                          value={form.name}
+                          onChange={(e) => setForm({ ...form, name: e.target.value })}
+                          placeholder={
+                            role === "TEACHER"
+                              ? "The name your school used for you"
+                              : "The name your school used to link you"
+                          }
+                          className="w-full rounded-xl border border-navy-200 bg-white py-3 pl-11 pr-4 text-sm text-navy-800 outline-none transition placeholder:text-navy-300 focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20"
+                        />
+                      </div>
+                    </label>
+                  ) : (
+                    <label className="block">
+                      <span className="mb-1.5 block text-sm font-medium text-navy-700">Email</span>
+                      <div className="relative">
+                        <Mail className="pointer-events-none absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-navy-300" />
+                        <input
+                          type="email"
+                          value={form.email}
+                          onChange={(e) => setForm({ ...form, email: e.target.value })}
+                          placeholder="you@school.edu"
+                          className="w-full rounded-xl border border-navy-200 bg-white py-3 pl-11 pr-4 text-sm text-navy-800 outline-none transition placeholder:text-navy-300 focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20"
+                        />
+                      </div>
+                    </label>
+                  )}
                   <label className="block">
                     <span className="mb-1.5 block text-sm font-medium text-navy-700">Password</span>
                     <div className="relative">
@@ -430,7 +408,70 @@ export default function LoginPage() {
                         className="w-full rounded-xl border border-navy-200 bg-white py-3 pl-11 pr-4 text-sm text-navy-800 outline-none transition placeholder:text-navy-300 focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20"
                       />
                     </div>
+                    {/* Deliberately NO hints for parents or teachers: the
+                        login scheme stays private on this public page — the
+                        school admin communicates how to sign in (via the link
+                        modal, Login Details exports, and in person). A hint
+                        like "your child's name" or "your school's name" would
+                        let anyone try guessed names against those passwords. */}
                   </label>
+                  {/* Frozen / deleted-school notice — shares the spot above
+                      the sign-in button with the submit error, so every
+                      blocking message is read in one place. The SUPER_ADMIN is
+                      the exception (they can still sign in to reactivate or
+                      restore), so the wording adapts to the selected role. */}
+                  {schoolStatus && (
+                    <div
+                      className={`flex items-start gap-2.5 rounded-xl border px-4 py-3 ${
+                        schoolStatus === "frozen" ? "border-amber-200 bg-amber-50" : "border-rose-200 bg-rose-50"
+                      }`}
+                    >
+                      <Info
+                        className={`mt-0.5 h-4 w-4 shrink-0 ${schoolStatus === "frozen" ? "text-amber-600" : "text-rose-600"}`}
+                      />
+                      {schoolStatus === "frozen" ? (
+                        <p className="text-sm leading-relaxed text-amber-900">
+                          {role === "SUPER_ADMIN" ? (
+                            <>
+                              <strong>{school.name}</strong>&apos;s account is currently deactivated —
+                              staff and student sign-ins are blocked. As the school administrator you
+                              can still sign in to reactivate it.
+                            </>
+                          ) : (
+                            <>
+                              <strong>{school.name}</strong>&apos;s account is currently deactivated —
+                              staff and student sign-ins are blocked. Please contact your school
+                              administrator to reactivate it.
+                            </>
+                          )}
+                        </p>
+                      ) : (
+                        <p className="text-sm leading-relaxed text-rose-900">
+                          {role === "SUPER_ADMIN" ? (
+                            <>
+                              <strong>{school.name}</strong> was deleted and is pending permanent
+                              removal. Its data is kept for 30 days — as the school administrator you
+                              can still sign in to restore it.
+                            </>
+                          ) : (
+                            <>
+                              <strong>{school.name}</strong> was deleted and is pending permanent
+                              removal. Please contact your school administrator to restore it.
+                            </>
+                          )}
+                        </p>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Shared error — directly above the sign-in button so it's
+                      the last thing scanned before submitting: easy to spot
+                      and read for every portal's login failure. */}
+                  {error && (
+                    <div className="rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-medium text-rose-700">
+                      {error}
+                    </div>
+                  )}
                   <button
                     type="submit"
                     disabled={loading}
@@ -467,7 +508,7 @@ export default function LoginPage() {
                             {ROLES.find((r) => r.key === d.role)?.label}
                           </span>
                           <span className="flex items-center gap-2 text-navy-400">
-                            <span>{d.email}</span>
+                            <span>{d.name || d.email}</span>
                             <Check className="h-3 w-3 text-emerald-500" />
                           </span>
                         </button>
@@ -478,12 +519,6 @@ export default function LoginPage() {
               </div>
             )}
 
-            {/* Shared error (credentials step) */}
-            {error && (
-              <div className="mt-4 rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-medium text-rose-700">
-                {error}
-              </div>
-            )}
           </div>
 
           <p className="mt-6 text-center text-sm text-navy-500">

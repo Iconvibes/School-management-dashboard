@@ -88,7 +88,7 @@ model keeps each request cheap: no request scans another tenant.
 | Ceiling | Where | Crossing step | When |
 |---|---|---|---|
 | **Demo store** (in-memory arrays, whole-file sync writes) | `src/lib/demo-store.js` | Set `MONGODB_URI`; demo mode is for demos and tests, never production | Before any real rollout |
-| **Rate limiter is per-instance** (in-memory `Map`) | `src/lib/rate-limit.js` | Swap the bucket map for Redis behind the same `checkRateLimit()` interface | The moment you run ≥2 app instances |
+| **Rate limiter** | `src/lib/rate-limit.js` | DONE: `checkRateLimit` is Redis-backed (shared per-IP/account/school budgets when `REDIS_URL` is set) with an in-memory fallback for demo/tests and Redis outages | — |
 | **Notification polling: 30s × every admin** | `NotificationsBell.js` | Replace the poll with SSE/WebSocket push (or lengthen the interval) — at 10k users, 330 req/s of polling alone eats a third of one instance | ~3,000+ concurrent admins |
 | **Roster tab loads the whole school** | admin dashboard → `GET /api/users` | The API now supports paging — flip the dashboard to `?limit=200&offset=` + `total`-aware UI | A school exceeds ~1–2k students |
 | **Whole-school views** (`reports` with no `classArm`, stats) | `src/app/api/reports/route.js` | These are inherently whole-school; scope by arm in the UI, or move the school's aggregate to a precomputed rollup | 10k students in ONE school |
@@ -109,7 +109,7 @@ Browser ──► CDN / WAF (caching for marketing pages)
         └─────┬─────┘
               ▼
         MongoDB (shared, indexed)
-        + Redis (rate limits, future SSE fan-out)
+        + Redis (shared rate limits + caches, future SSE fan-out)
         + object storage (backups — see docs/disaster-recovery.md)
 ```
 

@@ -47,6 +47,21 @@ const schoolSchema = new mongoose.Schema(
     // onboarding steps (classes, session/term, branding). Once true, visiting
     // /onboarding sends them straight to the admin dashboard instead.
     onboardingComplete: { type: Boolean, default: false },
+    // Per-school fee-reminder wording: { parent, student } templates with
+    // {name}/{student}/{class}/{balance}/{school} placeholders. Blank = the
+    // built-in copy (see src/lib/notifications.js). Set via
+    // /api/school/reminder-templates and auto-saved by the Send reminder flow.
+    reminderTemplates: { type: mongoose.Schema.Types.Mixed, default: undefined },
+    // How old a notification must be (in days) before the admin inbox
+    // auto-archives it — age-based, so the inbox stays lean while history
+    // remains viewable from the bell's Archived tab. Parent/student reminder
+    // copies are never affected.
+    notificationRetentionDays: { type: Number, default: 90, min: 1, max: 3650 },
+    // Whether reminders the admin deleted from the inbox should STILL appear
+    // in the Reconcile & forward list (eligible to be forwarded once the
+    // student's parent is linked). Default false: deleted means hidden from
+    // every staff view, including reconcile.
+    reconcileDeletedReminders: { type: Boolean, default: false },
   },
   {
     timestamps: true,

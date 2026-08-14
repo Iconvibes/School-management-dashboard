@@ -28,13 +28,21 @@ import { buildFeeReminder } from "@/lib/notifications";
  * Shared collector: every un-reconciled, student-addressed fee reminder for
  * a student who NOW has a linked parent. Used by GET (preview) and POST
  * (forward) so the filter rules can never drift between the two.
+ *
+ * The school's `reconcileDeletedReminders` setting decides whether reminders
+ * the admin deleted from the inbox (soft-deleted) still appear here — off by
+ * default (deleted means hidden from every staff view), on keeps them
+ * eligible for forwarding once the parent is linked.
  */
 async function collectPending(schoolId, userId, balanceByStudentId) {
-  const [all, students, parents] = await Promise.all([
-    store.listNotifications(schoolId, userId),
+  const [school, students, parents] = await Promise.all([
+    store.getSchoolById(schoolId),
     store.listUsers({ schoolId, role: "STUDENT" }),
     store.listUsers({ schoolId, role: "PARENT" }),
   ]);
+  const all = await store.listNotifications(schoolId, userId, {
+    includeDeleted: school?.reconcileDeletedReminders === true,
+  });
 
   const parentById = Object.fromEntries(parents.map((p) => [p.id, p]));
   const remindersByStudent = new Map();
@@ -135,6 +143,8 @@ export async function POST() {
       balance: amount,
       schoolName: school?.name,
       recipient: "parent",
+      // The forwarded copy uses the school's saved parent wording.
+      message: school?.reminderTemplates?.parent,
     });
 
     try {

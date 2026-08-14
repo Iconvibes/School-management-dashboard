@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   AlertTriangle,
+  Archive,
   Bell,
   BellRing,
   CheckCheck,
@@ -11,6 +12,7 @@ import {
   Mail,
   MailPlus,
   Send,
+  Trash2,
   Wallet,
 } from "lucide-react";
 import Modal from "@/components/Modal";
@@ -53,11 +55,13 @@ function nextDueLabel(pref) {
 /**
  * Admin inbox bell — mounted in the sidebar so it's visible on every admin
  * page, not just the dashboard. Polls /api/notifications; unread shows as a
- * badge. The modal has two tabs:
- *   - Inbox:  each notification rendered like a short email
- *   - Digest: the admin's OWN digest schedule (off/daily/weekly), a "send
- *             now" that composes from THEIR unread items, and the history of
- *             digests sent. Both schedule and content are per admin.
+ * badge. The modal has three tabs:
+ *   - Inbox:    each notification rendered like a short email
+ *   - Archived: history — notifications older than the school's retention
+ *               window, so auto-archive never means lost data
+ *   - Digest:   the admin's OWN digest schedule (off/daily/weekly), a "send
+ *               now" that composes from THEIR unread items, and the history
+ *               of digests sent. Both schedule and content are per admin.
  */
 export default function NotificationsBell() {
   const [open, setOpen] = useState(false);
@@ -66,6 +70,8 @@ export default function NotificationsBell() {
   const [unread, setUnread] = useState(0);
   const [loading, setLoading] = useState(true);
   const [marking, setMarking] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [confirmClear, setConfirmClear] = useState(false);
   const [pref, setPref] = useState(null);
   const [digests, setDigests] = useState([]);
   const [digestLoading, setDigestLoading] = useState(false);
@@ -74,19 +80,24 @@ export default function NotificationsBell() {
   const [sentNow, setSentNow] = useState(null);
   const timerRef = useRef(null);
 
+  // The Archived tab asks the API for history (auto-archived = older than the
+  // school's retention window). The unread badge ALWAYS reflects the inbox
+  // view, so switching tabs can never zero the badge by accident.
   const load = useCallback(async () => {
     try {
-      const res = await fetch("/api/notifications");
+      const res = await fetch(
+        tab === "archived" ? "/api/notifications?view=archived" : "/api/notifications"
+      );
       if (!res.ok) return;
       const body = await res.json();
       setNotifications(body.notifications || []);
-      setUnread(body.unread || 0);
+      if (tab === "inbox") setUnread(body.unread || 0);
     } catch {
       // The inbox is best-effort — never break the sidebar on a fetch failure.
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [tab]);
 
   const loadDigest = useCallback(async () => {
     try {
@@ -134,6 +145,12 @@ export default function NotificationsBell() {
     setSentNow(null);
   }
 
+  function closeModal() {
+    setOpen(false);
+    // Un-arm "Clear all" so a fresh open never wipes the inbox by accident.
+    setConfirmClear(false);
+  }
+
   async function markAllRead() {
     if (unread === 0) return;
     setMarking(true);
@@ -151,6 +168,53 @@ export default function NotificationsBell() {
       }
     } finally {
       setMarking(false);
+    }
+  }
+
+  // Permanently remove one notification. Unread state updates locally so the
+  // badge and the list stay in sync without a full refetch.
+  async function deleteOne(id) {
+    if (deleting) return;
+    setDeleting(true);
+    try {
+      const target = notifications.find((n) => n.id === id);
+      const res = await fetch("/api/notifications/delete", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ids: [id] }),
+      });
+      if (res.ok) {
+        setNotifications((ns) => ns.filter((n) => n.id !== id));
+        if (target && !target.read) setUnread((u) => Math.max(0, u - 1));
+      }
+    } finally {
+      setDeleting(false);
+    }
+  }
+
+  // Empty the whole inbox. Destructive, so it arms on the first click and
+  // only fires on the second — a misclick can't wipe the inbox.
+  async function clearAll() {
+    if (deleting) return;
+    if (!confirmClear) {
+      setConfirmClear(true);
+      return;
+    }
+    setDeleting(true);
+    try {
+      const ids = notifications.map((n) => n.id);
+      const res = await fetch("/api/notifications/delete", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ids }),
+      });
+      if (res.ok) {
+        setNotifications([]);
+        setUnread(0);
+        setConfirmClear(false);
+      }
+    } finally {
+      setDeleting(false);
     }
   }
 
@@ -210,11 +274,12 @@ export default function NotificationsBell() {
         )}
       </button>
 
-      <Modal open={open} onClose={() => setOpen(false)} title="Notifications" wide>
+      <Modal open={open} onClose={closeModal} title="Notifications" wide>
         {/* Tabs */}
         <div className="mb-5 flex gap-1 rounded-xl bg-navy-50 p-1">
           {[
             { key: "inbox", label: "Inbox", icon: Inbox },
+            { key: "archived", label: "Archived", icon: Archive },
             { key: "digest", label: "Digest", icon: MailPlus },
           ].map(({ key, label, icon: Icon }) => (
             <button
@@ -232,38 +297,68 @@ export default function NotificationsBell() {
           ))}
         </div>
 
-        {tab === "inbox" ? (
+        {tab === "inbox" || tab === "archived" ? (
           loading ? (
             <div className="flex justify-center py-10">
               <Loader2 className="h-6 w-6 animate-spin text-navy-300" />
             </div>
           ) : notifications.length === 0 ? (
             <div className="py-10 text-center">
-              <Inbox className="mx-auto h-10 w-10 text-navy-200" />
-              <p className="mt-3 text-sm font-semibold text-navy-600">No notifications yet</p>
+              {tab === "archived" ? (
+                <Archive className="mx-auto h-10 w-10 text-navy-200" />
+              ) : (
+                <Inbox className="mx-auto h-10 w-10 text-navy-200" />
+              )}
+              <p className="mt-3 text-sm font-semibold text-navy-600">
+                {tab === "archived" ? "No archived notifications" : "No notifications yet"}
+              </p>
               <p className="mt-1 text-xs text-navy-400">
-                Payment submissions from the parent portal will show up here.
+                {tab === "archived"
+                  ? "Notifications older than your school's retention window appear here — nothing is ever deleted."
+                  : "Payment submissions from the parent portal will show up here."}
               </p>
             </div>
           ) : (
             <div className="space-y-3">
-              <div className="flex items-center justify-between">
-                <p className="text-xs font-medium text-navy-400">
-                  {unread > 0 ? `${unread} unread` : "All caught up"}
-                </p>
-                <button
-                  onClick={markAllRead}
-                  disabled={marking || unread === 0}
-                  className="inline-flex items-center gap-1.5 rounded-lg border border-navy-200 px-3 py-1.5 text-xs font-semibold text-navy-600 transition hover:border-brand-300 hover:text-brand-600 disabled:opacity-50"
-                >
-                  {marking ? (
-                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                  ) : (
-                    <CheckCheck className="h-3.5 w-3.5" />
-                  )}
-                  Mark all read
-                </button>
-              </div>
+              {tab === "inbox" && (
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <p className="text-xs font-medium text-navy-400">
+                    {unread > 0 ? `${unread} unread` : "All caught up"}
+                  </p>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={markAllRead}
+                      disabled={marking || unread === 0}
+                      className="inline-flex items-center gap-1.5 rounded-lg border border-navy-200 px-3 py-1.5 text-xs font-semibold text-navy-600 transition hover:border-brand-300 hover:text-brand-600 disabled:opacity-50"
+                    >
+                      {marking ? (
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      ) : (
+                        <CheckCheck className="h-3.5 w-3.5" />
+                      )}
+                      Mark all read
+                    </button>
+                    <button
+                      onClick={clearAll}
+                      disabled={deleting || notifications.length === 0}
+                      className={`inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-semibold transition disabled:opacity-50 ${
+                        confirmClear
+                          ? "border-rose-300 bg-rose-50 text-rose-700 hover:border-rose-400"
+                          : "border-navy-200 text-navy-600 hover:border-rose-300 hover:text-rose-600"
+                      }`}
+                    >
+                      {deleting ? (
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      ) : (
+                        <Trash2 className="h-3.5 w-3.5" />
+                      )}
+                      {confirmClear
+                        ? `Click again to clear ${notifications.length}`
+                        : "Clear all"}
+                    </button>
+                  </div>
+                </div>
+              )}
 
               {notifications.map((n) => {
                 const Icon = KIND_ICON[n.kind] || Mail;
@@ -291,7 +386,17 @@ export default function NotificationsBell() {
                           >
                             {n.subject}
                           </p>
-                          <span className="shrink-0 text-[11px] text-navy-400">{timeAgo(n.createdAt)}</span>
+                          <span className="flex shrink-0 items-center gap-1">
+                            <span className="text-[11px] text-navy-400">{timeAgo(n.createdAt)}</span>
+                            <button
+                              onClick={() => deleteOne(n.id)}
+                              disabled={deleting}
+                              title="Delete this notification"
+                              className="rounded-md p-1 text-navy-300 transition hover:bg-rose-50 hover:text-rose-600 disabled:opacity-50"
+                            >
+                              <Trash2 className="h-3.5 w-3.5" />
+                            </button>
+                          </span>
                         </div>
                         <p className="mt-0.5 truncate text-xs text-navy-500">{n.preview}</p>
                         {/* break-words: long unbroken email addresses must wrap

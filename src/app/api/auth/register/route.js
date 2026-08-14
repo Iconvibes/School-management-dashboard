@@ -5,7 +5,7 @@ import { checkRateLimit } from "@/lib/rate-limit";
 
 export async function POST(request) {
   // New-tenant guard: 5 school registrations per IP per hour.
-  const limited = checkRateLimit({
+  const limited = await checkRateLimit({
     request,
     windowMs: 60 * 60 * 1000,
     max: 5,

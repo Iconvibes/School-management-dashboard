@@ -23,6 +23,32 @@ export async function PATCH(request, { params }) {
     return jsonError("Registrars can only edit student and parent records", 403);
   }
 
+  // A parent's or teacher's full name doubles as their login identifier
+  // (name-based login) — renaming them to a name that already belongs to
+  // ANOTHER account of the same role in the school would make that login
+  // ambiguous: the name lookup returns one match and the other account is
+  // shadowed. Reject the rename; renaming to their OWN current name resolves
+  // to the same record and stays allowed. Role- and tenant-scoped, mirroring
+  // the create guards on the POST route.
+  if (body.name !== undefined && target.role === "PARENT") {
+    const clash = await store.findParentByNameInSchool(session.schoolId, body.name);
+    if (clash && clash.id !== target.id) {
+      return jsonError(
+        `A parent named "${String(body.name).trim()}" already exists in your school.`,
+        409
+      );
+    }
+  }
+  if (body.name !== undefined && target.role === "TEACHER") {
+    const clash = await store.findTeacherByNameInSchool(session.schoolId, body.name);
+    if (clash && clash.id !== target.id) {
+      return jsonError(
+        `A teacher named "${String(body.name).trim()}" already exists in your school.`,
+        409
+      );
+    }
+  }
+
   // Teaching assignments (subjects × arms) are SUPER_ADMIN-only — they define
   // a teacher's classroom scope, so they stay with the console owner. The
   // field-level mayEditUser guard already keeps REGISTRAR off teacher records;

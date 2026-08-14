@@ -25,6 +25,7 @@ import {
 
 const DOMAIN = schoolDomain("Greenfield International School");
 import * as demoStore from "../src/lib/demo-store.js";
+import { matchesChildName } from "../src/lib/passwords.js";
 
 let school;
 let existingUsers;
@@ -260,7 +261,7 @@ describe("planImport (students)", () => {
     assert.ok(p.plans[0].error.includes("Parent name"));
   });
 
-  it("gives new parents the row password when no default is set", () => {
+  it("creates name-only parents: no email, placeholder password (child name wins)", () => {
     const { rows } = parseRows(
       "STUDENT",
       "name,class,password,parent name,parent phone\n" +
@@ -273,13 +274,18 @@ describe("planImport (students)", () => {
       activeArms: school.activeArms,
       existingUsers,
       existingParents,
-      defaultPassword: "", // no default -> the row's own password must be used
+      defaultPassword: "", // parents never take a row/default password now
       createArms: true,
     });
     assert.equal(p.summary.ok, 1);
     const parent = p.parentRefs.find((r) => r.isNew);
     assert.ok(parent);
-    assert.equal(parent.password, "secret99");
+    // Name-only parent: NO generated email, and the password is a transient
+    // placeholder — the real password becomes the linked child's name the
+    // moment the student is linked (the store's parent-link sync).
+    assert.equal(parent.email, "");
+    assert.notEqual(parent.password, "secret99");
+    assert.ok(parent.password.length >= 6);
   });
 });
 
@@ -379,7 +385,7 @@ describe("splitList", () => {
 });
 
 describe("buildCredentials", () => {
-  it("includes ok rows and newly created parents only", () => {
+  it("shows linked children's names as parent passwords (same as the modal)", () => {
     const { rows } = parseRows(
       "STUDENT",
       "name,class,parent name,parent phone\n" +
@@ -389,8 +395,13 @@ describe("buildCredentials", () => {
     const p = plan(rows);
     const creds = buildCredentials("STUDENT", p.plans, p.parentRefs);
     assert.equal(creds.length, 3); // 2 students + 1 new parent
-    assert.ok(creds.every((c) => c.password === "edutrack123"));
-    assert.ok(creds.some((c) => c.role === "PARENT"));
+    const parent = creds.find((c) => c.role === "PARENT");
+    assert.ok(parent);
+    // The parent signs in with their name + ANY linked child's full name —
+    // the credentials sheet says exactly that (no generated email, no
+    // meaningless default password).
+    assert.equal(parent.email, "");
+    assert.equal(parent.password, "Chidinma Obi");
   });
 });
 
@@ -441,6 +452,15 @@ describe("applyImport (demo store)", () => {
 
     // The ghost row was not created.
     assert.ok(!students.some((s) => s.name === "Ghost Row"));
+
+    // Name-only parents: no email, and their login password is the linked
+    // child's name — verified through the real store (the same path the
+    // login route uses via matchesChildName).
+    assert.equal(suleiman.email, "");
+    const children = await demoStore.getChildren(suleiman.id);
+    assert.equal(children.length, 2);
+    assert.equal(matchesChildName("Amina Suleiman", children), true);
+    assert.equal(matchesChildName("Halima Suleiman", children), true);
   });
 
   it("imports teachers with PENDING payroll", async () => {

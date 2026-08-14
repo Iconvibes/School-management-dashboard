@@ -13,7 +13,7 @@ const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
  */
 export async function POST(request) {
   // Public form guard: 10 demo requests per IP per 15 minutes.
-  const limited = checkRateLimit({
+  const limited = await checkRateLimit({
     request,
     windowMs: 15 * 60 * 1000,
     max: 10,

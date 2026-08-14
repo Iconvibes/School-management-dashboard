@@ -1,4 +1,4 @@
-import bcrypt from "bcryptjs";
+import bcrypt from "bcrypt";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -11,6 +11,7 @@ import {
 import { DAYS, DEFAULT_PERIOD_TIMES } from "@/lib/timetable";
 import { armAlreadyExists } from "@/lib/arms";
 import { nameSlug } from "@/lib/passwords";
+import { STAFF_ROLES } from "@/lib/permissions";
 
 /**
  * In-memory store used when MONGODB_URI is not set (demo mode).
@@ -39,12 +40,23 @@ const conflictScans = [];
 // the live tables start fresh each term; this is the durable record of what
 // the old term held. Rows are keyed by (schoolId, session, term, kind).
 const termArchives = [];
+// Unpaid fee balances carried from a previous term into a new one (created at
+// term rollover). The carried amount is ADDED to the student's new-term fee:
+// ledger billed = structure amount + carryover. Keyed by (schoolId, studentId,
+// session, term).
+const feeCarryovers = [];
+// Recorded fee-reminder sends — the idempotency record that makes a retry or
+// a double rollover incapable of notifying the same parent twice. Keyed by
+// (schoolId, kind, key): manual sends use a client batchId, rollover sends a
+// deterministic "rollover:<session>:<term>" key.
+const reminderBatches = [];
 let receiptSeq = 1000;
 
 // Cost 4 instead of production's 10: this is the in-memory DEMO store, and
 // bcrypt.cost is only in the stored hash — login verification via bcrypt.compare
-// works regardless. It keeps demo imports of ~1000 accounts snappy while
-// bcryptjs at cost 10 would block the event loop for over a minute.
+// works regardless. It keeps demo imports of ~1000 accounts snappy (the
+// sync hash here is a few ms at cost 4; production uses async cost-10
+// compares, which run on libuv threads off the main thread).
 const hash = (pw) => bcrypt.hashSync(pw, 4);
 
 const nowIso = () => new Date().toISOString();
@@ -123,6 +135,8 @@ function dump() {
     scores,
     feeStructures,
     feePayments,
+    feeCarryovers,
+    reminderBatches,
     attendance,
     leads: leads.map(encryptLead),
     notifications: notifications.map(encryptNotification),
@@ -146,6 +160,8 @@ function restore(data) {
     "scores",
     "feeStructures",
     "feePayments",
+    "feeCarryovers",
+    "reminderBatches",
     "attendance",
     "leads",
     "notifications",
@@ -209,6 +225,14 @@ function restore(data) {
   feeStructures.push(...data.feeStructures);
   feePayments.length = 0;
   feePayments.push(...data.feePayments);
+  feeCarryovers.length = 0;
+  // Backward-compatible: snapshots written before carryover existed load with
+  // none (an old snapshot simply had no carried balances to restore).
+  feeCarryovers.push(...(data.feeCarryovers || []));
+  reminderBatches.length = 0;
+  // Same backward-compat: old snapshots have no batch records — fine, sends
+  // before this feature simply have no idempotency record to replay.
+  reminderBatches.push(...(data.reminderBatches || []));
   attendance.length = 0;
   attendance.push(...data.attendance);
   leads.length = 0;
@@ -299,6 +323,8 @@ function seed() {
     logoUrl: "",
     sealUrl: "",
     brandColor: "#2563EB",
+    notificationRetentionDays: 90,
+    reconcileDeletedReminders: false,
     // "active" | "frozen" — a frozen school blocks every non-super-admin
     // login while keeping all data (see setSchoolStatus).
     status: "active",
@@ -962,6 +988,7 @@ function clearAll() {
   classAlertPrefs.length = 0;
   conflictScans.length = 0;
   termArchives.length = 0;
+  reminderBatches.length = 0;
 }
 
 /**
@@ -1059,6 +1086,8 @@ export async function createSchoolAndAdmin({ schoolName, adminName, email, passw
     logoUrl: "",
     sealUrl: "",
     brandColor: "#2563EB",
+    notificationRetentionDays: 90,
+    reconcileDeletedReminders: false,
     // New schools start active; the founding admin can freeze the account
     // later from the dashboard danger zone (soft deactivation).
     status: "active",
@@ -1067,6 +1096,10 @@ export async function createSchoolAndAdmin({ schoolName, adminName, email, passw
     currentTerm: "First Term",
     // A fresh registration has NOT run the first-run wizard yet.
     onboardingComplete: false,
+    // Per-school fee-reminder wording: { parent, student } templates with
+    // {name}/{student}/{class}/{balance}/{school} placeholders. Blank = the
+    // built-in copy (see src/lib/notifications.js).
+    reminderTemplates: {},
     createdAt: nowIso(),
   };
   schools.push(school);
@@ -1102,6 +1135,43 @@ export async function findUserByEmailInSchool(schoolId, email) {
       (u) => u.schoolId === schoolId && u.emailIdx === blindEmailIndex(email)
     )
   );
+}
+
+/**
+ * Find a PARENT by their full name — the name the admin typed when creating
+ * or linking them. Case-insensitive, tenant-scoped, role-filtered (a
+ * student sharing a parent's name can never be found here).
+ */
+export async function findParentByNameInSchool(schoolId, name) {
+  const norm = String(name || "").trim().toLowerCase();
+  if (!norm) return null;
+  const found = users.find(
+    (u) =>
+      u.schoolId === schoolId &&
+      u.role === "PARENT" &&
+      String(u.name || "").trim().toLowerCase() === norm
+  );
+  // null on no-match — identical contract to the Mongo store (never
+  // undefined), so the login route's `!user` check behaves the same in both.
+  return found ? clone(found) : null;
+}
+
+/**
+ * Find a TEACHER by their full name — the name the admin typed when creating
+ * them. Case-insensitive, tenant-scoped, role-filtered (a student or parent
+ * sharing a teacher's name can never be found here). Same contract as
+ * findParentByNameInSchool (null on no-match).
+ */
+export async function findTeacherByNameInSchool(schoolId, name) {
+  const norm = String(name || "").trim().toLowerCase();
+  if (!norm) return null;
+  const found = users.find(
+    (u) =>
+      u.schoolId === schoolId &&
+      u.role === "TEACHER" &&
+      String(u.name || "").trim().toLowerCase() === norm
+  );
+  return found ? clone(found) : null;
 }
 
 export async function searchSchools(search, limit = 8) {
@@ -1148,7 +1218,7 @@ export async function getSchoolById(id) {
 export async function updateSchool(id, patch) {
   const school = schools.find((s) => s.id === id);
   if (!school) return null;
-  const allowed = ["name", "logoUrl", "sealUrl", "brandColor", "activeArms", "currentSession", "currentTerm", "onboardingComplete", "periodTimes", "breakTimes", "dailySchedules"];
+  const allowed = ["name", "logoUrl", "sealUrl", "brandColor", "activeArms", "currentSession", "currentTerm", "onboardingComplete", "periodTimes", "breakTimes", "dailySchedules", "reminderTemplates", "notificationRetentionDays", "reconcileDeletedReminders"];
   allowed.forEach((k) => {
     if (patch[k] !== undefined) school[k] = patch[k];
   });
@@ -1255,12 +1325,17 @@ export async function renameArm(schoolId, from, to) {
  *      (nothing has been paid for the new term yet) and the school's
  *      currentSession/currentTerm move to the new values, so every term-scoped
  *      read (fee ledger, attendance summary) now looks at the new term.
+ *   4. CARRIES unpaid balances forward: every student whose old-term balance
+ *      was still > 0 gets a carryover row for the new term, so the new term's
+ *      billed amount = new fee + carried debt. The route sends automatic
+ *      reminders to those students/parents.
  *
  * `dryRun` returns the exact counts WITHOUT mutating anything — the UI shows
- * the preview before the SUPER_ADMIN confirms. Returns { school, counts } on
- * success, { error } for a rejected rollover, null if the school is missing.
- * counts = { scoresArchived, attendanceArchived, feesCloned, timetableCloned,
- *            studentsReset }.
+ * the preview before the SUPER_ADMIN confirms. Returns { school, counts,
+ * carryovers } on success (carryovers only for a real roll: [{ studentId,
+ * amount }]), { error } for a rejected rollover, null if the school is
+ * missing. counts = { scoresArchived, attendanceArchived, feesCloned,
+ *            timetableCloned, studentsReset, carryovers }.
  */
 export async function rolloverTerm(schoolId, { newTerm, newSession, dryRun = false }) {
   const school = schools.find((s) => s.id === schoolId);
@@ -1284,12 +1359,24 @@ export async function rolloverTerm(schoolId, { newTerm, newSession, dryRun = fal
   const ttEntries = timetable.filter((t) => t.schoolId === schoolId);
   const students = users.filter((u) => u.schoolId === schoolId && u.role === "STUDENT");
 
+  // Old-term balances are captured BEFORE the term moves — every student with
+  // a balance > 0 carries that unpaid amount into the new term, where it is
+  // ADDED to the new term's fee (the ledger computes amount = structure +
+  // carryover). Read-only, so the dry-run reports the same count.
+  const oldLedger = await getFeeLedger(schoolId);
+  const carriedBalances = new Map(
+    oldLedger.filter((l) => l.balance > 0).map((l) => [l.studentId, l.balance])
+  );
+
   const counts = {
     scoresArchived: scoreRows.length,
     attendanceArchived: attendanceRows.length,
     feesCloned: oldStructures.length,
     timetableCloned: ttEntries.length,
     studentsReset: students.length,
+    // Students whose unpaid balance rolls into the new term (each also gets
+    // an automatic reminder at the start of the new term).
+    carryovers: carriedBalances.size,
   };
   if (dryRun) return { school: clone(school), counts };
 
@@ -1384,8 +1471,27 @@ export async function rolloverTerm(schoolId, { newTerm, newSession, dryRun = fal
     u.feePaid = false;
   });
 
+  // 5. Carry each student's unpaid balance into the new term (idempotent per
+  //    student per new term — a re-roll only adds rows for students who owe
+  //    AT THIS POINT). The route sends the automatic reminders afterwards.
+  const carried = [];
+  for (const [studentId, amount] of carriedBalances) {
+    feeCarryovers.push({
+      id: nid("fco"),
+      schoolId,
+      studentId,
+      session,
+      term,
+      amount,
+      fromSession: oldSession,
+      fromTerm: oldTerm,
+      createdAt: nowIso(),
+    });
+    carried.push({ studentId, amount });
+  }
+
   persist();
-  return { school: clone(school), counts };
+  return { school: clone(school), counts, carryovers: carried };
 }
 
 /**
@@ -1415,22 +1521,28 @@ const TERM_DISPLAY_ORDER = ["First Term", "Second Term", "Third Term"];
 export async function getTermArchiveTerms(schoolId) {
   const groups = {};
   termArchives
-    // Roster snapshot rows are neither scores nor attendance registers —
-    // they must not inflate the term/arm counts.
-    .filter((a) => a.schoolId === schoolId && a.kind !== "student")
+    .filter((a) => a.schoolId === schoolId)
     .forEach((a) => {
       const key = `${a.session}||${a.term}`;
       if (!groups[key]) {
-        groups[key] = { session: a.session, term: a.term, scoreCount: 0, attendanceCount: 0, arms: {} };
+        groups[key] = { session: a.session, term: a.term, scoreCount: 0, attendanceCount: 0, students: 0, arms: {} };
       }
       const g = groups[key];
       if (a.kind === "score") g.scoreCount += 1;
       else if (a.kind === "attendance") g.attendanceCount += 1;
+      else if (a.kind === "student") {
+        // Roster snapshot: a student enrolled that term. Never counts as a
+        // score/attendance register, but it DOES prove the term existed — so
+        // a rolled-over term with zero scores/attendance (e.g. a fresh school
+        // that never keyed marks) still appears in the viewer with its cohort.
+        g.students += 1;
+      }
       if (!g.arms[a.classArm]) {
-        g.arms[a.classArm] = { classArm: a.classArm, scoreCount: 0, attendanceCount: 0 };
+        g.arms[a.classArm] = { classArm: a.classArm, scoreCount: 0, attendanceCount: 0, students: 0 };
       }
       if (a.kind === "score") g.arms[a.classArm].scoreCount += 1;
       else if (a.kind === "attendance") g.arms[a.classArm].attendanceCount += 1;
+      else if (a.kind === "student") g.arms[a.classArm].students += 1;
     });
   return Object.values(groups)
     .sort((x, y) => {
@@ -1444,6 +1556,7 @@ export async function getTermArchiveTerms(schoolId) {
       term: g.term,
       scoreCount: g.scoreCount,
       attendanceCount: g.attendanceCount,
+      students: g.students,
       arms: Object.values(g.arms).sort((a, b) => a.classArm.localeCompare(b.classArm)),
     }));
 }
@@ -1508,6 +1621,13 @@ export async function getAlumni(schoolId) {
     .sort((x, y) => x.studentName.localeCompare(y.studentName));
 }
 
+/** Raw user ids for a school — the lean counterpart to Mongo's
+ * getSchoolUserIds, used by the auth-snapshot cache invalidation when the
+ * school freezes/restores/deletes. Ids only: no full docs, no PII decrypt. */
+export async function getSchoolUserIds(schoolId) {
+  return users.filter((u) => u.schoolId === schoolId).map((u) => u.id);
+}
+
 export async function listUsers({ schoolId, role, classArm, limit, offset = 0 }) {
   const filtered = users
     .filter((u) => u.schoolId === schoolId)
@@ -1568,11 +1688,16 @@ export async function findAuthSnapshot(id) {
 }
 
 export async function createUser({ schoolId, name, email, password, role, assignedClass = "", phone = "", subjects = [], assignedClasses = [], generatedPassword }) {
+  const id = nid("usr");
   const user = {
-    id: nid("usr"),
+    id,
     name,
-    email: email.toLowerCase(),
-    emailIdx: blindEmailIndex(email),
+    email: String(email || "").toLowerCase(),
+    // Name-only parents have NO email. The blind index of "" is "", which
+    // would collide on the per-school unique emailIdx index — derive a
+    // per-user sentinel instead so any number of no-email parents can
+    // coexist. Empty-email lookups never match (correct: nothing should).
+    emailIdx: email ? blindEmailIndex(email) : `empty-${id}`,
     password: hash(password),
     role,
     schoolId,
@@ -1634,6 +1759,9 @@ export async function updateUser(id, patch) {
     // Session revocation: bumped by the change-password route so every token
     // signed before the change dies on its next use.
     "tokenVersion",
+    // Teacher bootstrap flag: true once the teacher sets their own password
+    // (school-name login turns off); reset to false by an admin reset.
+    "passwordSet",
   ];
   allowed.forEach((k) => {
     if (patch[k] !== undefined) user[k] = patch[k];
@@ -1689,6 +1817,7 @@ export async function deleteUser(id) {
     drop(scores, "studentId");
     drop(attendance, "studentId");
     drop(feePayments, "studentId");
+    drop(feeCarryovers, "studentId");
   } else if (user.role === "TEACHER") {
     drop(timetable, "teacherId");
   }
@@ -1734,7 +1863,7 @@ export async function purgeSchool(schoolId) {
       if (arr[i].schoolId === schoolId) arr.splice(i, 1);
     }
   };
-  [users, scores, feeStructures, feePayments, attendance, notifications, feeAudit, roleAudit, digestPrefs, digests, timetable, classAlertPrefs, conflictScans, termArchives].forEach(drop);
+  [users, scores, feeStructures, feePayments, feeCarryovers, reminderBatches, attendance, notifications, feeAudit, roleAudit, digestPrefs, digests, timetable, classAlertPrefs, conflictScans, termArchives].forEach(drop);
   persist();
   return true;
 }
@@ -1865,6 +1994,45 @@ export async function getDashboardStats(schoolId) {
     .reduce((acc, p) => acc + p.amount, 0);
   const pendingPayments = schoolPayments.filter((p) => p.status === "PENDING");
 
+  // Fee collection timeline — confirmed collections per calendar day for the
+  // CURRENT term, ascending, capped to the last 30 days (the Overview's area
+  // chart). Bounded on purpose: the full term history isn't needed on a card.
+  const cutoff30 = Date.now() - 30 * 24 * 60 * 60 * 1000;
+  const byDay = {};
+  schoolPayments
+    .filter((p) => p.status !== "PENDING" && Date.parse(p.createdAt) >= cutoff30)
+    .forEach((p) => {
+      const day = String(p.createdAt).slice(0, 10);
+      byDay[day] = (byDay[day] || 0) + p.amount;
+    });
+  const collectionTimeline = Object.keys(byDay)
+    .sort()
+    .map((date) => ({ date, amount: byDay[date] }));
+
+  // Attendance trend — present/absent counts per SCHOOL DAY for the current
+  // term, ascending, last 7 days. Multiple arms marked on the same day are
+  // COLLAPSED into one point (the chart must never show duplicate dates).
+  const attByDay = {};
+  attendance
+    .filter(
+      (a) =>
+        a.schoolId === schoolId &&
+        a.session === (school?.currentSession || "2025/2026") &&
+        a.term === (school?.currentTerm || "First Term")
+    )
+    .forEach((a) => {
+      const d = a.date;
+      if (!attByDay[d]) attByDay[d] = { present: 0, absent: 0 };
+      a.records.forEach((r) => {
+        if (r.present) attByDay[d].present += 1;
+        else attByDay[d].absent += 1;
+      });
+    });
+  const attendanceTrend = Object.keys(attByDay)
+    .sort()
+    .slice(-7)
+    .map((date) => ({ date, ...attByDay[date] }));
+
   return {
     totalStudents: students.length,
     activeTeachers: teachers.length,
@@ -1874,12 +2042,15 @@ export async function getDashboardStats(schoolId) {
     feeRate: students.length ? Math.round((feePaid.length / students.length) * 100) : 0,
     feeCollectedAmount: totalCollected,
     feeOutstandingAmount: Math.max(0, totalBilled - totalCollected),
+    feeBilledAmount: totalBilled,
     pendingPayments: {
       count: pendingPayments.length,
       amount: pendingPayments.reduce((acc, p) => acc + p.amount, 0),
     },
     classDistribution: byArm,
     totalScoreRecords: schoolScores.length,
+    collectionTimeline,
+    attendanceTrend,
   };
 }
 
@@ -1930,13 +2101,21 @@ export async function getFeeLedger(schoolId, { studentIds } = {}) {
       (!studentIds || studentIds.includes(u.id))
   );
   const school = schools.find((s) => s.id === schoolId);
+  const currentSession = school?.currentSession || "2025/2026";
+  const currentTerm = school?.currentTerm || "First Term";
   // Scope structures to the school's CURRENT session+term so a term rollover
   // never bills students with an old term's fee.
   const structures = feeStructures.filter(
-    (f) =>
-      f.schoolId === schoolId &&
-      f.session === (school?.currentSession || "2025/2026") &&
-      f.term === (school?.currentTerm || "First Term")
+    (f) => f.schoolId === schoolId && f.session === currentSession && f.term === currentTerm
+  );
+  // Unpaid balances carried from the previous term (created at rollover) ride
+  // into this term's billing — the student owes new fee + carried debt.
+  const carryovers = feeCarryovers.filter(
+    (c) =>
+      c.schoolId === schoolId &&
+      c.session === currentSession &&
+      c.term === currentTerm &&
+      (!studentIds || studentIds.includes(c.studentId))
   );
   // Pre-scope payments too, so the per-student scan below only walks the
   // requested subset (not the whole school's payment history).
@@ -1945,15 +2124,17 @@ export async function getFeeLedger(schoolId, { studentIds } = {}) {
   const scopedPayments = feePayments.filter(
     (p) =>
       p.schoolId === schoolId &&
-      p.session === (school?.currentSession || "2025/2026") &&
-      p.term === (school?.currentTerm || "First Term") &&
+      p.session === currentSession &&
+      p.term === currentTerm &&
       (!studentIds || studentIds.includes(p.studentId))
   );
   return students.map((student) => {
     const structure = structures.find(
       (f) => f.classArm === student.assignedClass
     );
-    const amount = structure?.amount || 0;
+    const carryover =
+      carryovers.find((c) => c.studentId === student.id)?.amount || 0;
+    const amount = (structure?.amount || 0) + carryover;
     const payments = scopedPayments
       .filter((p) => p.studentId === student.id)
       .sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
@@ -1968,6 +2149,10 @@ export async function getFeeLedger(schoolId, { studentIds } = {}) {
       email: student.email,
       assignedClass: student.assignedClass || "",
       amount,
+      // The portion of `amount` carried over from the previous term's unpaid
+      // balance (0 when nothing was carried) — surfaced so the UI can show
+      // exactly what rolled forward.
+      carryover,
       paid,
       pending: pendingAmount,
       balance,
@@ -2282,6 +2467,47 @@ export async function listLeads(kind) {
 // ---- Notifications (admin inbox) ----------------------------------------------
 
 /** Create an email-style notification for a school (e.g. a parent payment). */
+// ---- Reminder send batches (idempotency) -------------------------------------
+
+/**
+ * Look up a recorded reminder send by its idempotency key (school-scoped).
+ * Null when this key has never been sent — the caller may proceed to send.
+ */
+export async function getReminderBatchByKey(schoolId, kind, key) {
+  if (!key) return null;
+  const found = reminderBatches.find(
+    (b) => b.schoolId === schoolId && b.kind === kind && b.key === key
+  );
+  return found ? clone(found) : null;
+}
+
+/**
+ * Record a reminder send as a batch. Returns { batch, created }: the NEW
+ * record on first save, or the EXISTING batch with created:false when this
+ * key was already recorded (a concurrent duplicate — the caller must treat
+ * the send as already done and replay the existing result, never re-send).
+ */
+export async function saveReminderBatch({ schoolId, kind, key, context = "", studentIds = [], result }) {
+  if (!key) return null;
+  const existing = reminderBatches.find(
+    (b) => b.schoolId === schoolId && b.kind === kind && b.key === key
+  );
+  if (existing) return { batch: clone(existing), created: false };
+  const batch = {
+    id: nid("rbt"),
+    schoolId,
+    kind,
+    key,
+    context,
+    studentIds,
+    result,
+    createdAt: nowIso(),
+  };
+  reminderBatches.push(batch);
+  persist();
+  return { batch: clone(batch), created: true };
+}
+
 export async function createNotification({ schoolId, kind, to, subject, preview, body, amount }) {
   const notification = {
     id: nid("not"),
@@ -2316,9 +2542,38 @@ const isReadBy = (n, userId) => {
  * the caller's OWN `read` flag — two admins see different read states, and
  * readBy (other admins' ids) is stripped from the payload.
  */
-export async function listNotifications(schoolId, userId) {
+// The staff inbox auto-archives notifications older than the school's
+// configured retention (notificationRetentionDays). Returns a ms timestamp
+// the age comparison is measured against (absent school = the 90-day
+// default, matching the School model).
+function notificationCutoff(schoolId) {
+  const school = schools.find((s) => s.id === schoolId);
+  const days = Math.max(1, Number(school?.notificationRetentionDays) || 90);
+  return Date.now() - days * 24 * 60 * 60 * 1000;
+}
+
+export async function listNotifications(schoolId, userId, options = {}) {
+  // Admin-inbox soft delete + auto-archive: a notification the school admin
+  // deleted (adminDeletedAt) or that is older than the school's retention is
+  // hidden from STAFF views only. options.view === "archived" flips to ONLY
+  // the auto-archived history; options.includeDeleted === true keeps
+  // soft-deleted rows (the Reconcile & forward flow uses this when the
+  // school wants deleted reminders to stay forwardable). A parent's or
+  // student's reminder copy must survive — the portals read the same store,
+  // so the caller's role decides whether any filtering applies at all.
+  const viewer = userId ? await findUserById(userId) : null;
+  const staffView = STAFF_ROLES.includes(viewer?.role);
+  const cutoff = staffView ? notificationCutoff(schoolId) : null;
+  const wantArchived = staffView && options.view === "archived";
+  const includeDeleted = options.includeDeleted === true;
   return notifications
     .filter((n) => n.schoolId === schoolId)
+    .filter((n) => {
+      if (!staffView) return true;
+      if (n.adminDeletedAt && !includeDeleted) return false;
+      const isArchived = new Date(n.createdAt).getTime() < cutoff;
+      return wantArchived ? isArchived : !isArchived;
+    })
     // Tie-break on the (monotonic) id suffix so same-millisecond creates still
     // order deterministically — newest created sorts first.
     .sort(
@@ -2358,9 +2613,36 @@ export async function markNotificationsRead(schoolId, userId, ids) {
     }
   });
   if (changed) persist();
+  // Soft-deleted AND auto-archived rows are gone from the admin's inbox, so
+  // neither may count toward the caller's unread total.
+  const cutoff = notificationCutoff(schoolId);
   return notifications.filter(
-    (n) => n.schoolId === schoolId && !isReadBy(n, userId)
+    (n) =>
+      n.schoolId === schoolId &&
+      !isReadBy(n, userId) &&
+      !n.adminDeletedAt &&
+      new Date(n.createdAt).getTime() >= cutoff
   ).length;
+}
+
+/**
+ * SOFT delete notifications by id (school-scoped) — the admin inbox cleanup.
+ * Each one is stamped adminDeletedAt instead of removed, so the record (and
+ * a parent's or student's own reminder copy) survives — only staff inbox
+ * views hide it. Returns the number newly hidden (already-hidden ids count
+ * zero, keeping the operation idempotent).
+ */
+export async function deleteNotifications(schoolId, ids) {
+  const set = new Set(ids || []);
+  const stamp = nowIso();
+  let marked = 0;
+  notifications.forEach((n) => {
+    if (n.schoolId !== schoolId || !set.has(n.id) || n.adminDeletedAt) return;
+    n.adminDeletedAt = stamp;
+    marked += 1;
+  });
+  if (marked) persist();
+  return marked;
 }
 
 /**

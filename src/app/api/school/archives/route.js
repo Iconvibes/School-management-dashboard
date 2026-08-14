@@ -19,7 +19,9 @@ import {
  *
  *   GET /api/school/archives                            → { terms: [...] }
  *     — grouped summary: per term (session, term, scoreCount,
- *       attendanceCount) plus a per-arm breakdown.
+ *       attendanceCount, students) plus a per-arm breakdown. A term appears
+ *     even when it holds no scores/attendance — the archived cohort roster
+ *     alone is enough (a fresh school still sees its previous terms).
  *   GET /api/school/archives?alumni=1                   → { alumni: [...] }
  *     — every archived-roster student who is no longer on the live roster,
  *       with the term they last appeared in (graduated / deleted students).

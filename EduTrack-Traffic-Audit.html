@@ -1,0 +1,328 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>EduTrack — Traffic Readiness Audit</title>
+<style>
+:root {
+  --ink: #1e293b;
+  --muted: #64748b;
+  --accent: #1d4ed8;
+  --accent-soft: #eff6ff;
+  --warn: #b45309;
+  --warn-soft: #fffbeb;
+  --code-bg: #f1f5f9;
+  --line: #e2e8f0;
+  --head-bg: #0f172a;
+  --head-ink: #f8fafc;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+body {
+  font-family: "Segoe UI", "Helvetica Neue", Arial, "Noto Sans", sans-serif;
+  color: var(--ink);
+  line-height: 1.55;
+  font-size: 12.5px;
+}
+/* ---- Cover ---- */
+.cover {
+  background: linear-gradient(135deg, #0f172a 0%, #1e3a8a 100%);
+  color: #f8fafc;
+  padding: 56px 48px 48px;
+  border-radius: 10px;
+  margin-bottom: 24px;
+}
+.cover h1 {
+  margin: 0 0 8px;
+  font-size: 30px;
+  line-height: 1.15;
+  letter-spacing: -0.02em;
+}
+.cover-meta { margin: 6px 0; color: #cbd5e1; font-size: 13px; }
+.cover-meta strong { color: #f8fafc; }
+.disclaimer {
+  margin: 20px 0 0;
+  padding: 14px 18px;
+  border-left: 4px solid #f59e0b;
+  background: rgba(245, 158, 11, 0.12);
+  color: #fde68a;
+  border-radius: 0 8px 8px 0;
+  font-style: italic;
+}
+/* ---- Sections ---- */
+section { padding: 8px 0 4px; }
+h2 {
+  font-size: 20px;
+  color: var(--accent);
+  border-bottom: 2px solid var(--line);
+  padding-bottom: 8px;
+  margin: 28px 0 14px;
+}
+h2::before {
+  content: "";
+  display: inline-block;
+  width: 10px; height: 18px;
+  background: var(--accent);
+  border-radius: 2px;
+  margin-right: 10px;
+  vertical-align: -2px;
+}
+h3 { font-size: 15.5px; margin: 22px 0 8px; color: var(--ink); }
+p { margin: 8px 0; }
+ul, ol { margin: 8px 0; padding-left: 22px; }
+li { margin: 4px 0; }
+strong { color: #0f172a; }
+code {
+  font-family: "Cascadia Code", "Consolas", "SF Mono", Menlo, monospace;
+  font-size: 0.92em;
+  background: var(--code-bg);
+  padding: 1px 5px;
+  border-radius: 4px;
+  color: #0f766e;
+  word-break: break-word;
+}
+pre {
+  font-family: "Cascadia Code", "Consolas", "SF Mono", Menlo, monospace;
+  font-size: 11px;
+  line-height: 1.5;
+  background: var(--code-bg);
+  border: 1px solid var(--line);
+  border-left: 4px solid var(--accent);
+  border-radius: 6px;
+  padding: 12px 14px;
+  overflow-x: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  margin: 10px 0;
+}
+pre code { background: none; padding: 0; color: #0f172a; }
+/* ---- Tables ---- */
+table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 12px 0;
+  font-size: 12px;
+}
+th, td {
+  border: 1px solid var(--line);
+  padding: 8px 10px;
+  text-align: left;
+  vertical-align: top;
+}
+thead th {
+  background: var(--head-bg);
+  color: var(--head-ink);
+  font-weight: 600;
+}
+tbody tr:nth-child(even) { background: #f8fafc; }
+tbody tr { break-inside: avoid; }
+/* ---- Blockquotes in the body (verdicts, flags) ---- */
+blockquote {
+  margin: 12px 0;
+  padding: 12px 16px;
+  border-left: 4px solid var(--warn);
+  background: var(--warn-soft);
+  border-radius: 0 6px 6px 0;
+  color: #78350f;
+}
+hr { border: none; border-top: 1px solid var(--line); margin: 24px 0; }
+/* ---- Print ---- */
+@page { size: A4; margin: 16mm 14mm; }
+@media print {
+  body { font-size: 11px; }
+  section h2 { break-before: page; margin-top: 0; }
+  h2, h3 { break-after: avoid; }
+  pre, table, blockquote { break-inside: avoid; }
+  a { color: inherit; text-decoration: none; }
+}
+</style>
+</head>
+<body>
+<main>
+<header class="cover"><h1>EduTrack — Traffic Readiness Audit</h1>
+<p class="cover-meta"><strong>Scope:</strong> 300+ schools · 300,000–1,000,000 students logging in at 08:00</p>
+<p class="cover-meta"><strong>Auditor:</strong> Senior DevOps / Backend Architect / Load Testing Engineer</p>
+<p class="cover-meta"><strong>Method:</strong> code audit of the full repo (stores, routes, models, auth, infra files) + existing measured baseline (<code>docs/scaling.md</code>, <code>scripts/load-test.mjs</code>) + load math.</p>
+<blockquote class="disclaimer">This audit is deliberately brutal. Where the code is good, it says so. Where it will crash at 08:00, it says so, with the math.</blockquote>
+</header>
+<section><h2>0. What the app actually is (verified in code, not assumed)</h2>
+<table><thead><tr><th>Question</th><th>Answer (evidence)</th></tr></thead><tbody><tr><td>Database</td><td><strong>MongoDB via Mongoose</strong> (<code>src/lib/db.js</code>, <code>src/lib/store.js</code>). Demo mode = in-memory JSON-file store (<code>src/lib/demo-store.js</code>, <code>persist()</code> does <code>fs.writeFileSync</code>) — <strong>dev-only; never production</strong>. No Postgres/MySQL/SQLite.</td></tr><tr><td>Framework</td><td>Next.js 16.3 App Router, Node runtime, API route handlers.</td></tr><tr><td>Sessions</td><td><strong>Stateless JWTs</strong> (7-day, httpOnly cookie, <code>src/lib/token.js</code>), <strong>re-validated against Mongo on every request</strong> (<code>requireAuth</code> → <code>findAuthSnapshot</code>, a lean <code>select(&quot;role schoolId assignedClass&quot;)</code> read that never decrypts PII, <code>src/lib/policy.js</code>). Revocation via <code>tokenVersion</code> counter.</td></tr><tr><td>Rate limiting</td><td><strong>In-memory per-process <code>Map</code></strong> (<code>src/lib/rate-limit.js</code>). Explicitly documented as single-instance.</td></tr><tr><td>Caching</td><td><strong>None.</strong> No Redis, no in-memory cache, no CDN config in-repo.</td></tr><tr><td>Queue</td><td><strong>None.</strong> No BullMQ, no workers.</td></tr><tr><td>Background jobs</td><td>In-process timers in <code>src/instrumentation.js</code> (daily conflict scan, hourly deletion sweeper) — <strong>run on every instance</strong>.</td></tr><tr><td>Measured baseline</td><td><code>docs/scaling.md</code>: <strong>~1,000 req/s per instance</strong> (prod build, demo store, dev laptop — a *lower bound*; Mongo-backed is slower per request but stateless). <code>/api/auth/me</code> at 500 concurrency: 920 req/s, p50 535 ms, p99 746 ms, <strong>0 HTTP errors</strong>.</td></tr></tbody></table>
+<hr>
+<section><h2>1. Architecture audit</h2>
+<p><strong>DB:</strong> MongoDB (see above). Single shared Mongo for all tenants — a multi-tenant design with a <code>schoolId</code> on every document.</p>
+<p><strong>Is the backend stateless? Can we run 10 servers?</strong></p>
+<p><strong>Yes — this is the single best thing in the codebase.</strong> Sessions are signed JWTs with zero server-side session state; any instance can serve any user; the load balancer needs <strong>no stickiness</strong>. <code>tokenVersion</code> gives immediate revocation without a shared store. The two stateful things that break multi-instance are small and named:</p>
+<ol><li>the in-memory rate limiter (per-instance budgets), and</li><li>the in-process background jobs (every instance runs its own scan/sweeper).</li></ol>
+<p><strong>Verdict: &quot;Will it scale horizontally? Yes. Why?</strong> Stateless JWT auth + per-request lean revalidation + tenant-scoped data model. The API has no <code>session</code> table, no in-memory user state, no WebSocket sessions. Ten instances is architecturally trivial <strong>once Redis owns the rate limits and jobs are gated to one instance</strong> (§6).&quot;</p>
+<hr>
+<section><h2>2. Database bottleneck check</h2>
+<p><strong>N+1 queries:</strong> none found on the hot paths. The login path is 1 indexed lookup + 1 bcrypt compare (+1 children lookup for parents). Authed requests are 1 <code>findAuthSnapshot</code> + the route's own scoped queries. Dashboard stats run <code>countDocuments</code> in parallel. No per-row loops calling the DB.</p>
+<p>**Indexes (current — from <code>src/models/*.js</code>, enforced by <code>npm run ensure-indexes</code>):**</p>
+<ul><li><code>users</code>: <code>{ schoolId, emailIdx }</code> <strong>unique</strong> (login by email) · <code>schoolId</code> · <code>parentId</code></li><li><code>scores</code>: <code>{ studentId, subject, classArm }</code> unique</li><li><code>notifications</code>: <code>{ schoolId, createdAt }</code> (new auto-archive works on it)</li><li><code>feePayments</code>: <code>{ schoolId, receiptNo }</code></li><li><code>attendance</code>: <code>{ schoolId, classArm, date }</code></li></ul>
+<p><strong>Missing indexes — add these NOW (one <code>ensure-indexes</code> run):</strong></p>
+<pre language-js><code>// users: name-based logins (parents/teachers sign in by NAME). `name` is
+// plaintext (only email/phone are encrypted), so a compound index applies.
+// Without it, every name login scans the whole users collection.
+userSchema.index({ schoolId: 1, role: 1, name: 1 });
+
+// users: the roster/dashboard student lists are always school + arm.
+userSchema.index({ schoolId: 1, assignedClass: 1, name: 1 });
+
+// scores: report-card assembly is arm-scoped — covers the existing unique
+// index with a cheaper path for whole-arm reads.
+scoreSchema.index({ schoolId: 1, classArm: 1, subject: 1, studentId: 1 });</code></pre>
+<p><strong>Pagination:</strong> the roster API supports <code>?limit&amp;offset</code> (hard-capped) — <strong>but the dashboard does not use it</strong> (documented ceiling in <code>docs/scaling.md</code>: &quot;Roster tab loads the whole school&quot;). At ~3,300 students/school that's ~3,300 docs per tab open — survivable per school, wasteful under 1M-user burst. Flip the roster tab to paging.</p>
+<p>**Will <code>SELECT * FROM students WHERE school_id = X</code> lock the table at 8 AM?**</p>
+<p>There is no SQL and no table locks — it's Mongo. The equivalent (<code>users.find({ schoolId })</code>) runs on the <code>schoolId</code> index; reads don't block writes in WiredTiger. The real risks are (a) <strong>Mongo connection exhaustion</strong> — 10 instances × default <code>maxPoolSize: 100</code> = 1,000 connections against a small Atlas tier, and (b) <strong>an under-provisioned tier</strong> — <code>serverSelectionTimeoutMS: 5000</code> means requests queue then fail with 5s timeouts when the cluster saturates. Fix: set <code>MONGODB_POOL_SIZE=25–50</code> per instance (already env-tunable) and right-size the cluster (§5).</p>
+<hr>
+<section><h2>3. Load-test simulation — the 8 AM math</h2>
+<h3>The honest numbers</h3>
+<p><strong>Measured:</strong> ~1,000 req/s sustained per instance (single core-bound at that rate, per <code>docs/scaling.md</code>; ~700 req/s is a safer real-world figure once Mongo round-trips and mixed endpoints are included).</p>
+<p><strong>The storm:</strong></p>
+<ul><li>300,000 logins in 60 s = <strong>5,000 logins/s</strong></li><li>1,000,000 logins in 60 s = <strong>16,667 logins/s</strong></li><li>Add ~2–4 follow-up requests per student (dashboard, fee view, report card, 30 s notification poll) → <strong>15,000–60,000 req/s total</strong> during the peak.</li></ul>
+<p><strong>The bcrypt cliff (the #1 crash cause):</strong> logins run <code>bcrypt.compare</code> from <strong>bcryptjs — pure JavaScript on the main thread</strong>. A cost-10 compare costs ~60–100 ms of *single-thread CPU*. Node has <strong>one JS thread per process</strong>, so one app instance sustains roughly <strong>10–16 logins/s regardless of core count</strong>.</p>
+<table><thead><tr><th>Scenario</th><th>Requires (bcryptjs, today)</th><th>Reality check</th></tr></thead><tbody><tr><td>5,000 logins/s</td><td>~350–500 instances</td><td><strong>Not deployable</strong></td></tr><tr><td>16,667 logins/s</td><td>~1,200+ instances</td><td><strong>Not deployable</strong></td></tr></tbody></table>
+<p>Two caveats that soften (but don't remove) the cliff:</p>
+<ol><li><strong>Most students won't actually re-login</strong> — their 7-day JWT is in the cookie. The 08:00 burst is mostly *session revalidation* (1 lean Mongo read each) + page loads, not bcrypt compares. That's the difference between &quot;un-deployable&quot; and &quot;deployable with 10–20 instances + cache&quot;.</li><li>On the first day of term (new devices, expired sessions, password resets), most students DO login. <strong>Assume the worst case — that is the failure mode to engineer for.</strong></li></ol>
+<p><strong>Fix priority for the login path (in order):</strong></p>
+<ol><li>Swap <code>bcryptjs</code> → native <strong><code>bcrypt</code></strong> (libuv threadpool, off-main-thread). ~4–8 concurrent compares per instance → 50–130 logins/s/instance. Still not enough alone for 16k/s, but removes the *blocking* problem.</li><li>Add a <strong>login queue / gate</strong> (BullMQ) so the storm is absorbed instead of saturating the DB + event loop.</li><li><strong>Cache the auth snapshot</strong> in Redis (60 s TTL) so repeated <code>/api/auth/me</code> calls from the same user don't hit Mongo every time.</li></ol>
+<h3>The k6 script</h3>
+<p>Written to <code>k6/load-test.js</code> (see repo). It models the real mix: a <strong>login scenario</strong> (10% of VUs, fresh logins), a <strong>session-reuse scenario</strong> (90%, <code>/api/auth/me</code> + dashboard + fee + report), and the notification poll. One k6 machine tops out around 40–80k VUs — for 300k–1M use <strong>distributed k6</strong> (<code>k6 cloud</code> or <code>--paused</code> orchestration across 5–10 load generators).</p>
+<pre language-bash><code># local smoke: 200 concurrent users, 1 min
+k6 run --vus 200 --duration 1m k6/load-test.js
+# production-grade burst: distributed (k6 cloud) with K6_RAMP=300000
+K6_RAMP=300000 k6 cloud k6/load-test.js</code></pre>
+<p><strong>Expected results to look for</strong> (against a Mongo-backed prod-like staging):</p>
+<ul><li>Login scenario: <strong>throughput = min(instances × ~100/s with native bcrypt, Mongo capacity)</strong>. If p95 &gt; 2 s or error &gt; 1% → the bcrypt/Mongo cliff; verify you're on native bcrypt + Redis cache.</li><li>Session scenario: expect <strong>~500–700 req/s per instance</strong>; scale instances until p95 &lt; 500 ms.</li><li>The failure you'll see first: <strong>Mongo connection saturation</strong> (see <code>serverSelectionTimeoutMS</code> errors) and <strong>event-loop stalls</strong> if bcryptjs is still installed.</li></ul>
+<hr>
+<section><h2>4. Caching strategy (Redis)</h2>
+<table><thead><tr><th>What</th><th>Why</th><th>TTL</th><th>Code</th></tr></thead><tbody><tr><td><strong>Rate-limit buckets</strong></td><td>Shared budgets across instances; per-school caps</td><td>window (15 min)</td><td><code>rate-limit.js</code> swap (§6.1)</td></tr><tr><td><strong>Auth snapshot cache</strong> (<code>/api/auth/me</code>)</td><td>The 08:00 burst is mostly revalidation; 1 Mongo read/request → ~0</td><td><strong>60 s</strong> (bounded staleness vs <code>tokenVersion</code> revocation — acceptable window; shorten to 30 s if revocation latency matters)</td><td>§6.2</td></tr><tr><td><strong>Dashboard stats rollup</strong></td><td><code>getDashboardStats</code> runs 10+ countDocuments per overview load</td><td><strong>30–60 s</strong></td><td>§6.3</td></tr><tr><td><strong>Fee structures / school branding</strong></td><td>Immutable-ish, read on every portal page</td><td>5 min</td><td>same pattern</td></tr><tr><td><strong>Notification fan-out</strong> (later)</td><td>SSE/pub-sub instead of 30 s polls</td><td>—</td><td>future</td></tr></tbody></table>
+<p><strong>Cache invalidation rules:</strong> auth snapshot keyed <code>auth:&lt;userId&gt;</code> + busted on password change (<code>tokenVersion</code> bump) and role change; stats keyed <code>stats:&lt;schoolId&gt;</code>; branding keyed <code>school:&lt;schoolId&gt;</code>. Never cache anything tenant-invisible.</p>
+<hr>
+<section><h2>5. Server &amp; infrastructure requirements</h2>
+<p><strong>Honest answer first:</strong> 1M *concurrent students* at 08:00 is a <strong>large platform event</strong> (the order of magnitude of a mid-size country's tax portal at deadline). It is NOT &quot;a VPS + Mongo&quot; — it is a CDN-fronted, autoscaled cluster. Target these numbers:</p>
+<p><strong>Minimum viable (300k students, mostly session reuse):</strong></p>
+<ul><li><strong>App:</strong> 8 × <code>next start</code> (standalone) — 8 vCPU / 16 GB each (CPU-bound at ~700 req/s/instance)</li><li><strong>Mongo:</strong> Atlas M50+ (or equivalent, ~2k+ IOPS) with <strong>a read replica</strong> for dashboard reads; connection pool 25–50 per instance; <code>npm run ensure-indexes</code> before every deploy</li><li><strong>Redis:</strong> 2 × 4 GB (1 primary, 1 replica) — rate limits + caches</li><li><strong>Load balancer:</strong> any (no stickiness needed); <strong>Cloudflare in front</strong> (WAF, bot management, marketing-page cache) — this absorbs the flood before it hits you</li><li><strong>Jobs:</strong> exactly one instance runs background jobs (<code>RUN_JOBS=primary</code>)</li></ul>
+<p><strong>For 1M students (worst case, all logging in):</strong></p>
+<ul><li>25–50 app instances behind autoscaling (CPU ≥ 70% → +2), <strong>plus</strong> a login queue so the bcrypt surge is processed in a controlled stream — otherwise instance count explodes (§3 math)</li><li>Mongo <strong>sharded</strong> on <code>schoolId</code>, or accept read-replica fan-out + heavy dashboard caching</li><li>5–10 distributed k6 generators just to *measure* it — do this before the day, not after</li></ul>
+<p><strong>Hosting notes:</strong></p>
+<ul><li><strong>Vercel/Railway/Render:</strong> Railway/Render give you the Docker + scaling; <strong>Vercel is wrong for this</strong> — long-running Node timers (<code>instrumentation.js</code> background jobs) and self-managed Mongo connections don't fit serverless. Use <strong>Docker on Railway/Render/DigitalOcean</strong> with the <code>docker-compose.yml</code> in this repo (app + Mongo + Redis).</li><li><strong>DigitalOcean:</strong> Droplets + managed Mongo (or Atlas) + managed Redis — the <code>docker-compose.yml</code> maps 1:1.</li><li><code>next.config.mjs</code> must gain <code>output: &quot;standalone&quot;</code> for slim Docker images (§6.6).</li></ul>
+<hr>
+<section><h2>6. Code changes needed NOW (exact diffs)</h2>
+<h3>6.1 Redis-backed rate limiter — <code>src/lib/rate-limit.js</code></h3>
+<p>Swap the <code>Map</code> for Redis behind the <strong>same <code>checkRateLimit()</code> interface</strong> (no route changes; the login route's per-IP + per-account + per-teacher-name buckets keep working, now shared across instances). Add a <strong>per-school</strong> dimension to the login route while you're in there.</p>
+<pre language-js><code>// src/lib/rate-limit.js — replace the in-memory Map with Redis.
+import { createClient } from &quot;redis&quot;;           // npm i redis
+const redis = process.env.REDIS_URL
+  ? createClient({ url: process.env.REDIS_URL })
+  : null;
+if (redis) redis.connect().catch(() =&gt; {});
+let fallbackBuckets = new Map();                 // in-memory only when no REDIS_URL
+
+export async function checkRateLimit({ request, windowMs, max, prefix = &quot;rl&quot;, key = &quot;&quot; }) {
+  const ip = clientIp(request);                  // (existing helper)
+  const bucketKey = key ? `${prefix}:${ip}:${key}` : `${prefix}:${ip}`;
+  if (redis) {
+    const now = Date.now();
+    const slot = Math.floor(now / windowMs);     // fixed window
+    const rk = `${bucketKey}:${slot}`;
+    const count = await redis.incr(rk);
+    if (count === 1) await redis.expire(rk, Math.ceil(windowMs / 1000));
+    if (count &gt; max) {
+      return Response.json({ error: &quot;Too many requests. Please try again later.&quot; }, {
+        status: 429,
+        headers: { &quot;Retry-After&quot;: String(Math.ceil(windowMs / 1000)), &quot;X-RateLimit-Remaining&quot;: &quot;0&quot; },
+      });
+    }
+    return null;
+  }
+  /* ...existing in-memory Map path unchanged (demo/dev fallback)... */
+}</code></pre>
+<p>Per-school cap in <code>src/app/api/auth/login/route.js</code> (inside <code>deny()</code>, alongside the existing buckets):</p>
+<pre language-js><code>checkRateLimit({ request, windowMs: 15 * 60 * 1000, max: 5000, prefix: &quot;auth-login-school&quot;, key: `school:${schoolId}` })</code></pre>
+<p><code>5000 failed logins / 15 min / school</code> — one school's scripted attack can no longer burn the shared budget or exhaust Mongo on other tenants.</p>
+<h3>6.2 Auth snapshot cache — <code>src/lib/policy.js</code> / <code>src/lib/mongo-store.js</code></h3>
+<pre language-js><code>// policy.js requireAuth — wrap the store revalidation:
+const cached = await redisGet(`auth:${session.userId}`);      // TTL 60s
+const user = cached ?? await store.findAuthSnapshot(session.userId);
+if (user &amp;&amp; !cached) await redisSet(`auth:${session.userId}`, user, 60);
+// Invalidate on password/role change: DEL auth:&lt;userId&gt; in the
+// change-password and roles routes (they already bump tokenVersion).</code></pre>
+<p>Trade-off to state in the deploy doc: revocation now propagates in ≤ 60 s instead of instantly. Acceptable for this traffic shape; shorten to 30 s if the school admin insists on instant demotions.</p>
+<h3>6.3 Dashboard stats cache — <code>src/app/api/admin/stats/route.js</code> (and the reports route)</h3>
+<pre language-js><code>const key = `stats:${schoolId}`;
+const cached = await redisGet(key);
+if (cached) return Response.json(JSON.parse(cached));
+const stats = await store.getDashboardStats(schoolId, { forRole: session.user.role });
+await redisSet(key, JSON.stringify(stats), 45);               // 30–60 s TTL
+return Response.json(stats);</code></pre>
+<p>This turns the heaviest page in the app (10+ countDocuments per load) into 1 Redis GET for 99.9% of the 08:00 hits.</p>
+<h3>6.4 Native bcrypt (login cliff) — <code>package.json</code> + stores</h3>
+<pre language-bash><code>npm uninstall bcryptjs &amp;&amp; npm install bcrypt
+# UV_THREADPOOL_SIZE=8 in the app's env — native bcrypt runs on libuv threads</code></pre>
+<pre language-js><code>// mongo-store.js / demo-store.js: import bcrypt from &quot;bcrypt&quot; (native);
+// bcrypt.compare / bcrypt.hash keep the same call signatures.</code></pre>
+<p>Do <strong>not</strong> lower the cost — cost 10 stays. The win is off-main-thread compares.</p>
+<h3>6.5 Login queue (worst case) — <code>src/app/api/auth/login/route.js</code></h3>
+<pre language-js><code>// When REDIS_URL + QUEUE_* are set, enqueue instead of comparing inline:
+await loginQueue.add(&quot;verify&quot;, { schoolId, email, name, role, passwordHashProbe }, {
+  attempts: 1,
+  removeOnComplete: true,
+});
+// A BullMQ worker (separate process) does bcrypt.compare and posts the
+// result to a per-request callback key (Redis pub/sub or polling).
+// Without QUEUE_* configured, the route keeps today's synchronous path —
+// zero behavior change for single-instance/demo deploys.</code></pre>
+<h3>6.6 <code>next.config.mjs</code> — Docker-friendly builds</h3>
+<pre language-js><code>const nextConfig = {
+  output: &quot;standalone&quot;,        // slim, self-contained image for docker-compose
+  // ...existing headers() unchanged
+};</code></pre>
+<h3>6.7 Single-instance background jobs — <code>src/instrumentation.js</code></h3>
+<pre language-js><code>const isPrimary = process.env.RUN_JOBS === &quot;primary&quot;;   // default &quot;primary&quot; for 1-instance deploys
+if (isPrimary) {
+  g.__conflictScheduler = startConflictScheduler({ store });
+  g.__deletionSweeper = startDeletionSweeper({ store });
+}   // every other instance: no timers, no duplicate scans/sweeps</code></pre>
+<h3>6.8 Notification poll — <code>src/components/NotificationsBell.js</code></h3>
+<pre language-js><code>// 30s → 60s + jitter: at 1M users, even 1% staff admins polling every 30s
+// is ~33 req/s of pure polling.
+const pollMs = 60000 + Math.floor(Math.random() * 15000);
+timerRef.current = setInterval(load, pollMs);</code></pre>
+<p>(Proper fix is SSE/pub-sub — listed as future work, consistent with <code>docs/scaling.md</code>.)</p>
+<h3>6.9 Indexes — run <code>npm run ensure-indexes</code> after adding (§2)</h3>
+<p>New compound indexes on <code>users</code> (<code>schoolId+role+name</code>, <code>schoolId+assignedClass+name</code>) and <code>scores</code> (<code>schoolId+classArm+subject+studentId</code>).</p>
+<hr>
+<section><h2>7. Security under load</h2>
+<p><strong>Per-IP + per-school rate limiting:</strong> the Redis swap (§6.1) makes budgets shared; the per-school bucket caps one tenant's blast radius. Today, with N instances, a school can multiply its budget by N — the Redis swap closes that.</p>
+<p><strong>Login queue:</strong> §6.5 (BullMQ worker for bcrypt) — also throttles a distributed credential attack to your compute budget instead of your CPU cliff.</p>
+<p><strong>Cloudflare Turnstile on the login form</strong> (recommended, not blocking): <code>data-sitekey</code> + server-side verification in <code>POST /api/auth/login</code> before the bcrypt compare. This is the standard answer to &quot;bots will hammer the login at 08:00&quot; — it keeps the queue for humans. (No code change can be committed for this without your site keys; the integration point is <code>deny()</code>/the top of <code>POST</code>.)</p>
+<p><strong>Already in place (credit where due):</strong> multi-bucket brute-force limiter (IP 20/15 min, account 10/15 min, teacher-name 5/15 min), fail-closed RBAC on every route, encrypted-at-rest PII with blind indexes, no account oracle in login errors, <code>tokenVersion</code> revocation, security headers on every response. <strong>One security flag:</strong> <code>JWT_SECRET</code> falls back to <code>&quot;edutrack-dev-secret-change-in-prod&quot;</code> — at 300 schools, set it in the deployment env or sessions are forgeable.</p>
+<hr>
+<section><h2>8. Monitoring + alerts</h2>
+<p><strong>Sentry:</strong> <code>npm i @sentry/nextjs</code> → <code>sentry.client.config.ts</code> / <code>sentry.server.config.ts</code> (the official setup script generates them), then wrap:</p>
+<pre language-js><code>// instrumentation.js register(): add
+Sentry.init({ dsn: process.env.SENTRY_DSN, tracesSampleRate: 0.05 });</code></pre>
+<p><strong>DB slow queries (Mongoose):</strong> in <code>src/lib/db.js</code> after connect:</p>
+<pre language-js><code>mongoose.plugin((schema) =&gt; {
+  schema.pre(&quot;find&quot;, function () { this._start = Date.now(); });
+  schema.post(&quot;find&quot;, function () {
+    const ms = Date.now() - (this._start || Date.now());
+    if (ms &gt; 200) console.error(`[slow-query] ${ms}ms ${this.model.modelName} ${JSON.stringify(this.getFilter())}`);
+  });
+});</code></pre>
+<p><strong>UptimeRobot</strong> (configuration, not code): HTTP(S) monitor on <code>GET /api/health</code> every 60 s from 3 locations; alert on any non-200. Add a synthetic <strong>login check</strong> (the k6 scenario in §3 as a scheduled test) so the bcrypt path is probed, not just <code>/api/health</code>.</p>
+<p><strong>The 07:55 alert — the metric that matters:</strong> a 5-minute window alert that fires when <strong>p95 latency on <code>/api/auth/me</code> &gt; 1 s OR the app error rate &gt; 1% OR Mongo <code>currentOp</code> shows queued/blocked ops</strong> — measured on the *production build*, not dev. Set the alert at 07:55 so you have 5 minutes of runway before the 08:00 wall, and page the on-call with the instance-count autoscale flag already armed. Add a <code>serverSelectionTimeoutMS</code>-driven alert (failed Mongo pings) — that fires before the users feel it.</p>
+<hr>
+<section><h2>9. Final verdict</h2>
+<p><strong>Traffic Ready Score: 3/10</strong> — an excellent single-tenant codebase, a 10k-user runbook, and a genuinely stateless architecture… with no Redis, no queue, main-thread bcrypt, per-instance rate limits, unproven Mongo tier, and no pagination in the biggest tab. The foundations are right; the load-bearing walls for 300k–1M are not built.</p>
+<p><strong>Top 3 things that will make it crash at 08:00:</strong></p>
+<ol><li><strong>The login endpoint's main-thread bcryptjs</strong> — at 300k logins/60 s it needs ~350–500 instances, or the event loop blocks and every request on the box stalls. This is the cliff. (Native bcrypt + queue + auth-snapshot cache is the escape.)</li><li><strong>No Redis, so rate limits are per-instance and nothing is cached</strong> — with 5+ instances the brute-force budgets multiply by N (security), the dashboard's 10+ countDocuments stats run on every overview load (DB), and <code>/api/auth/me</code> revalidates against Mongo on every request (~15k–60k reads/s in the worst case).</li><li><strong>Unproven Mongo sizing + connection exhaustion</strong> — 8 instances × pool 100 = 800 connections against a small Atlas tier saturates fast; <code>serverSelectionTimeoutMS: 5000</code> turns a saturated cluster into a waterfall of 5-second failures right at 08:00.</li></ol>
+<p><strong>To be 10/10 ready, do these 5 things in order:</strong></p>
+<ol><li><strong>Fix the login path first</strong> (native bcrypt → off-main-thread; then a BullMQ login queue for the worst case). Nothing else matters if login is the cliff.</li><li><strong>Add Redis</strong> and swap in the shared rate limiter + auth-snapshot/stats caches (§6.1–6.3) — this is what makes N instances actually N.</li><li><strong>Right-size and prove Mongo</strong>: M50+ with a read replica, <code>MONGODB_POOL_SIZE=25–50</code> per instance, <code>npm run ensure-indexes</code> with the new indexes, then load-test against the real tier.</li><li><strong>Docker + deploy config</strong>: <code>output: &quot;standalone&quot;</code>, the <code>docker-compose.yml</code> in this repo, autoscaling (CPU ≥ 70% → +2, cap by Mongo connections), <code>RUN_JOBS=primary</code> on exactly one instance, <code>JWT_SECRET</code> + <code>SENTRY_DSN</code> in env.</li><li><strong>Measure the real day</strong>: distributed k6 (§3) against staging with the real user mix, the 07:55 p95/error-rate/Mongo-queue alert (§8), Cloudflare in front, and a rehearsal run of the 08:00 burst the week before.</li></ol>
+<p><strong>Bottom line:</strong> don't ship 08:00 day-one with the current code. Three to four focused weeks of the work above — mostly config + two library swaps + one Redis — gets you to a defensible 7–8/10; the queue + sharded Mongo + CDN gets you to 10.</p>
+</section>
+</main>
+</body>
+</html>

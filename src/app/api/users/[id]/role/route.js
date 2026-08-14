@@ -2,6 +2,7 @@ import { jsonError } from "@/lib/auth";
 import { store } from "@/lib/store";
 import {
   assertSameTenant,
+  invalidateAuthSnapshot,
   isDenied,
   requirePermission,
   ROLES,
@@ -58,6 +59,12 @@ export async function PATCH(request, { params }) {
 
   const user = await store.updateRole(id, newRole);
   if (!user) return jsonError("User not found", 404);
+
+  // Drop the target's cached auth snapshot: the role is part of it, and the
+  // new role must gate the target's very next request (a re-rolled account's
+  // old token stops working immediately — requireAuth sees the fresh role and
+  // the claim mismatch, and forces a re-login).
+  await invalidateAuthSnapshot(id);
 
   await store.logRoleAudit({
     schoolId: session.schoolId,

@@ -1,5 +1,5 @@
 import mongoose from "mongoose";
-import bcrypt from "bcryptjs";
+import bcrypt from "bcrypt";
 import { decryptField } from "@/lib/field-crypto";
 
 const userSchema = new mongoose.Schema(
@@ -67,6 +67,11 @@ const userSchema = new mongoose.Schema(
     // Session-revocation counter: bumped on password change so every JWT
     // signed before the change is rejected by requireAuth on its next use.
     tokenVersion: { type: Number, default: 0 },
+    // True once a TEACHER has set their own password. Until then their login
+    // password is the school name (bootstrap); after a self-change the
+    // school-name fallback turns OFF and only their own password works. An
+    // admin reset flips it back to false. Irrelevant for other roles.
+    passwordSet: { type: Boolean, default: false },
   },
   {
     timestamps: true,

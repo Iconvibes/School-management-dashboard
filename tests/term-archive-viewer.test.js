@@ -76,13 +76,75 @@ describe("store — archive grouping + detail", () => {
     assert.equal(t.term, "First Term");
     assert.equal(t.scoreCount, 73);
     assert.equal(t.attendanceCount, 140);
+    assert.equal(t.students, 16); // the archived cohort roster, never counted as scores
 
     // Every arm with archived data appears with its own counts.
     const jss1 = t.arms.find((a) => a.classArm === "JSS1");
     assert.ok(jss1, "JSS1 should be in the archived arms");
     assert.equal(jss1.scoreCount, 10); // 2 JSS1 students × 5 subjects
     assert.equal(jss1.attendanceCount, 20); // 20 school days, one register per day
-    assert.ok(t.arms.every((a) => a.scoreCount > 0 || a.attendanceCount > 0));
+    assert.ok(
+      t.arms.every((a) => a.scoreCount > 0 || a.attendanceCount > 0 || a.students > 0)
+    );
+  });
+
+  it("an archived term with NO scores/attendance still appears (fresh school)", async () => {
+    // The user's scenario: a brand-new school rolls over with students but no
+    // marks entered — the archive holds only the roster snapshot, and the term
+    // must STILL show up in the viewer (0 scores, 0 attendance, N students).
+    const { school } = await demoStore.createSchoolAndAdmin({
+      schoolName: "Fresh Roll Academy",
+      adminName: "Fresh Admin",
+      email: "fresh.admin@fresh.academy",
+      password: "admin123",
+    });
+    await demoStore.createUser({
+      schoolId: school.id,
+      name: "First Kid",
+      email: "first.kid@fresh.academy",
+      password: "student123",
+      role: "STUDENT",
+      assignedClass: "JSS1",
+    });
+    await demoStore.createUser({
+      schoolId: school.id,
+      name: "Second Kid",
+      email: "second.kid@fresh.academy",
+      password: "student123",
+      role: "STUDENT",
+      assignedClass: "SS1 Science",
+    });
+
+    const res = await demoStore.rolloverTerm(school.id, { newTerm: "Second Term" });
+    assert.ok(!res.error, `rollover should succeed: ${res.error || ""}`);
+    // Nothing billed at this fresh school, so nothing carries — the point of
+    // this test is that the term itself still shows up in the archive viewer.
+    assert.equal(res.counts.carryovers, 0);
+
+    const terms = await demoStore.getTermArchiveTerms(school.id);
+    assert.equal(terms.length, 1, "the previous term appears even with no scores/attendance");
+    const t = terms[0];
+    assert.equal(t.term, "First Term");
+    assert.equal(t.scoreCount, 0);
+    assert.equal(t.attendanceCount, 0);
+    assert.equal(t.students, 2, "the archived cohort roster is counted");
+
+    // Arms appear from the roster too, so the admin can open them and see the
+    // cohort even though nothing was scored.
+    assert.equal(t.arms.length, 2);
+    const jss1 = t.arms.find((a) => a.classArm === "JSS1");
+    assert.ok(jss1, "JSS1 appears from the roster snapshot");
+    assert.equal(jss1.students, 1);
+    assert.equal(jss1.scoreCount, 0);
+    assert.equal(jss1.attendanceCount, 0);
+
+    // The detail payload still resolves the cohort (names from the archive).
+    const rows = await demoStore.getTermArchiveDetail(school.id, {
+      session: "2025/2026",
+      term: "First Term",
+      classArm: "JSS1",
+    });
+    assert.equal(rows.filter((r) => r.kind === "student").length, 1);
   });
 
   it("getTermArchiveDetail returns only rows for the requested session/term/arm", async () => {

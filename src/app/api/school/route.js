@@ -3,7 +3,7 @@
 import { NextResponse } from "next/server.js";
 import { clearAuthCookie, jsonError } from "@/lib/auth";
 import { store } from "@/lib/store";
-import { isDenied, requireAuth, requirePermission } from "@/lib/policy";
+import { invalidateSchoolAuthSnapshots, isDenied, requireAuth, requirePermission } from "@/lib/policy";
 import { DAYS } from "@/lib/timetable";
 
 export async function GET() {
@@ -146,12 +146,35 @@ export async function PATCH(request) {
     }
   }
 
+  // The notification retention window (days) — how old a notification must
+  // be before the admin inbox auto-archives it. Must be a whole number
+  // between 1 day and 10 years; anything else is rejected, never coerced.
+  let notificationRetentionDays;
+  if (body.notificationRetentionDays !== undefined) {
+    notificationRetentionDays = Number(body.notificationRetentionDays);
+    if (!Number.isInteger(notificationRetentionDays) || notificationRetentionDays < 1 || notificationRetentionDays > 3650) {
+      return jsonError("notificationRetentionDays must be a whole number of days between 1 and 3650", 400);
+    }
+  }
+
+  // Whether reminders deleted from the admin inbox stay eligible for the
+  // Reconcile & forward list. Strictly boolean — no truthy coercion.
+  let reconcileDeletedReminders;
+  if (body.reconcileDeletedReminders !== undefined) {
+    if (typeof body.reconcileDeletedReminders !== "boolean") {
+      return jsonError("reconcileDeletedReminders must be a boolean", 400);
+    }
+    reconcileDeletedReminders = body.reconcileDeletedReminders;
+  }
+
   const school = await store.updateSchool(session.schoolId, {
     name: body.name,
     logoUrl: body.logoUrl,
     sealUrl: body.sealUrl,
     brandColor: body.brandColor,
     activeArms: body.activeArms,
+    notificationRetentionDays,
+    reconcileDeletedReminders,
     currentSession: body.currentSession,
     currentTerm: body.currentTerm,
     // First-run wizard state — the onboarding save flips this to mark the
@@ -218,6 +241,12 @@ export async function DELETE(request) {
   // is marked "deleted" (data fully intact and restorable by its SUPER_ADMIN)
   // until deletedAt + SCHOOL_DELETION_GRACE_MS, when the sweeper purges it.
   const ok = await store.deleteSchool(session.schoolId);
+  if (ok) {
+    // Deletion flips every user's schoolStatus to "deleted" — cached
+    // snapshots must not outlive it (non-admins blocked on their very next
+    // request, while the SUPER_ADMIN keeps the restore path open).
+    await invalidateSchoolAuthSnapshots(session.schoolId);
+  }
   if (!ok) return jsonError("School not found", 404);
 
   const deletedSchool = await store.getSchoolById(session.schoolId);
