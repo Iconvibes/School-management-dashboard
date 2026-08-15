@@ -81,6 +81,11 @@ const userSchema = new mongoose.Schema(
         delete ret._id;
         delete ret.__v;
         delete ret.password;
+        // Session-revocation counter + teacher bootstrap flag — internal only
+        // (requireAuth compares the version against the token claim; login
+        // uses passwordSet); never shipped to clients.
+        delete ret.tokenVersion;
+        delete ret.passwordSet;
         // Decrypt the PII fields for API consumers; drop the blind indexes
         // (they would enable offline dictionary attacks on emails).
         ret.email = decryptField(ret.email) || "";
@@ -93,10 +98,12 @@ const userSchema = new mongoose.Schema(
   }
 );
 
-userSchema.pre("save", async function (next) {
-  if (!this.isModified("password")) return next();
-  this.password = await bcrypt.hash(this.password, 10);
-  next();
+userSchema.pre("save", async function () {
+  // Mongoose 9 middleware is promise-style (no `next` callback) — see
+  // tests/tenant-scope.test.js for the regression pin that caught this.
+  if (this.isModified("password")) {
+    this.password = await bcrypt.hash(this.password, 10);
+  }
 });
 
 userSchema.methods.comparePassword = function (candidate) {

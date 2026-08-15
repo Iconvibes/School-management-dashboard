@@ -2,8 +2,8 @@ import { jsonError } from "@/lib/auth";
 import { store } from "@/lib/store";
 import { isDenied, requirePermission } from "@/lib/policy";
 import { parseRows, planImport, buildCredentials, applyImport } from "@/lib/importer";
+import { importSchema, firstValidationMessage } from "@/lib/validation";
 
-const MAX_BYTES = 2_000_000; // ~2 MB of CSV
 const MAX_ROWS = 5000;
 
 /**
@@ -31,21 +31,14 @@ export async function POST(request) {
     return jsonError("Invalid request body");
   }
 
+  const invalid = firstValidationMessage(importSchema, body);
+  if (invalid) return jsonError(invalid);
   const role = String(body.role || "").toUpperCase();
-  if (!["STUDENT", "TEACHER"].includes(role)) {
-    return jsonError("Role must be STUDENT or TEACHER");
-  }
-
   const csv = typeof body.csv === "string" ? body.csv : "";
-  if (!csv.trim()) return jsonError("CSV content is required");
-  if (csv.length > MAX_BYTES) return jsonError("File is too large (max 2 MB)");
 
   const dryRun = body.dryRun === true;
   const options = body.options || {};
   const defaultPassword = String(options.defaultPassword || "");
-  if (defaultPassword && defaultPassword.length < 6) {
-    return jsonError("Default password must be at least 6 characters");
-  }
   const createArms = options.createArms !== false;
 
   const parsed = parseRows(role, csv);

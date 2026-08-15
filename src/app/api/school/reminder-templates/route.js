@@ -1,6 +1,7 @@
 import { jsonError } from "@/lib/auth";
 import { store } from "@/lib/store";
 import { isDenied, requirePermission } from "@/lib/policy";
+import { reminderTemplatesSchema, firstValidationMessage } from "@/lib/validation";
 
 const MAX_LENGTH = 4000;
 
@@ -36,11 +37,10 @@ export async function PUT(request) {
     return jsonError("Invalid request body");
   }
 
+  const invalid = firstValidationMessage(reminderTemplatesSchema, body);
+  if (invalid) return jsonError(invalid);
   const parent = typeof body?.parent === "string" ? body.parent.trim() : "";
   const student = typeof body?.student === "string" ? body.student.trim() : "";
-  if (parent.length > MAX_LENGTH || student.length > MAX_LENGTH) {
-    return jsonError(`Reminder messages are too long (max ${MAX_LENGTH} characters each)`);
-  }
 
   const school = await store.updateSchool(session.schoolId, {
     reminderTemplates: { parent, student },

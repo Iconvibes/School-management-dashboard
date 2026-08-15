@@ -1,6 +1,7 @@
 import { jsonError } from "@/lib/auth";
 import { store } from "@/lib/store";
 import { isDenied, requirePermission, requireClassScope } from "@/lib/policy";
+import { scoresSchema, firstValidationMessage } from "@/lib/validation";
 
 export async function POST(request) {
   const session = await requirePermission(["SUPER_ADMIN", "TEACHER"], "scores.enter");
@@ -13,25 +14,15 @@ export async function POST(request) {
     return jsonError("Invalid request body");
   }
 
-  const { classArm, subject, rows } = body;
-  if (!classArm || !subject || !Array.isArray(rows) || rows.length === 0) {
-    return jsonError("classArm, subject and rows[] are required");
-  }
+  const invalid = firstValidationMessage(scoresSchema, body);
+  if (invalid) return jsonError(invalid);
+  const { classArm, subject, rows } = scoresSchema.parse(body);
 
   // Teachers may only enter scores for arms they teach AND subjects they
   // teach (a Mathematics teacher cannot grade Physics — requireClassScope
   // enforces both gates).
   const scope = await requireClassScope(session, { classArm, subject, mode: "resolve", unassigned: "allow" });
   if (isDenied(scope)) return scope;
-
-  // Validate bounds
-  for (const row of rows) {
-    const ca = Number(row.caScore) || 0;
-    const exam = Number(row.examScore) || 0;
-    if (!row.studentId) return jsonError("Each row requires a studentId");
-    if (ca < 0 || ca > 40) return jsonError("CA scores must be between 0 and 40");
-    if (exam < 0 || exam > 60) return jsonError("Exam scores must be between 0 and 60");
-  }
 
   // Tenant isolation: every scored student must belong to this school
   const tenantStudents = await store.listUsers({

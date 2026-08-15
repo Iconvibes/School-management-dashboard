@@ -1,10 +1,14 @@
 "use client";
 
-import { useState } from "react";
+import { useCallback, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { ArrowLeft, ArrowRight, Building2, Loader2, User, Mail, Lock } from "lucide-react";
 import Logo from "@/components/Logo";
+import Turnstile from "@/components/Turnstile";
+
+// Optional bot protection on the public registration form (see login page).
+const TURNSTILE_SITE_KEY = process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY || "";
 
 const inputCls =
   "w-full rounded-xl border border-navy-200 bg-white py-3 pl-11 pr-4 text-sm text-navy-800 outline-none transition placeholder:text-navy-300 focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20";
@@ -38,6 +42,8 @@ export default function RegisterPage() {
   });
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [turnstileToken, setTurnstileToken] = useState("");
+  const onTurnstileToken = useCallback((t) => setTurnstileToken(t), []);
 
   function set(field) {
     return (e) => setForm({ ...form, [field]: e.target.value });
@@ -62,6 +68,7 @@ export default function RegisterPage() {
           adminName: form.adminName,
           email: form.email,
           password: form.password,
+          cfTurnstileResponse: turnstileToken,
         }),
       });
       const data = await res.json();
@@ -161,6 +168,9 @@ export default function RegisterPage() {
                   {error}
                 </div>
               )}
+              {/* Cloudflare Turnstile — only rendered when configured; sits
+                  above the submit button so the token is fresh at submit. */}
+              <Turnstile siteKey={TURNSTILE_SITE_KEY} onTokenChange={onTurnstileToken} />
               <button
                 type="submit"
                 disabled={loading}

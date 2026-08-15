@@ -1,6 +1,7 @@
 import { jsonError } from "@/lib/auth";
 import { store } from "@/lib/store";
 import { isDenied, requireAuth, requireOwnChild } from "@/lib/policy";
+import { receiptSchema, firstValidationMessage } from "@/lib/validation";
 
 /**
  * POST /api/fees/audit/receipt — record that a receipt was downloaded.
@@ -22,10 +23,9 @@ export async function POST(request) {
     return jsonError("Invalid request body");
   }
 
-  const { studentId, receiptNo, amount, method } = body;
-  if (!studentId || !receiptNo) {
-    return jsonError("studentId and receiptNo are required");
-  }
+  const invalid = firstValidationMessage(receiptSchema, body);
+  if (invalid) return jsonError(invalid);
+  const { studentId, receiptNo, amount, method } = receiptSchema.parse(body);
 
   const child = await requireOwnChild(
     session,

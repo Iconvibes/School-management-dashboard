@@ -27,15 +27,19 @@ const accounts = new SharedArray("accounts", () => {
     });
 });
 
+// Peak concurrency for the sustained phase — env-overridable so capacity runs
+// can push past the default without editing the script (K6_LOGIN_VUS=200).
+const LOGIN_VUS = Number(__ENV.K6_LOGIN_VUS || 100);
+
 export const options = {
   scenarios: {
     loginStorm: {
       executor: "ramping-vus",
       startVUs: 0,
       stages: [
-        { duration: "20s", target: 100 }, // the 08:00 wall
-        { duration: "30s", target: 100 }, // sustained storm
-        { duration: "10s", target: 0 },   // ramp down
+        { duration: "20s", target: LOGIN_VUS }, // the 08:00 wall
+        { duration: "30s", target: LOGIN_VUS }, // sustained storm
+        { duration: "10s", target: 0 },         // ramp down
       ],
     },
   },

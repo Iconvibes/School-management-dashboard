@@ -2,8 +2,12 @@ import { jsonError } from "@/lib/auth";
 import { store } from "@/lib/store";
 import { checkRateLimit } from "@/lib/rate-limit";
 import { isDenied, requirePermission, ROLES } from "@/lib/policy";
-
-const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+import {
+  leadIdentitySchema,
+  leadNameSchema,
+  leadEmailSchema,
+  firstValidationMessage,
+} from "@/lib/validation";
 
 /**
  * POST /api/leads — public. Stores a "demo request" lead from the marketing
@@ -48,16 +52,14 @@ export async function POST(request) {
   const cleanSchool = String(school || "").trim();
   const cleanEmail = String(email || "").trim().toLowerCase();
 
-  if (!cleanName || !cleanSchool) {
-    return jsonError("Please provide your name and school name");
-  }
-  // A name that contains no letters is almost certainly garbage/bot data.
-  if (!/\p{L}/u.test(cleanName)) {
-    return jsonError("Please provide a valid name");
-  }
-  if (!EMAIL_RE.test(cleanEmail)) {
-    return jsonError("Please provide a valid email address");
-  }
+  // Sequential zod checks preserve the historical message priority exactly
+  // (identity → name-valid → email-format).
+  const identityInvalid = firstValidationMessage(leadIdentitySchema, { name: cleanName, school: cleanSchool });
+  if (identityInvalid) return jsonError(identityInvalid);
+  const nameInvalid = firstValidationMessage(leadNameSchema, { name: cleanName });
+  if (nameInvalid) return jsonError(nameInvalid);
+  const emailInvalid = firstValidationMessage(leadEmailSchema, { email: cleanEmail });
+  if (emailInvalid) return jsonError(emailInvalid);
 
   let lead;
   try {

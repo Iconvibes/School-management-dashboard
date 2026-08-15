@@ -1,6 +1,7 @@
 import { jsonError } from "@/lib/auth";
 import { store } from "@/lib/store";
 import { isDenied, requireAuth } from "@/lib/policy";
+import { classAlertSchema, firstValidationMessage } from "@/lib/validation";
 
 // The lead times the scheduler offers ("ring X minutes before the period").
 const LEAD_OPTIONS = Object.freeze([0, 5, 10, 15, 30]);
@@ -37,11 +38,9 @@ export async function PUT(request) {
   if (body.enabled !== undefined) patch.enabled = toBool(body.enabled);
   if (body.soundOn !== undefined) patch.soundOn = toBool(body.soundOn);
   if (body.leadMinutes !== undefined) {
-    const n = Number(body.leadMinutes);
-    if (!LEAD_OPTIONS.includes(n)) {
-      return jsonError("leadMinutes must be one of 0, 5, 10, 15 or 30", 400);
-    }
-    patch.leadMinutes = n;
+    const invalid = firstValidationMessage(classAlertSchema, body);
+    if (invalid) return jsonError(invalid, 400);
+    patch.leadMinutes = Number(body.leadMinutes);
   }
 
   const prefs = await store.setClassAlertPref(session.schoolId, session.userId, patch);

@@ -1071,7 +1071,10 @@ const clone = (obj) => (obj ? { ...obj } : obj);
  * server (they would enable offline dictionary attacks on emails).
  */
 function publicUser(user) {
-  const { password, emailIdx, phoneIdx, ...safe } = user;
+  // Strip the password hash, blind indexes, and the internal session/
+  // bootstrap flags — parity with the Mongo store's User toJSON transform
+  // (password, emailIdx, phoneIdx, tokenVersion, passwordSet are internal).
+  const { password, emailIdx, phoneIdx, tokenVersion, passwordSet, ...safe } = user;
   safe.subjects = Array.isArray(user.subjects) ? user.subjects : [];
   safe.assignedClasses = Array.isArray(user.assignedClasses) ? user.assignedClasses : [];
   return safe;

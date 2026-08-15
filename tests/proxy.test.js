@@ -253,3 +253,90 @@ describe("proxy — unprotected paths pass through", () => {
     assert.equal(proxy(fakeRequest("/teacher-notes")).status, 200);
   });
 });
+
+describe("proxy — security headers on every response", () => {
+  const REQUIRED = [
+    "content-security-policy",
+    "strict-transport-security",
+    "x-content-type-options",
+    "x-frame-options",
+    "referrer-policy",
+    "permissions-policy",
+  ];
+
+  it("stamps pages, API routes and redirects alike", () => {
+    const cases = [
+      fakeRequest("/"),
+      fakeRequest("/login"),
+      fakeRequest("/api/auth/me"),
+      fakeRequest("/admin/dashboard"), // unauthenticated → 307 redirect
+    ];
+    for (const req of cases) {
+      const res = proxy(req);
+      for (const header of REQUIRED) {
+        assert.ok(res.headers.has(header), `${req.nextUrl.pathname} missing ${header}`);
+      }
+    }
+  });
+
+  it("CSP allows the app's own resources and Turnstile, blocks everything else", () => {
+    const csp = proxy(fakeRequest("/")).headers.get("content-security-policy");
+    assert.match(csp, /default-src 'self'/);
+    assert.match(csp, /object-src 'none'/);
+    assert.match(csp, /frame-ancestors 'self'/);
+    // Scripts: dev/test keeps 'unsafe-inline' + 'unsafe-eval' (dev-mode
+    // debugging); production swaps to a per-request nonce with NO
+    // 'unsafe-inline' — asserted separately (prod CSP test below) because
+    // NODE_ENV is fixed at import time.
+    assert.match(
+      csp,
+      /script-src 'self' (?:'unsafe-inline' 'unsafe-eval'|'nonce-[A-Za-z0-9-]+') https:\/\/challenges\.cloudflare\.com/
+    );
+    assert.match(csp, /frame-src 'self' https:\/\/challenges\.cloudflare\.com/);
+  });
+
+  it("production CSP is nonce-based: no 'unsafe-inline' in script-src, fresh nonce per request", async () => {
+    // The proxy module captures NODE_ENV at import, so the production shape
+    // is exercised in a FRESH child process (same pattern as health-db).
+    const { execFileSync } = await import("node:child_process");
+    const script = `
+      import { proxy } from "./src/proxy.js";
+      const req = (path) => ({
+        url: "http://localhost:3000" + path,
+        nextUrl: new URL("http://localhost:3000" + path),
+        cookies: { get: () => undefined },
+      });
+      const a = proxy(req("/login"));
+      const b = proxy(req("/login"));
+      const csp = (r) => r.headers.get("content-security-policy");
+      console.log(JSON.stringify({ a: csp(a), b: csp(b) }));
+    `;
+    const out = execFileSync(
+      process.execPath,
+      ["--import", "./tests/register-aliases.js", "--input-type=module", "-e", script],
+      {
+        cwd: process.cwd(),
+        env: { ...process.env, NODE_ENV: "production" },
+        encoding: "utf8",
+      }
+    );
+    const { a, b } = JSON.parse(out.trim().split(/\n/).pop());
+    const scriptDir = (csp) => csp.match(/script-src[^;]*/)[0];
+    const nonceOf = (csp) => csp.match(/'nonce-([A-Za-z0-9-]+)'/)[1];
+
+    assert.match(scriptDir(a), /^script-src 'self' 'nonce-[A-Za-z0-9-]+' https:\/\/challenges\.cloudflare\.com$/);
+    // The whole point: 'unsafe-inline' is gone from production script-src.
+    assert.doesNotMatch(scriptDir(a), /unsafe-inline/);
+    // Every request gets a fresh nonce — a captured one can't be reused.
+    assert.notEqual(nonceOf(a), nonceOf(b));
+    // Nonce is valid per Next's parser (base64url-ish: alnum + '-').
+    assert.match(nonceOf(a), /^[A-Za-z0-9-]+$/);
+  });
+
+  it("HSTS + X-Frame-Options follow the helmet playbook", () => {
+    const res = proxy(fakeRequest("/"));
+    assert.equal(res.headers.get("strict-transport-security"), "max-age=63072000; includeSubDomains; preload");
+    assert.equal(res.headers.get("x-frame-options"), "SAMEORIGIN");
+    assert.equal(res.headers.get("x-content-type-options"), "nosniff");
+  });
+});

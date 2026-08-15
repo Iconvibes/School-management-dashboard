@@ -23,6 +23,9 @@ if (redis) redis.connect().catch(() => {});
 
 // In-memory fallback buckets (demo/dev/tests, and Redis outages).
 const fallbackBuckets = new Map();
+// Hard lockouts (1h blocks after repeated failures) — a SEPARATE map so a
+// lockout survives its window slot rotating. Mirrors the Redis lockout key.
+const lockouts = new Map(); // bucketKey -> until (ms epoch)
 const SWEEP_AT = 2000; // prune expired entries once the map grows this large
 const SWEEP_INTERVAL = 60 * 1000; // …but at most once per minute, so the sweep stays amortized
 let lastSweep = 0;
@@ -36,9 +39,10 @@ function clientIp(request) {
   return request.headers.get("x-real-ip")?.trim() || "local";
 }
 
-/** Test seam: clear all buckets (each suite resets state in beforeEach). */
+/** Test seam: clear all buckets and lockouts (each suite resets state). */
 export function __resetRateLimits() {
   fallbackBuckets.clear();
+  lockouts.clear();
   lastSweep = 0;
 }
 
@@ -47,7 +51,7 @@ export function __redisDisconnect() {
   if (redis) redis.disconnect();
 }
 
-function tooMany(windowMs, retryAfterMs, max) {
+function tooMany(retryAfterMs, max) {
   const retryAfter = Math.max(1, Math.ceil(retryAfterMs / 1000));
   return Response.json(
     { error: "Too many requests. Please try again later.", retryAfter },
@@ -60,6 +64,31 @@ function tooMany(windowMs, retryAfterMs, max) {
       },
     }
   );
+}
+
+/**
+ * Is this (IP[, key]) bucket currently hard-locked? Returns the remaining
+ * lockout seconds (rounded up, ≥ 1) when locked, otherwise 0.
+ * Redis-backed when REDIS_URL is set, in-memory otherwise.
+ */
+export async function isLockedOut({ request, prefix = "rl", key = "" }) {
+  const bucketKey = key ? `${prefix}:${clientIp(request)}:${key}` : `${prefix}:${clientIp(request)}`;
+
+  if (redis?.isReady) {
+    try {
+      const exists = await redis.exists(`${bucketKey}:lockout`);
+      if (!exists) return 0;
+      const ttl = await redis.ttl(`${bucketKey}:lockout`);
+      return ttl > 0 ? ttl : 1;
+    } catch {
+      // Redis hiccup: fall through to the in-memory map.
+    }
+  }
+
+  const until = lockouts.get(bucketKey);
+  if (!until) return 0;
+  const remaining = Math.ceil((until - Date.now()) / 1000);
+  return remaining > 0 ? remaining : 0;
 }
 
 /**
@@ -80,9 +109,15 @@ function tooMany(windowMs, retryAfterMs, max) {
  * @param {string}   [opts.prefix]  namespaced bucket key (e.g. "auth-login")
  * @param {string}   [opts.key]     optional SECOND dimension that compounds
  *                                  with the IP (e.g. an account or school id)
+ * @param {number}   [opts.lockoutMs] when the limit is exceeded, hard-block
+ *                                  this (IP[, key]) bucket for lockoutMs —
+ *                                  survives the window rotating, and is
+ *                                  checked by isLockedOut() before any work
+ *                                  (e.g. before bcrypt) so a locked account
+ *                                  costs nothing to reject.
  * @returns {Promise<Response|null>}
  */
-export async function checkRateLimit({ request, windowMs, max, prefix = "rl", key = "" }) {
+export async function checkRateLimit({ request, windowMs, max, prefix = "rl", key = "", lockoutMs = 0 }) {
   const now = Date.now();
   const base = `${prefix}:${clientIp(request)}`;
   const bucketKey = key ? `${base}:${key}` : base;
@@ -97,14 +132,25 @@ export async function checkRateLimit({ request, windowMs, max, prefix = "rl", ke
       const count = await redis.incr(rk);
       if (count === 1) await redis.expire(rk, Math.ceil(windowMs / 1000));
       if (count > max) {
+        // Hard lockout (e.g. 1h after 10 failed logins) — a separate key so
+        // it outlives this window slot.
+        if (lockoutMs > 0) {
+          await redis.set(`${bucketKey}:lockout`, "1", { EX: Math.ceil(lockoutMs / 1000) });
+        }
         const retryAfterMs = (slot + 1) * windowMs - now; // time left in this slot
-        return tooMany(windowMs, retryAfterMs, max);
+        return tooMany(retryAfterMs, max);
       }
       return null;
     } catch {
       // Redis hiccup (connection dropped mid-request): fall through to the
       // per-process map rather than fail the login/lead/register request.
     }
+  }
+
+  // An active hard lockout beats everything — even a fresh window slot.
+  const lockedUntil = lockouts.get(bucketKey);
+  if (lockedUntil && lockedUntil > now) {
+    return tooMany(lockedUntil - now, max);
   }
 
   let entry = fallbackBuckets.get(bucketKey);
@@ -114,18 +160,22 @@ export async function checkRateLimit({ request, windowMs, max, prefix = "rl", ke
   }
 
   if (entry.count >= max) {
+    if (lockoutMs > 0) lockouts.set(bucketKey, now + lockoutMs);
     const retryAfterMs = entry.start + entry.windowMs - now;
-    return tooMany(windowMs, retryAfterMs, max);
+    return tooMany(retryAfterMs, max);
   }
 
   entry.count += 1;
 
-  // Lazy sweep so a busy endpoint can't grow the map forever — time-throttled
+  // Lazy sweep so a busy endpoint can't grow the maps forever — time-throttled
   // so a large map never makes every request pay a full O(n) scan.
-  if (fallbackBuckets.size >= SWEEP_AT && now - lastSweep >= SWEEP_INTERVAL) {
+  if (fallbackBuckets.size + lockouts.size >= SWEEP_AT && now - lastSweep >= SWEEP_INTERVAL) {
     lastSweep = now;
     for (const [k, e] of fallbackBuckets) {
       if (now - e.start >= e.windowMs) fallbackBuckets.delete(k);
+    }
+    for (const [k, until] of lockouts) {
+      if (until <= now) lockouts.delete(k);
     }
   }
 

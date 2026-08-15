@@ -1,6 +1,7 @@
 import { jsonError } from "@/lib/auth";
 import { store } from "@/lib/store";
 import { isDenied, requirePermission } from "@/lib/policy";
+import { digestSchema, firstValidationMessage } from "@/lib/validation";
 
 /**
  * GET /api/admin/digest
@@ -36,9 +37,8 @@ export async function PUT(request) {
     return jsonError("Invalid request body");
   }
 
-  if (!["off", "daily", "weekly"].includes(body?.frequency)) {
-    return jsonError("frequency must be one of: off, daily, weekly");
-  }
+  const invalid = firstValidationMessage(digestSchema, body);
+  if (invalid) return jsonError(invalid);
 
   const pref = await store.setDigestPref(session.schoolId, session.userId, body.frequency);
   return Response.json({ pref });

@@ -1,6 +1,7 @@
 import { jsonError } from "@/lib/auth";
 import { store } from "@/lib/store";
 import { isDenied, requirePermission } from "@/lib/policy";
+import { feeStructureSchema, firstValidationMessage } from "@/lib/validation";
 
 /** GET /api/fees/structures?session=&term= — admin fee structures per class arm */
 export async function GET(request) {
@@ -27,10 +28,10 @@ export async function PUT(request) {
     return jsonError("Invalid request body");
   }
 
-  const { classArm, amount } = body;
-  if (!classArm) return jsonError("classArm is required");
+  const invalid = firstValidationMessage(feeStructureSchema, body);
+  if (invalid) return jsonError(invalid);
+  const { classArm, amount } = feeStructureSchema.parse(body);
   const amt = Number(amount);
-  if (Number.isNaN(amt) || amt < 0) return jsonError("A valid amount is required");
 
   const structure = await store.saveFeeStructure(session.schoolId, {
     classArm,

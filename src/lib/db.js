@@ -1,4 +1,11 @@
 import mongoose from "mongoose";
+import { installTenantScope } from "@/lib/tenant-scope";
+
+// Fail-closed tenant scoping: register the guard BEFORE any model compiles.
+// Models are only ever compiled through mongo-store's import chain, and
+// db.js is its first import — so this always runs first. The plugin
+// self-selects schemas that carry a schoolId path (see tenant-scope.js).
+installTenantScope();
 
 const MONGODB_URI = process.env.MONGODB_URI;
 

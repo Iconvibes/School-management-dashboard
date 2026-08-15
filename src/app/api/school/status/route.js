@@ -3,6 +3,7 @@ import { jsonError } from "@/lib/auth";
 import { store } from "@/lib/store";
 import { invalidateSchoolAuthSnapshots, isDenied, requirePermission } from "@/lib/policy";
 import { sendMail } from "@/lib/mailer";
+import { schoolStatusSchema, firstValidationMessage } from "@/lib/validation";
 
 /**
  * School account status — POST /api/school/status with one of:
@@ -26,13 +27,14 @@ export async function POST(request) {
     return jsonError("Invalid request body");
   }
 
+  const invalid = firstValidationMessage(schoolStatusSchema, body);
+  if (invalid) return jsonError(invalid, 400);
   const status =
     body.action === "deactivate"
       ? "frozen"
       : body.action === "reactivate" || body.action === "restore"
         ? "active"
         : null;
-  if (!status) return jsonError("action must be \"deactivate\", \"reactivate\" or \"restore\"", 400);
 
   const school = await store.setSchoolStatus(session.schoolId, status);
   if (!school) return jsonError("School not found", 404);

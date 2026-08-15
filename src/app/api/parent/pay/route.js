@@ -2,6 +2,7 @@ import { jsonError } from "@/lib/auth";
 import { store } from "@/lib/store";
 import { isDenied, requireAuth, requireOwnChild } from "@/lib/policy";
 import { buildPaymentNotification } from "@/lib/notifications";
+import { feePaymentSchema, firstValidationMessage } from "@/lib/validation";
 
 /**
  * POST /api/parent/pay — one-click "Pay Now" for a linked child's fee balance.
@@ -20,10 +21,10 @@ export async function POST(request) {
     return jsonError("Invalid request body");
   }
 
-  const { studentId, amount, method } = body;
-  if (!studentId) return jsonError("studentId is required");
+  const invalid = firstValidationMessage(feePaymentSchema, body);
+  if (invalid) return jsonError(invalid);
+  const { studentId, amount, method } = feePaymentSchema.parse(body);
   const amt = Number(amount);
-  if (Number.isNaN(amt) || amt <= 0) return jsonError("A valid amount is required");
 
   // Tenant + relationship check: the child must be linked to this parent
   const child = await requireOwnChild(session, studentId, "You can only pay fees for your own children");

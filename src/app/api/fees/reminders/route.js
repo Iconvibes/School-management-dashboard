@@ -1,6 +1,7 @@
 import { jsonError } from "@/lib/auth";
 import { store } from "@/lib/store";
 import { isDenied, requirePermission } from "@/lib/policy";
+import { reminderMessageSchema, firstValidationMessage } from "@/lib/validation";
 import { buildFeeReminder } from "@/lib/notifications";
 
 /**
@@ -78,12 +79,11 @@ export async function POST(request) {
   // Optional custom messages — parent variant + student variant. Blank →
   // built-in copy; too long → reject before we mass-send a payload that
   // could never have come from the UI.
+  const invalid = firstValidationMessage(reminderMessageSchema, body);
+  if (invalid) return jsonError(invalid);
   const message = typeof body?.message === "string" ? body.message.trim() : "";
   const messageStudent =
     typeof body?.messageStudent === "string" ? body.messageStudent.trim() : "";
-  if (message.length > 4000 || messageStudent.length > 4000) {
-    return jsonError("Reminder message is too long (max 4000 characters)");
-  }
 
   const [ledger, students, parents, school, admin] = await Promise.all([
     store.getFeeLedger(session.schoolId),

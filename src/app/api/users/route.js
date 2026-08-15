@@ -2,6 +2,12 @@ import { jsonError } from "@/lib/auth";
 import { store } from "@/lib/store";
 import { isDenied, requirePermission, requireClassScope } from "@/lib/policy";
 import { generatePassword } from "@/lib/passwords";
+import {
+  userIdentitySchema,
+  userRoleSchema,
+  userEmailSchema,
+  firstValidationMessage,
+} from "@/lib/validation";
 
 export async function GET(request) {
   // BURSAR is included so their dashboard loads (the admin console fetches
@@ -92,19 +98,15 @@ export async function POST(request) {
   // Name-only accounts: PARENT and TEACHER — the admin types JUST the name.
   // A parent's password is any linked child's full name (set at link time);
   // a teacher's password is the school name (derived at login). Every other
-  // role needs an email.
+  // role needs an email. (zod: userIdentitySchema — name + role required,
+  // then the email-required rule for non-name-only roles, in that order.)
   const nameOnlyRole = roleEnum === "PARENT" || roleEnum === "TEACHER";
-  if (!name || !roleEnum) {
-    return jsonError("Name and role are required");
-  }
-  if (!nameOnlyRole && !email) {
-    return jsonError("Email is required for this role");
-  }
+  const identityInvalid = firstValidationMessage(userIdentitySchema, body);
+  if (identityInvalid) return jsonError(identityInvalid);
   // SUPER_ADMIN may create any role; REGISTRAR may build the student roster
   // (students + their parents); TEACHER may only add students.
-  if (!["STUDENT", "TEACHER", "PARENT", "BURSAR", "REGISTRAR"].includes(roleEnum)) {
-    return jsonError("Role must be STUDENT, TEACHER, PARENT, BURSAR or REGISTRAR");
-  }
+  const roleInvalid = firstValidationMessage(userRoleSchema, body);
+  if (roleInvalid) return jsonError(roleInvalid);
   if (session.role === "REGISTRAR" && !["STUDENT", "PARENT"].includes(roleEnum)) {
     return jsonError("Registrars can only add student and parent accounts", 403);
   }
@@ -147,9 +149,8 @@ export async function POST(request) {
   if (generatedPassword === null && !placeholderPassword) {
     generatedPassword = String(userPassword);
   }
-  if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(email))) {
-    return jsonError("Please provide a valid email address");
-  }
+  const emailInvalid = firstValidationMessage(userEmailSchema, body);
+  if (emailInvalid) return jsonError(emailInvalid);
 
   // Teachers may only add STUDENT accounts, and only into an arm they teach.
   // (A teacher with NO arms may add students to any arm of the school.)

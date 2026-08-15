@@ -4,7 +4,9 @@ import { NextResponse } from "next/server.js";
 import bcrypt from "bcrypt";
 import { store } from "@/lib/store";
 import { setAuthCookie, jsonError } from "@/lib/auth";
-import { checkRateLimit } from "@/lib/rate-limit";
+import { checkRateLimit, isLockedOut } from "@/lib/rate-limit";
+import { loginSchema, firstValidationMessage } from "@/lib/validation";
+import { verifyTurnstile } from "@/lib/turnstile";
 import { resolvePostLoginRedirect } from "@/lib/portal-guard";
 import { matchesChildName, matchesSchoolName } from "@/lib/passwords";
 
@@ -24,11 +26,19 @@ import { matchesChildName, matchesSchoolName } from "@/lib/passwords";
 //   - the school bucket (5000 failed logins / 15 min per school) caps one
 //     tenant's blast radius — a scripted attack on one school can't burn the
 //     shared budget or exhaust Mongo for the other tenants.
+//   - the ACCOUNT LOCKOUT: once the account bucket trips (the 10th failure
+//     in 15 min), the account is hard-locked for 1 hour — even the CORRECT
+//     password is rejected until the hour passes. The lockout is checked
+//     BEFORE the user lookup and bcrypt compare, so a locked account costs
+//     the server nothing to reject. (The IP bucket deliberately has no
+//     lockout: schools share IPs, and at 08:00 one school's NAT can
+//     legitimately produce dozens of failed attempts.)
 // Successful logins never consume budget, so legitimate role-switching and
 // testing can't trip the limiter.
 const LOGIN_WINDOW_MS = 15 * 60 * 1000;
 const LOGIN_IP_MAX = 20;
 const LOGIN_ACCOUNT_MAX = 10;
+const LOGIN_ACCOUNT_LOCKOUT_MS = 60 * 60 * 1000; // 1h hard block after 10 fails
 const LOGIN_TEACHER_NAME_MAX = 5;
 const LOGIN_SCHOOL_MAX = 5000;
 
@@ -50,25 +60,39 @@ export async function POST(request) {
     return jsonError("Invalid request body");
   }
 
-  const { email, name, password, role, schoolId, next } = body;
-  if (!schoolId) {
-    return jsonError("Please select your school first");
-  }
-  // Parents and teachers sign in with their NAME (name-only accounts — the
-  // admin types just the name; the password is any linked child's full name
-  // for a parent, or the school name for a teacher). Everyone else signs in
-  // with email. Legacy email logins for parents and teachers still work.
+  // Zod validation — first invalid field wins. The email/name compound rule
+  // runs first on purpose (it must beat the password message, matching the
+  // historical behavior; zod refinements would run after field checks).
+  const { email, name } = body || {};
   if (!email && !name) {
     return jsonError("Email or name is required");
   }
-  if (!password) {
-    return jsonError("Password is required");
+  const invalid = firstValidationMessage(loginSchema, body);
+  if (invalid) return jsonError(invalid);
+  const { password, role, schoolId, next } = loginSchema.parse(body);
+
+  // Cloudflare Turnstile bot check — only enforced when TURNSTILE_SECRET_KEY
+  // is configured (see src/lib/turnstile.js for the fail-open-on-outage rule).
+  const turnstile = await verifyTurnstile(body?.cfTurnstileResponse);
+  if (turnstile.enabled && !turnstile.ok) {
+    return jsonError("Bot check failed. Please try again.", 403);
+  }
+
+  const accountKey = `${String(email || name || "").trim().toLowerCase()}@${schoolId}`;
+
+  // Hard-lockout pre-check — BEFORE the user lookup and bcrypt compare, so a
+  // locked account costs the server nothing to reject. (Deliberately vague:
+  // revealing the exact lockout length is an oracle for account existence.)
+  if (await isLockedOut({ request, prefix: "auth-login", key: accountKey })) {
+    return jsonError(
+      "Too many failed attempts for this account. Please try again later.",
+      429
+    );
   }
 
   // Record the failed attempt in EVERY applicable bucket and return the 429
   // when any is exhausted, otherwise the caller's error response.
   const deny = async (status, message) => {
-    const accountKey = `${String(email || name || "").trim().toLowerCase()}@${schoolId}`;
     // Teacher name logins get a THIRD bucket, tighter than the account one
     // (5 vs 10) and keyed on the raw name — so hammering one name trips it
     // before the account bucket would, and parent/email logins never touch it.
@@ -89,6 +113,8 @@ export async function POST(request) {
         max: LOGIN_ACCOUNT_MAX,
         prefix: "auth-login",
         key: accountKey,
+        // 10th failure in 15 min → 1h hard lockout for this account.
+        lockoutMs: LOGIN_ACCOUNT_LOCKOUT_MS,
       })) ||
       (teacherNameKey &&
         (await checkRateLimit({

@@ -3,6 +3,17 @@ import { store } from "@/lib/store";
 import { isDenied, requirePermission } from "@/lib/policy";
 import { DAYS, isPeriod, isSchoolDay } from "@/lib/timetable";
 import { runConflictScan } from "@/lib/conflict-scan";
+import { cacheGet, cacheSet } from "@/lib/cache";
+import { timetableEntrySchema, firstValidationMessage } from "@/lib/validation";
+
+// 5-minute cache for the timetable reads (traffic audit §6.3): timetables
+// change rarely (an admin edits slots, term rollover) and the 08:00 rush
+// views them heavily. Keyed by school + USER + query so a student can never
+// receive a teacher's arm-scoped copy. TTL-only invalidation (5 min) — the
+// conflicts=1 integrity scan below is NEVER cached. Off by default in
+// dev/demo (no REDIS_URL, no CACHE_MODE); on in production where REDIS_URL
+// is required.
+const TIMETABLE_CACHE_TTL = 300;
 
 // Who may read the timetable. Teachers see their assigned arms, students
 // their own arm, parents their children's arms; staff see every arm. Writes
@@ -56,6 +67,13 @@ export async function GET(request) {
   // class. Without it, teachers get every slot in their arms (the grid-style
   // view) and filter client-side for display.
   const mine = searchParams.get("mine") === "1";
+
+  // Cache hit path: identical (school, user, query) within 5 minutes serves
+  // the stored copy — the caller's role/arm scope is part of the key, so
+  // this can never leak another user's view.
+  const cacheKey = `timetable:${session.schoolId}:${session.userId}:${classArm}:${day}:${mine ? "1" : "0"}`;
+  const cached = await cacheGet(cacheKey);
+  if (cached) return Response.json(cached);
 
   // null = any arm (staff). Everyone else is locked to their own arms.
   let allowedArms = null;
@@ -113,7 +131,9 @@ export async function GET(request) {
     teacherName: nameById[e.teacherId] || "Unassigned",
   }));
 
-  return Response.json({ entries, arms: allowedArms, day: day || null });
+  const result = { entries, arms: allowedArms, day: day || null };
+  await cacheSet(cacheKey, result, TIMETABLE_CACHE_TTL);
+  return Response.json(result);
 }
 
 /**
@@ -136,10 +156,9 @@ export async function POST(request) {
   } catch {
     return jsonError("Invalid request body");
   }
-  const { classArm, day, period, subject, teacherId } = body || {};
-  if (!classArm || !isSchoolDay(day) || !isPeriod(period) || !subject || !teacherId) {
-    return jsonError("classArm, day, period, subject and teacherId are required");
-  }
+  const invalid = firstValidationMessage(timetableEntrySchema, body);
+  if (invalid) return jsonError(invalid);
+  const { classArm, day, period, subject, teacherId } = timetableEntrySchema.parse(body);
   const periodNum = Number(period);
 
   const school = await store.getSchoolById(session.schoolId);

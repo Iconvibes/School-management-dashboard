@@ -19,6 +19,7 @@ import FeeAudit from "@/models/FeeAudit";
 import RoleAudit from "@/models/RoleAudit";
 import DigestPref from "@/models/DigestPref";
 import Digest from "@/models/Digest";
+import { bypassTenantScope } from "@/lib/tenant-scope";
 import { computeGrade } from "@/lib/grading";
 import { nameSlug } from "@/lib/passwords";
 import { STAFF_ROLES } from "@/lib/permissions";
@@ -69,19 +70,23 @@ export async function findUserByEmail(email) {
   await ready();
   // Equality lookup on the blind index — the ciphertext (fresh IV per write)
   // can never be matched directly.
-  let user = await User.findOne({ emailIdx: blindEmailIndex(email) });
+  // Site-wide (pre-tenant) lookups: the register-time dedupe and the demo
+  // route's admin lookup run before any school exists — explicitly bypassed.
+  let user = await bypassTenantScope(User.findOne({ emailIdx: blindEmailIndex(email) }));
   // Same lazy legacy migration as findUserByEmailInSchool (below).
   if (!user) {
-    user = await User.findOne({ email: email.toLowerCase() });
+    user = await bypassTenantScope(User.findOne({ email: email.toLowerCase() }));
     if (user) {
-      await User.updateOne(
-        { _id: user._id },
-        {
-          $set: {
-            email: encryptField(user.email),
-            emailIdx: blindEmailIndex(user.email),
-          },
-        }
+      await bypassTenantScope(
+        User.updateOne(
+          { _id: user._id },
+          {
+            $set: {
+              email: encryptField(user.email),
+              emailIdx: blindEmailIndex(user.email),
+            },
+          }
+        )
       );
     }
   }
@@ -103,14 +108,17 @@ export async function findUserByEmailInSchool(schoolId, email) {
   if (!user) {
     user = await User.findOne({ schoolId, email: email.toLowerCase() });
     if (user) {
-      await User.updateOne(
-        { _id: user._id },
-        {
-          $set: {
-            email: encryptField(user.email),
-            emailIdx: blindEmailIndex(user.email),
-          },
-        }
+      // By-_id upgrade of a row already found through the schoolId scope above.
+      await bypassTenantScope(
+        User.updateOne(
+          { _id: user._id },
+          {
+            $set: {
+              email: encryptField(user.email),
+              emailIdx: blindEmailIndex(user.email),
+            },
+          }
+        )
       );
     }
   }
@@ -148,7 +156,7 @@ export function userToLoginShape(user) {
 /** Auth-data lookup by id (password verification needs the hash). */
 export async function findUserByIdWithAuth(id) {
   await ready();
-  const user = await User.findById(id);
+  const user = await bypassTenantScope(User.findById(id));
   return user ? userToLoginShape(user) : null;
 }
 
@@ -216,7 +224,7 @@ export async function listSchoolIds() {
 
 export async function findUserById(id) {
   await ready();
-  const user = await User.findById(id);
+  const user = await bypassTenantScope(User.findById(id));
   return user ? user.toJSON() : null;
 }
 
@@ -243,9 +251,13 @@ export async function getSchoolUserIds(schoolId) {
  */
 export async function findAuthSnapshot(id) {
   await ready();
-  const user = await User.findById(id)
-    .select("role schoolId assignedClass subjects assignedClasses tokenVersion")
-    .lean();
+  // By-_id auth lookup: the session's schoolId is verified against the token
+  // by requireAuth after this returns — the one by-id read on the hot path.
+  const user = await bypassTenantScope(
+    User.findById(id)
+      .select("role schoolId assignedClass subjects assignedClasses tokenVersion")
+      .lean()
+  );
   if (!user) return null;
   // Legacy migration: a doc written before the subject-teaching model has
   // only assignedClass. Derive the arms array from it (same fallback as the
@@ -683,7 +695,13 @@ export async function countUsers({ schoolId, role, classArm }) {
 
 export async function createUser({ schoolId, name, email, password, role, assignedClass = "", phone = "", subjects = [], assignedClasses = [], generatedPassword }) {
   await ready();
+  // Regression-pinned by tests/tenant-scope.test.js: the create payload must
+  // carry schoolId, role, password and assignedClass — a previous version
+  // dropped them (invisible in demo mode, cross-tenant + un-loginable users
+  // in Mongo mode). The raw password rides in; the User pre("save") hook
+  // hashes it. Parity with the demo store's createUser.
   const user = await User.create({
+    schoolId,
     name,
     email: encryptField(email),
     // Name-only parents have NO email. The blind index of "" is "", which
@@ -691,6 +709,9 @@ export async function createUser({ schoolId, name, email, password, role, assign
     // per-user sentinel instead so any number of no-email parents can
     // coexist. Empty-email lookups never match (correct: nothing should).
     emailIdx: email ? blindEmailIndex(email) : `empty-${new mongoose.Types.ObjectId()}`,
+    password,
+    role,
+    assignedClass,
     subjects: Array.isArray(subjects) ? subjects : [],
     // Teachers default to their single assignedClass (legacy parity); an
     // explicit multi-arm list wins.
@@ -714,7 +735,9 @@ export async function createUser({ schoolId, name, email, password, role, assign
  */
 export async function updateRole(id, newRole) {
   await ready();
-  return safe(await User.findByIdAndUpdate(id, { role: newRole }, { new: true }));
+  // By-_id: the role route has already tenant-scoped the caller (requireAuth +
+  // assertSameTenant) before reaching here.
+  return safe(await bypassTenantScope(User.findByIdAndUpdate(id, { role: newRole }, { new: true })));
 }
 
 export async function updateUser(id, patch) {
@@ -759,46 +782,51 @@ export async function updateUser(id, patch) {
   // the admin can look it up). A parent linked to several children signs in
   // with ANY of their names — the login route checks every linked child.
   // Unlinking (parentId: null) changes nothing.
+  // By-_id parent-link lookups: the caller is tenant-scoped by the route
+  // (requireAuth + assertSameTenant), so these are legitimate bypasses.
   if (update.parentId !== undefined) {
-    const child = await User.findById(id);
+    const child = await bypassTenantScope(User.findById(id));
     if (child && child.role === "STUDENT" && update.parentId) {
-      const parent = await User.findById(update.parentId);
+      const parent = await bypassTenantScope(User.findById(update.parentId));
       if (parent && parent.role === "PARENT" && String(parent.schoolId) === String(child.schoolId)) {
         const slug = nameSlug(update.name !== undefined ? update.name : child.name);
-        await User.findByIdAndUpdate(update.parentId, {
-          password: await bcrypt.hash(slug, 10),
-          generatedPassword: slug,
-        });
+        await bypassTenantScope(
+          User.findByIdAndUpdate(update.parentId, {
+            password: await bcrypt.hash(slug, 10),
+            generatedPassword: slug,
+          })
+        );
       }
     }
   }
-  return safe(await User.findByIdAndUpdate(id, update, { new: true }));
+  return safe(await bypassTenantScope(User.findByIdAndUpdate(id, update, { new: true })));
 }
 
 /** List a parent's linked children (tenant-scoped to the parent's school). */
 export async function getChildren(parentId) {
   await ready();
-  const parent = await User.findById(parentId);
+  const parent = await bypassTenantScope(User.findById(parentId));
   if (!parent) return [];
   return (await User.find({ schoolId: parent.schoolId, parentId })).map(safe);
 }
 
 export async function deleteUser(id) {
   await ready();
-  const user = await User.findById(id);
+  // By-_id + cascade deletes: the route already tenant-scoped the caller.
+  const user = await bypassTenantScope(User.findById(id));
   if (!user) return false;
-  await User.findByIdAndDelete(id);
+  await bypassTenantScope(User.findByIdAndDelete(id));
   // Cascade: a removed student takes their scores, attendance and fee
   // payments with them; a removed teacher frees their timetable slots.
   if (user.role === "STUDENT") {
     await Promise.all([
-      Score.deleteMany({ studentId: id }),
-      Attendance.deleteMany({ studentId: id }),
-      FeePayment.deleteMany({ studentId: id }),
-      FeeCarryover.deleteMany({ studentId: id }),
+      bypassTenantScope(Score.deleteMany({ studentId: id })),
+      bypassTenantScope(Attendance.deleteMany({ studentId: id })),
+      bypassTenantScope(FeePayment.deleteMany({ studentId: id })),
+      bypassTenantScope(FeeCarryover.deleteMany({ studentId: id })),
     ]);
   } else if (user.role === "TEACHER") {
-    await TimetableEntry.deleteMany({ teacherId: id });
+    await bypassTenantScope(TimetableEntry.deleteMany({ teacherId: id }));
   }
   return true;
 }
@@ -892,7 +920,7 @@ export async function saveScores({ schoolId, classArm, subject, rows }) {
     const totalScore = caScore + examScore;
     const grade = computeGrade(totalScore);
     const score = await Score.findOneAndUpdate(
-      { studentId: row.studentId, subject, classArm },
+      { studentId: row.studentId, schoolId, subject, classArm },
       { schoolId, caScore, examScore, totalScore, grade },
       { upsert: true, new: true }
     );
@@ -1146,7 +1174,11 @@ export async function recordFeePayment({ schoolId, studentId, amount, method, no
   // PENDING payment leaves feePaid untouched until the admin confirms it.
   const ledger = await getFeeLedger(schoolId);
   const entry = ledger.find((l) => l.studentId === studentId);
-  await User.findByIdAndUpdate(studentId, { feePaid: entry ? entry.balance <= 0 : true });
+  // By-_id: recordFeePayment is schoolId-scoped and the student came from the
+  // school's ledger above.
+  await bypassTenantScope(
+    User.findByIdAndUpdate(studentId, { feePaid: entry ? entry.balance <= 0 : true })
+  );
   return safe(payment);
 }
 
@@ -1161,9 +1193,12 @@ export async function confirmFeePayment({ schoolId, paymentId }) {
   if (!payment) return null;
   const ledger = await getFeeLedger(schoolId);
   const entry = ledger.find((l) => l.studentId === payment.studentId.toString());
-  await User.findByIdAndUpdate(payment.studentId, {
-    feePaid: entry ? entry.balance <= 0 : true,
-  });
+  // By-_id: the payment was matched with schoolId in the filter above.
+  await bypassTenantScope(
+    User.findByIdAndUpdate(payment.studentId, {
+      feePaid: entry ? entry.balance <= 0 : true,
+    })
+  );
   return safe(payment);
 }
 

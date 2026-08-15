@@ -7,8 +7,7 @@ import {
   applyImport,
   buildCredentials,
 } from "@/lib/placeholders";
-
-const MAX_BYTES = 200_000;
+import { placeholdersSchema, firstValidationMessage } from "@/lib/validation";
 
 /**
  * Paper-register onboarding (Phase 2).
@@ -34,14 +33,10 @@ export async function POST(request) {
     return jsonError("Invalid request body");
   }
 
+  const invalid = firstValidationMessage(placeholdersSchema, body);
+  if (invalid) return jsonError(invalid);
   const csv = typeof body.csv === "string" ? body.csv : "";
-  if (!csv.trim()) return jsonError("CSV content is required");
-  if (csv.length > MAX_BYTES) return jsonError("File is too large");
-
   const defaultPassword = String(body.defaultPassword || "");
-  if (defaultPassword && defaultPassword.length < 6) {
-    return jsonError("Default password must be at least 6 characters");
-  }
 
   const parsed = parseCountCsv(csv);
   if (parsed.error) return jsonError(parsed.error, 400);

@@ -2,6 +2,7 @@ import { jsonError } from "@/lib/auth";
 import { store } from "@/lib/store";
 import { assertSameTenant, isDenied, mayResetPassword, requirePermission } from "@/lib/policy";
 import { generatePassword, PASSWORD_MAX_LENGTH, PASSWORD_MIN_LENGTH } from "@/lib/passwords";
+import { resetPasswordSchema, firstValidationMessage } from "@/lib/validation";
 
 /**
  * Reset a user's password (Phase 3 — "lost the credentials sheet").
@@ -35,16 +36,12 @@ export async function POST(request, { params }) {
     return jsonError("Invalid request body");
   }
 
+  const invalid = firstValidationMessage(resetPasswordSchema, body);
+  if (invalid) return jsonError(invalid);
   const provided = typeof body.password === "string" ? body.password.trim() : "";
   let newPassword = provided;
   if (!newPassword) {
     newPassword = generatePassword();
-  } else if (newPassword.length < PASSWORD_MIN_LENGTH) {
-    return jsonError(`Password must be at least ${PASSWORD_MIN_LENGTH} characters`);
-  } else if (newPassword.length > PASSWORD_MAX_LENGTH) {
-    // bcrypt silently truncates at 72 bytes — rejecting longer passwords up
-    // front avoids the trap where two different long passwords both work.
-    return jsonError(`Password must be at most ${PASSWORD_MAX_LENGTH} characters`);
   }
 
   const user = await store.updateUser(id, {

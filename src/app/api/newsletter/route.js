@@ -1,8 +1,7 @@
 import { jsonError } from "@/lib/auth";
 import { store } from "@/lib/store";
 import { checkRateLimit } from "@/lib/rate-limit";
-
-const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+import { newsletterSchema, firstValidationMessage } from "@/lib/validation";
 
 /**
  * POST /api/newsletter — public. Stores a newsletter subscription from the
@@ -33,9 +32,8 @@ export async function POST(request) {
   }
 
   const cleanEmail = String(email || "").trim().toLowerCase();
-  if (!EMAIL_RE.test(cleanEmail)) {
-    return jsonError("Please provide a valid email address");
-  }
+  const invalid = firstValidationMessage(newsletterSchema, { email: cleanEmail });
+  if (invalid) return jsonError(invalid);
 
   let lead;
   try {

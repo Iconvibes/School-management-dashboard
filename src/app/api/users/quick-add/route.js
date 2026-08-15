@@ -7,6 +7,7 @@ import {
   applyImport,
   buildCredentials,
 } from "@/lib/quick-add";
+import { quickAddClassArmSchema, quickAddPasswordSchema, firstValidationMessage } from "@/lib/validation";
 
 const MAX_NAMES = 500;
 
@@ -35,8 +36,9 @@ export async function POST(request) {
     return jsonError("Invalid request body");
   }
 
+  const armInvalid = firstValidationMessage(quickAddClassArmSchema, body);
+  if (armInvalid) return jsonError(armInvalid);
   const classArm = String(body.classArm || "").trim();
-  if (!classArm) return jsonError("Choose a class arm first");
 
   // Always normalize through parseNames so array and string inputs behave
   // identically (whitespace, empty entries, case-insensitive dedupe).
@@ -48,10 +50,9 @@ export async function POST(request) {
     return jsonError(`Too many names (max ${MAX_NAMES}). Split into batches or use the CSV importer.`);
   }
 
+  const pwInvalid = firstValidationMessage(quickAddPasswordSchema, body);
+  if (pwInvalid) return jsonError(pwInvalid);
   const defaultPassword = String(body.defaultPassword || "");
-  if (defaultPassword && defaultPassword.length < 6) {
-    return jsonError("Default password must be at least 6 characters");
-  }
 
   const school = await store.getSchoolById(session.schoolId);
   if (!school) return jsonError("School not found", 404);

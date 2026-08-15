@@ -1,6 +1,7 @@
 import { jsonError } from "@/lib/auth";
 import { store } from "@/lib/store";
 import { isDenied, requirePermission, requireClassScope } from "@/lib/policy";
+import { attendanceSchema, firstValidationMessage } from "@/lib/validation";
 
 // Local (not UTC) date so registers default to the actual school day
 function localDateStr() {
@@ -72,10 +73,9 @@ export async function POST(request) {
     return jsonError("Invalid request body");
   }
 
-  const { classArm, date, rows } = body;
-  if (!classArm || !date || !Array.isArray(rows) || rows.length === 0) {
-    return jsonError("classArm, date and rows[] are required");
-  }
+  const invalid = firstValidationMessage(attendanceSchema, body);
+  if (invalid) return jsonError(invalid);
+  const { classArm, date, rows } = attendanceSchema.parse(body);
 
   // Teachers may only mark their assigned arm.
   const scope = await requireClassScope(session, { classArm, mode: "validate" });

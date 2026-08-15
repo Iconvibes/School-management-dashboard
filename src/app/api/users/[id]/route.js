@@ -1,6 +1,7 @@
 import { jsonError } from "@/lib/auth";
 import { store } from "@/lib/store";
 import { assertSameTenant, isDenied, mayEditUser, requirePermission } from "@/lib/policy";
+import { userPatchArraysSchema, firstValidationMessage } from "@/lib/validation";
 
 export async function PATCH(request, { params }) {
   const session = await requirePermission(["SUPER_ADMIN", "REGISTRAR"], "users.edit");
@@ -57,13 +58,8 @@ export async function PATCH(request, { params }) {
   // block a legit edit that carries the shared form's default arrays.
   if ((body.subjects?.length || 0) > 0 || (body.assignedClasses?.length || 0) > 0) {
     if (session.role !== "SUPER_ADMIN") return jsonError("Forbidden", 403);
-    const valid = (v) => Array.isArray(v) && v.every((s) => typeof s === "string");
-    if (body.subjects !== undefined && !valid(body.subjects)) {
-      return jsonError("subjects must be an array of strings");
-    }
-    if (body.assignedClasses !== undefined && !valid(body.assignedClasses)) {
-      return jsonError("assignedClasses must be an array of strings");
-    }
+    const invalid = firstValidationMessage(userPatchArraysSchema, body);
+    if (invalid) return jsonError(invalid);
   }
 
   // role is deliberately NOT updatable here — prevents self-escalation

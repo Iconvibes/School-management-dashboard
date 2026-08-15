@@ -15,7 +15,7 @@
 
 **Metrics at a glance:**
 - **What it runs:** six portals (three staff tiers, teacher, parent, student) on one Next.js + React codebase with a MongoDB backend.
-- **Automated tests:** 669 passing, run with a zero-dependency runner — unit tests on business logic and full route-level integration tests.
+- **Automated tests:** 738 passing, run with a zero-dependency runner — unit tests on business logic and full route-level integration tests (plus a real-Mongo integration suite that runs when a database is present).
 - **Availability story:** stateless sessions (any server can answer any request, no "sticky" load balancer), nightly self-verifying backups, and a 30-day restorable window if a school is ever deleted by mistake.
 - **Scale target:** designed and audited for the 08:00 login burst — the load plan, measured numbers and ordered fixes live in `EduTrack-Traffic-Audit.md`.
 - **Best proof it works:** the fee business — term rollovers carry unpaid balances forward, reminders are sent automatically with the school's own wording, and no parent can ever be notified twice for the same term.
@@ -30,7 +30,7 @@
 
 **Tech stack and why I chose each piece:**
 
-- **Next.js 16 (App Router) + React 19** — one codebase serves all five portals (Super Admin, Bursar, Registrar, Teacher, Parent, Student) and the REST API. Server-rendered pages load fast, and route handlers give me clean API endpoints next to the pages that use them.
+- **Next.js 16 (App Router) + React 19** — one codebase serves all six portals (Super Admin, Bursar, Registrar, Teacher, Parent, Student) and the REST API. Server-rendered pages load fast, and route handlers give me clean API endpoints next to the pages that use them.
 - **MongoDB + Mongoose** — every school is one tenant, and documents (a student's scores, a fee ledger) map naturally to Mongo's document model. It also scales horizontally when a school grows.
 - **JWT sessions in httpOnly cookies (jsonwebtoken)** — stateless authentication. No session table to store, no load-balancer stickiness needed; any server can verify any user. This is the foundation of the horizontal-scaling story.
 - **bcrypt (native)** — password hashing. Cost-10 compares run on libuv worker threads off the main thread, so a login burst never blocks Node's single JS thread; the demo store hashes at cost 4 so demo imports stay snappy.
@@ -38,13 +38,16 @@
 - **jspdf + html2canvas** — A4 report cards generated and downloaded as PDF straight from the browser.
 - **nodemailer** — SMTP mailer for school status alerts (graceful no-op when not configured).
 - **Mongoose + mongodump** — indexed data access, and nightly self-verifying backups.
-- **node:test** — 669 automated tests run without a test-framework install.
+- **node:test** — 738 automated tests run without a test-framework install.
+- **zod** — schema validation on every body-accepting API route: first invalid field wins, with the same user-facing messages and check order as the hand-rolled validation it replaced (a per-route exception list is documented in `src/lib/validation.js`).
+- **Cloudflare Turnstile** — optional bot protection on login and register (skip entirely when unconfigured; verified server-side via siteverify when `TURNSTILE_SECRET_KEY` is set).
+- **redis client** — shared rate-limit buckets, 1-hour account lockouts, and the auth/dashboard/timetable caches; required in production.
 
 **Architecture (simple diagram):**
 
 ```
 Browser (any of the 6 portals)
-        │  HTTPS / JWT cookie
+        │  HTTPS / JWT cookie + CSP/HSTS/X-Frame-Options headers
         ▼
 Next.js app  ──  API route handlers (REST)
         │
@@ -55,8 +58,8 @@ Store layer (src/lib/store.js — one seam)
                 │
                 ▼
         MongoDB (multi-tenant: every doc carries schoolId)
-        + Redis (planned: shared rate limits + caches)
-        + background jobs (timetable conflict scan, deletion sweeper)
+        + Redis (required in prod: shared rate limits + caches)
+        + background jobs (conflict scan, deletion sweeper — RUN_JOBS gated)
         + nightly mongodump backups
 ```
 
@@ -147,7 +150,7 @@ Store layer (src/lib/store.js — one seam)
 - **Why Tailwind instead of hand-written CSS?** A consistent design system across six portals with no bespoke stylesheets to maintain. Business reason: the product looks polished and consistent everywhere, for less effort.
 - **Why jspdf/html2canvas instead of a server-side PDF service?** Report cards generate instantly in the browser — no PDF queue, no extra service to pay for or monitor. Business reason: zero marginal cost per report card.
 - **Why bcrypt?** It's the standard, well-audited password hash. Business reason: "we hash passwords with an industry-standard algorithm" is a defensible security answer in any procurement conversation.
-- **Why node:test instead of Jest?** Zero extra dependencies, and the same runner drives both unit tests and route-level integration tests. Business reason: the test suite (669 tests) runs anywhere the code runs.
+- **Why node:test instead of Jest?** Zero extra dependencies, and the same runner drives both unit tests and route-level integration tests. Business reason: the test suite (738 tests) runs anywhere the code runs.
 
 ---
 
@@ -168,13 +171,13 @@ This route moves the whole school to a new term. It archives scores and attendan
 
 1. **How did you handle authentication?** JWT in an httpOnly cookie, signed server-side. Every request re-validates the token against a lean user snapshot so password changes and role demotions take effect immediately, via a `tokenVersion` counter.
 2. **How do you handle authorization?** A central permission matrix (`src/lib/permissions.js`) maps every role to the actions it may perform; every API route calls `requirePermission` and is re-checked server-side — the UI menu and the API can't drift.
-3. **How do you stop School A seeing School B's data?** Every document carries `schoolId`, every query is school-scoped, and there are dedicated isolation tests proving one tenant can't touch another's rows.
+3. **How do you stop School A seeing School B's data?** Every document carries `schoolId`, every query is school-scoped, and there are dedicated isolation tests proving one tenant can't touch another's rows. Beyond the convention, a fail-closed Mongoose plugin (applied to every tenant model) throws if any query ever runs without a `schoolId` filter — forgetting to scope is a crash in staging, not a leak in production. The few legitimately by-_id lookups go through an explicit `bypassTenantScope()` escape hatch.
 4. **How do you deploy?** `next build` + `next start` (Docker standalone image), with `npm run ensure-indexes` run against Mongo before each deploy. Demo mode runs with no `MONGODB_URI`.
-5. **What would you scale first?** The login path — and the big three are already shipped: native `bcrypt` (compares off the main thread), Redis-backed rate limits (shared budgets across instances), and Redis caching of the auth snapshot (60s, tokenVersion-aware) and dashboard stats (45s). Next: a login queue for the worst case, then a load test against the real Mongo tier.
+5. **What would you scale first?** The login path — and the big three are already shipped: native `bcrypt` (compares off the main thread), Redis-backed rate limits (shared budgets across instances), and Redis caching of the auth snapshot (60s, tokenVersion-aware) and dashboard stats (45s). The day-one hardening batch is shipped too: a 1-hour account lockout after 10 failed logins (checked before bcrypt, so locked accounts cost nothing), per-school rate buckets, a fail-closed tenant-scope plugin, security headers on every response (production CSP is strict — per-request nonces, no `'unsafe-inline'` in script-src), zod validation on every body-accepting route, Cloudflare Turnstile bot protection, and `/api/health/db` for orchestrators. Next: a login queue for the worst case, then a load test against the real Mongo tier.
 6. **Why MongoDB and not Postgres?** Document-shaped data, tenant-scoped isolation as a first-class pattern, horizontal scaling. Honest trade-off: I'd reach for Postgres if the app were deeply relational.
 7. **How did you handle the fee carryover business rule?** A `FeeCarryover` ledger: unpaid balances from the old term are carried as new ledger lines and added to the new term's structure, with automatic reminders sent per family.
 8. **How do you prevent duplicate reminders?** `ReminderBatch` records with unique keys; a retry with the same key replays the stored result, and rollover reminders use a deterministic per-term key.
-9. **How do you test this?** 669 tests with node:test — unit tests on business logic and route-level integration tests against the real API handlers with a mocked session.
+9. **How do you test this?** 738 tests with node:test — unit tests on business logic and route-level integration tests against the real API handlers with a mocked session, plus a real-Mongo suite (tenant-scope plugin, password-hashing middleware) that runs whenever a database is present.
 10. **How do you handle passwords?** bcrypt (cost 10 in production), never stored in plaintext, never logged.
 11. **What's the encryption story?** PII (email, phone) is encrypted at rest with a blind index so lookups stay fast without exposing ciphertext; login runs on the blind index, never on decrypted values.
 12. **How does the parent portal work?** Parents sign in by name, see every linked child's report card, attendance and fee balance, pay online (pending admin confirmation), and receive the school's reminders.
@@ -182,7 +185,7 @@ This route moves the whole school to a new term. It archives scores and attendan
 14. **How do you keep the admin dashboard fast?** It's chart-driven with hand-rolled SVG (no chart library), the heavy stats are cheap indexed counts, and the plan (documented) is Redis caching of dashboard stats.
 15. **How do backups work?** Nightly mongodump with self-verifying restore checks; the school-deletion path keeps data for a 30-day grace window before a sweeper purges it.
 16. **What background jobs run?** A daily timetable conflict scan and an hourly deleted-school sweeper, wired through `src/instrumentation.js` with graceful shutdown.
-17. **How would you handle 300,000 students logging in at 8 AM?** Stateless JWTs mean horizontal scaling is already possible, and the three biggest bottlenecks are already fixed: native bcrypt (login compares no longer block the event loop), Redis-backed rate limits (one shared budget across all instances), and Redis caching of the hot reads — the auth snapshot (60s) and the dashboard stats (45s) — so the heaviest page is 1 cache GET instead of 10+ countDocuments. What remains is a login queue for the worst case and load-testing the real Mongo tier — the full measured plan is in the traffic audit.
+17. **How would you handle 300,000 students logging in at 8 AM?** Stateless JWTs mean horizontal scaling is already possible, and the three biggest bottlenecks are already fixed: native bcrypt (login compares no longer block the event loop), Redis-backed rate limits (one shared budget across all instances), and Redis caching of the hot reads — the auth snapshot (60s), dashboard stats (45s) and the timetable (5 min) — so the heaviest pages are cache GETs instead of Mongo queries. Bot protection (Turnstile), a 1-hour lockout after 10 failed logins, per-school rate buckets and the fail-closed tenant plugin sit in front of it all, and `REDIS_URL`/`DATA_ENC_KEY` are required at boot so a misconfigured deploy fails loudly. What remains is a login queue for the worst case and load-testing the real Mongo tier — the full measured plan is in the traffic audit.
 18. **What's the rate-limiting story?** Multi-bucket brute-force protection on login (per IP, per account, per teacher name); flagged for a Redis-backed shared upgrade before multi-instance production.
 19. **How is the code organized?** `src/lib` for business logic (pure, testable), `src/models` for data schemas, `src/app/api` for the REST layer, `src/components` for shared UI — with the stores behind one seam (`src/lib/store.js`).
 20. **What would you improve with two more weeks?** A login queue for the worst case, an end-to-end load test against the real Mongo tier, and push-based notifications to cut the polling traffic (see Section 7).
@@ -191,7 +194,7 @@ This route moves the whole school to a new term. It archives scores and attendan
 
 ## 7. What I Would Do Next / Improvements
 
-1. **Make the 08:00 burst bulletproof.** Three steps are shipped — native `bcrypt` (compares off the main thread), Redis-backed rate limits (shared per-IP/account/school budgets), and Redis caching of the auth snapshot (60s) and dashboard stats (45s). Remaining: a login queue for the worst case and a load test against the real Mongo tier — all specified with code in `EduTrack-Traffic-Audit.md`.
+1. **Make the 08:00 burst bulletproof.** Shipped: native `bcrypt`, Redis-backed rate limits with a 1-hour account lockout, Redis caching (auth 60s, dashboard stats 45s, timetable 5 min), Turnstile bot protection, security headers, a fail-closed tenant plugin, and `REDIS_URL`/`DATA_ENC_KEY` required at boot. Remaining: a login queue for the worst case and a load test against the real Mongo tier — all specified with code in `EduTrack-Traffic-Audit.md`.
 2. **Replace the 30-second notification polling with push.** Server-Sent Events or WebSocket delivery would cut a third of background traffic at large scale.
 3. **Finish paginating the roster and whole-school views.** The API already supports it; the UI just needs to use it so a 3,000-student school loads instantly.
 
@@ -203,7 +206,14 @@ This route moves the whole school to a new term. It archives scores and attendan
 
 Recent changes (most recent first):
 
-1. **Interview cheat-sheet appendix (14 August 2026)** — appended a one-page "Numbers to Memorize" section (measured RPS, login rate, 669 tests, 6 portals, the 08:00 plan in 3 sentences) and corrected the stale test counts throughout the document.
+1. **Edge-compatibility regression guard (14 August 2026)** — new `tests/instrumentation-edge-clean.test.js`: asserts `instrumentation.js` contains no Node-only `process.*` API reference (code or prose — only `process.env` is allowed) and no `require(`, while still reading its guard-rail env vars and dynamically importing the shutdown module. Anyone reintroducing the `process.on` that caused the 83k-line warning flood fails the suite immediately. Instrumentation comments reworded to keep the invariant honest. Suite 738 → 742.
+2. **Silenced the dev request-log flood (14 August 2026)** — Next 16's dev server prints a line for EVERY request (`GET /api/auth/me 200 in 25ms (next.js: 5ms, …)`) — ~9,000 lines per k6 storm, on top of the (already fixed) Edge warning flood. Set `logging: { incomingRequests: false }` in `next.config.mjs` (native switch; the `ignore: [/regex/]` form is documented in the config comment for selective logging later). Verified: after a 60-s, 100-VU login storm (3,403 requests, 0 errors) the dev log totals **8 lines** (6-line startup banner + 2 npm notices); dev login throughput improved again to **56.7 logins/s** (was 35.4) once the per-request logging overhead was gone.
+2. **Silenced the dev Edge-runtime warning flood (14 August 2026)** — Next's dev server statically checks `instrumentation.js` against the Edge runtime, and its bare `process.on("SIGTERM", …)` made it re-emit "A Node.js API is used (process.on) … not supported in the Edge Runtime" on every compile — 83,000+ log lines during the k6 storm, drowning real errors. Moved the graceful-shutdown wiring into a Node-only module (`src/lib/shutdown.js`, `wireShutdown()`) that instrumentation dynamically imports only inside its `NEXT_RUNTIME === "nodejs"` branch, so the Edge bundle never contains `process.on`. Verified: after the fix the dev log stays at 2 lines under a 40-request burst (was 83,695 lines), login still 200 (scheduler + boot checks intact), 738/738 tests, lint clean, prod build green. Re-running the k6 storms showed the flood was costing real throughput: the login-only burst went 22.6 → **35.4 logins/s** (p95 5.05 → 3.08 s) and the full 155-VU storm went 15.9 → **34.6 req/s** (p95 8.35 → 2.14 s, 0% errors) — with the dev log still at 2 lines afterward. The prod build remains the capacity number (302 logins/s / 71 req/s); dev is now both quieter and ~2× faster.
+2. **Production-build k6 storm (14 August 2026)** — reran the k6 login storm against a real `next build` + `next start` (prod mode, strict nonce CSP, in-memory rate-limit fallback): login-only burst **302 logins/s at 100 VUs (p95 371 ms)** and a **sustained 296 logins/s at 200 VUs (p95 819 ms)** — the single-instance saturation point (~300 logins/s on this box). Full 08:00-shape storm (155 VUs): **71.1 req/s, 15,251 requests, 0.00% failures, p95 13.4 ms**, all 6,102 checks green. A 200-login single-second burst (the true 08:00 wall) finished at p95 988 ms with 0 errors. Dev-mode comparison: the same login burst measured 22.6 logins/s (p95 5.05 s) — the prod build is ~13× faster and the only number that counts for capacity. Script gained `K6_LOGIN_VUS` so concurrency is env-overridable. Caveat (unchanged): demo store + bcrypt cost 4, so this is the app's prod-build ceiling without the real Mongo/cost-10 costs.
+2. **Nonce-based production CSP (14 August 2026)** — replaced the pragmatic `'unsafe-inline'` script CSP with a strict per-request nonce policy: `src/proxy.js` now generates a fresh nonce for every response and forwards the same CSP on the request (Next 16 reads the nonce from the request's CSP header via `getScriptNonceFromHeader` and applies it to every inline flight script). Production `script-src` is now `'self' 'nonce-…' https://challenges.cloudflare.com` with **zero `'unsafe-inline'`**; dev keeps the permissive shape. This required forcing dynamic rendering (`export const dynamic = "force-dynamic"` in the root layout) — static prerendering bakes the HTML once, so per-request nonces can never reach it (the exact reason Next's docs mandate dynamic rendering for nonce CSPs). Verified end-to-end on a real production build: every inline `<script>` carries the response's nonce, `npm audit` clean, and the app renders + hydrates with zero console violations under the strict policy. Suite 737 → 738.
+2. **zod validation sweep across the API (14 August 2026)** — extended the login/register schema pattern to every body-accepting route (users create/patch/reset/merge/quick-add/import/placeholders, scores, attendance, fees structures/payments/receipts/reminders, school status/reminder-templates, timetable entry + class alerts, change-password, digest, leads, newsletter) with each route's historical messages and check order preserved — including sequential-schema runs where the original checks interleaved with business logic (users POST, leads). Deliberate, documented exceptions: school PATCH (deeply conditional + interpolated messages), role re-roll (delegated to `roles.js`), notifications delete/read (tolerate empty lists by design), rename-arm/rollover (store-validated). Schema-level tests added for every conversion; suite 709 → 737.
+2. **Security + scale hardening batch (14 August 2026)** — fail-closed tenant-scope Mongoose plugin on every tenant model (unscoped queries throw; explicit bypass for by-_id/site-wide reads), which surfaced and fixed TWO latent prod bugs: Mongoose 9 dropped callback-style middleware (the User pre-save hash and Score pre-validate hooks would have crashed every real Mongo write), and `mongo-store.createUser` silently dropped schoolId/password/role/assignedClass. Also shipped: 1-hour account lockout after 10 failed logins (checked before bcrypt), security headers on every response (CSP dev/prod variants, HSTS, X-Frame-Options, nosniff, Referrer/Permissions policies), zod validation on login + register (same messages), 5-minute timetable cache, `GET /api/health/db`, `REDIS_URL` + `DATA_ENC_KEY` required in production (fail-fast boot), response-sanitization sweep (tokenVersion/passwordSet now stripped like the demo/Mongo shapes), and optional Cloudflare Turnstile on login + register. `npm audit --production` is at 0 vulnerabilities. Suite grew 669 → 707 (plus a real-Mongo suite that runs when a DB is present).
+2. **Interview cheat-sheet appendix (14 August 2026)** — appended a one-page "Numbers to Memorize" section (measured RPS, login rate, 669 tests, 6 portals, the 08:00 plan in 3 sentences) and corrected the stale test counts throughout the document.
 2. **k6 login-storm executed (14 August 2026)** — ran `k6/load-test.js` against the running demo app (155 VUs, 8,587 requests): 39.6 req/s, p95 1.65s, 0% errors; a focused login-only burst (100 VUs) measured 55.8 logins/s at p95 1.91s. First bottleneck in this environment: single-process dev-mode saturation, not bcrypt or the store. Fixed two script bugs found by the run (`/api/fees/ledger` → `/api/fees`, poll seeds `K6_TOKEN`) and added `k6/load-test-login.js`.
 2. **Stakeholder HTML report (14 August 2026)** — new `npm run audit-html` renders `EduTrack-Traffic-Audit.md` as a self-contained, print-optimized `EduTrack-Traffic-Audit.html` (cover block, styled tables/code, section-per-page print CSS) for the stakeholder PDF report.
 2. **Redis auth + stats caches (14 August 2026)** — the audit's §6.2/§6.3: the per-request auth snapshot is cached for 60s (tokenVersion-aware: a version bump forces a fresh fetch even if the matching cacheDel was missed) and the dashboard stats route for 45s, so the heaviest page becomes 1 cache GET instead of 10+ countDocuments. Invalidation is wired at every snapshot-changing route: password change, role re-roll, school freeze/reactivate/restore/delete. Cache driver: Redis in production, in-memory via `CACHE_MODE=memory` for dev, off by default.
@@ -230,9 +240,9 @@ This is a user-standing instruction: never ship a code change without refreshing
 ## Appendix: Numbers to Memorize (interview cheat-sheet)
 
 **The big three (measurements, not guesses):**
-- **~1,000 req/s per instance** — the measured prod-build baseline (`docs/scaling.md`); ~700 req/s is the safer real-world figure.
-- **55.8 logins/s** — measured this week with native bcrypt in demo mode; the audit projects **50–130 logins/s/instance** on a real build, vs the old bcryptjs cliff of **10–16**.
-- **669 automated tests, all passing** — node:test, zero-dependency runner, unit + route-level integration.
+- **~300 logins/s/instance** — measured on the standalone prod build this week (demo store, bcrypt cost 4): **302 logins/s at 100 VUs with p95 371 ms**, plateauing at **296 logins/s under 200 VUs (p95 819 ms)** — the saturation point. The audit projects **50–130 logins/s/instance** on a real build with cost-10 bcrypt + Mongo (vs the old bcryptjs cliff of **10–16**).
+- **71 req/s mixed storm** — the 08:00-shape run (155 VUs: 15 logins / 135 session revalidations / 5 notification pollers, 3.5 min): **15,251 requests, 0 failures, p95 13 ms**, every check passed. The same storm on the dev server managed 15.9 req/s — the prod build is the only number that counts.
+- **738 automated tests, all passing** — node:test, zero-dependency runner, unit + route-level integration.
 
 **Product numbers:**
 - **6 portals**: Super Admin, Bursar, Registrar, Teacher, Parent, Student — three staff tiers, one teacher tier, two family portals.

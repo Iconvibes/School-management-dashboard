@@ -1,6 +1,7 @@
 import { jsonError } from "@/lib/auth";
 import { store } from "@/lib/store";
 import { isDenied, requirePermission } from "@/lib/policy";
+import { mergeParentsSchema, firstValidationMessage } from "@/lib/validation";
 
 /**
  * Merge duplicate parent accounts.
@@ -23,13 +24,9 @@ export async function POST(request) {
   } catch {
     return jsonError("Invalid request body");
   }
-  const { keepId, removeId } = body ?? {};
-  if (!keepId || !removeId) {
-    return jsonError("keepId and removeId are required");
-  }
-  if (keepId === removeId) {
-    return jsonError("Cannot merge an account into itself");
-  }
+  const invalid = firstValidationMessage(mergeParentsSchema, body);
+  if (invalid) return jsonError(invalid);
+  const { keepId, removeId } = mergeParentsSchema.parse(body);
 
   const keep = await store.findUserById(keepId);
   const remove = await store.findUserById(removeId);

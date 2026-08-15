@@ -1,6 +1,7 @@
 import { jsonError } from "@/lib/auth";
 import { store } from "@/lib/store";
 import { isDenied, requirePermission } from "@/lib/policy";
+import { feePaymentSchema, confirmPaymentSchema, firstValidationMessage } from "@/lib/validation";
 
 /** POST /api/fees/payments — record a payment { studentId, amount, method, note } */
 export async function POST(request) {
@@ -14,10 +15,10 @@ export async function POST(request) {
     return jsonError("Invalid request body");
   }
 
-  const { studentId, amount, method, note } = body;
-  if (!studentId) return jsonError("studentId is required");
+  const invalid = firstValidationMessage(feePaymentSchema, body);
+  if (invalid) return jsonError(invalid);
+  const { studentId, amount, method, note } = feePaymentSchema.parse(body);
   const amt = Number(amount);
-  if (Number.isNaN(amt) || amt <= 0) return jsonError("A valid amount is required");
 
   // Tenant isolation — payment must target a student of this school
   const student = await store.findUserById(studentId);
@@ -78,8 +79,9 @@ export async function PATCH(request) {
     return jsonError("Invalid request body");
   }
 
-  const { id } = body;
-  if (!id) return jsonError("id is required");
+  const invalid = firstValidationMessage(confirmPaymentSchema, body);
+  if (invalid) return jsonError(invalid);
+  const { id } = confirmPaymentSchema.parse(body);
 
   const payment = await store.confirmFeePayment({
     schoolId: session.schoolId,

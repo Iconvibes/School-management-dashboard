@@ -1,7 +1,12 @@
-import { NextResponse } from "next/server";
+// `next/server.js` (not `next/server`): Next aliases the extensionless form
+// internally, but plain `node --test` (tests/validation.test.js) resolves
+// this file's imports too — same rule as login and the headers in auth.js.
+import { NextResponse } from "next/server.js";
 import { store } from "@/lib/store";
 import { setAuthCookie, jsonError } from "@/lib/auth";
 import { checkRateLimit } from "@/lib/rate-limit";
+import { registerSchema, firstValidationMessage } from "@/lib/validation";
+import { verifyTurnstile } from "@/lib/turnstile";
 
 export async function POST(request) {
   // New-tenant guard: 5 school registrations per IP per hour.
@@ -20,16 +25,17 @@ export async function POST(request) {
     return jsonError("Invalid request body");
   }
 
-  const { schoolName, adminName, email, password } = body;
+  // Zod validation — first invalid field wins (field order mirrors the
+  // historical check order: required → password length → email format).
+  const invalid = firstValidationMessage(registerSchema, body);
+  if (invalid) return jsonError(invalid);
+  const { schoolName, adminName, email, password } = registerSchema.parse(body);
 
-  if (!schoolName || !adminName || !email || !password) {
-    return jsonError("School name, admin name, email and password are required");
-  }
-  if (String(password).length < 6) {
-    return jsonError("Password must be at least 6 characters");
-  }
-  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(email))) {
-    return jsonError("Please provide a valid email address");
+  // Cloudflare Turnstile bot check — only enforced when TURNSTILE_SECRET_KEY
+  // is configured (see src/lib/turnstile.js).
+  const turnstile = await verifyTurnstile(body?.cfTurnstileResponse);
+  if (turnstile.enabled && !turnstile.ok) {
+    return jsonError("Bot check failed. Please try again.", 403);
   }
 
   // New tenants start empty, so no clash is possible on register.

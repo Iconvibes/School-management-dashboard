@@ -4,8 +4,7 @@ import { setAuthCookie, jsonError } from "@/lib/auth";
 import { store } from "@/lib/store";
 import { invalidateAuthSnapshot, isDenied, requireAuth } from "@/lib/policy";
 import { matchesSchoolName } from "@/lib/passwords";
-
-const PASSWORD_MIN_LENGTH = 6;
+import { changePasswordSchema, firstValidationMessage } from "@/lib/validation";
 
 /**
  * POST /api/auth/change-password
@@ -49,13 +48,9 @@ export async function POST(request) {
     return jsonError("Invalid request body");
   }
 
-  const { currentPassword, newPassword } = body;
-  if (!currentPassword || !newPassword) {
-    return jsonError("Current password and new password are required");
-  }
-  if (String(newPassword).length < PASSWORD_MIN_LENGTH) {
-    return jsonError(`New password must be at least ${PASSWORD_MIN_LENGTH} characters`);
-  }
+  const invalid = firstValidationMessage(changePasswordSchema, body);
+  if (invalid) return jsonError(invalid);
+  const { currentPassword, newPassword } = changePasswordSchema.parse(body);
 
   const user = await store.findUserByIdWithAuth(session.userId);
   if (!user) return jsonError("User not found", 404);

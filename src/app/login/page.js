@@ -24,6 +24,12 @@ import {
   User,
 } from "lucide-react";
 import Logo from "@/components/Logo";
+import Turnstile from "@/components/Turnstile";
+
+// Optional bot protection: when NEXT_PUBLIC_TURNSTILE_SITE_KEY is set, the
+// widget renders above the sign-in button and its token rides in the login
+// body; the server verifies it only when TURNSTILE_SECRET_KEY is configured.
+const TURNSTILE_SITE_KEY = process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY || "";
 
 const ROLES = [
   { key: "SUPER_ADMIN", label: "Super Admin", icon: ShieldCheck, desc: "Run the school" },
@@ -62,6 +68,8 @@ export default function LoginPage() {
   const [form, setForm] = useState({ email: "", name: "", password: "" });
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [turnstileToken, setTurnstileToken] = useState("");
+  const onTurnstileToken = useCallback((t) => setTurnstileToken(t), []);
   const searchDebounce = useRef(null);
   // Whether the seeded demo school exists & may be signed into. Defaults to
   // false so a clean slate (SEED_DEMO_SCHOOL unset) never flashes demo UI.
@@ -178,7 +186,7 @@ export default function LoginPage() {
       const res = await fetch("/api/auth/login", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ...form, role, schoolId: school.id, next }),
+        body: JSON.stringify({ ...form, role, schoolId: school.id, next, cfTurnstileResponse: turnstileToken }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Login failed");
@@ -472,6 +480,8 @@ export default function LoginPage() {
                       {error}
                     </div>
                   )}
+                  {/* Cloudflare Turnstile — only rendered when configured. */}
+                  <Turnstile siteKey={TURNSTILE_SITE_KEY} onTokenChange={onTurnstileToken} />
                   <button
                     type="submit"
                     disabled={loading}

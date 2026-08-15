@@ -6,8 +6,9 @@ This guide is written for **you** — so you can find, understand, and safely ed
 > 1. **Pure JavaScript only** — no TypeScript. Files are `.js` / `.jsx`.
 > 2. **The two stores must stay identical.** The app has TWO data layers (`demo-store.js` and `mongo-store.js`) with the *exact same function names and signatures*. If you change a function in one, change it in the other — or you'll get confusing "works in demo but not with a real database" bugs.
 > 3. **Roles are UPPERCASE** — `SUPER_ADMIN`, `TEACHER`, `STUDENT`, `PARENT`. The API normalizes input but always stores/compares uppercase.
-> 4. **Every query is scoped by `schoolId`** — multi-tenant isolation is the product's #1 promise. Never write a query that ignores it.
+> 4. **Every query is scoped by `schoolId`** — multi-tenant isolation is the product's #1 promise. Never write a query that ignores it. In Mongo mode this is now ENFORCED: `src/lib/tenant-scope.js` (applied globally from `src/lib/db.js`) makes any unscoped query on a tenant model throw; by-_id / site-wide reads must call `bypassTenantScope(query)`.
 > 5. Run `npm run build` and `npm run lint` after changes (see [Validation](#-validation) at the end).
+> 6. **Security headers live in `src/proxy.js`** — a per-request nonce CSP in production (no `'unsafe-inline'` in `script-src`), stamped on every response AND forwarded on the request so Next 16 can nonce its inline flight scripts. The root layout (`src/app/layout.js`) forces dynamic rendering — that's required for per-request nonces. Don't add a CSP in `next.config.mjs`; the proxy is the single source.
 
 ---
 
@@ -105,6 +106,10 @@ Every API route does `import { store } from "@/lib/store"` and calls functions o
 ### `db.js`
 - `isDemoMode()` → true when `MONGODB_URI` is missing.
 - `connectDB()` → cached Mongoose connection (used inside mongo-store functions).
+
+### `shutdown.js` + `instrumentation.js`
+- `src/instrumentation.js` — Next 16 boot hook: requires `REDIS_URL` + `DATA_ENC_KEY` in production (fail-fast), gates the background jobs (conflict scanner, deletion sweeper) behind `RUN_JOBS !== "none"`, and wires graceful shutdown.
+- `src/lib/shutdown.js` — the SIGTERM cleanup (`wireShutdown()`), in its OWN module on purpose: Next's dev Edge-compatibility check on `instrumentation.js` would warn on a bare `process.on` there (it flooded the dev log under load — 83k lines). instrumentation imports this only in its Node branch, so the Edge bundle never sees it.
 
 ### `auth.js` — JWT sessions
 - Cookie: `edutrack_token` (httpOnly, 7-day expiry).

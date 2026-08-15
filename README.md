@@ -52,6 +52,41 @@ MONGODB_URI=mongodb://127.0.0.1:27017/edutrack
 JWT_SECRET=a-long-random-string
 ```
 
+## 🚀 Deployment
+
+**Production refuses to boot without three secrets** (fail-fast checks in
+`src/instrumentation.js` — a misconfigured boot dies loudly instead of
+running degraded):
+
+| Env var | Why it's mandatory in production |
+| ------- | -------------------------------- |
+| `MONGODB_URI` | the tenant database (absent = demo mode) |
+| `JWT_SECRET` | session signing — the dev fallback is forgeable |
+| `REDIS_URL` | shared rate-limit buckets + auth/dashboard/timetable caches (a multi-instance deploy with per-process buckets would multiply an attacker's budget by the server count) |
+| `DATA_ENC_KEY` | seeds the AES-256-GCM key encrypting emails/phones — without it the app silently falls back to a **known dev key** (a leaked DB would decrypt PII). Generate with `openssl rand -base64 32` and **escrow it** (`docs/disaster-recovery.md`) |
+
+Optional but recommended:
+
+- `RUN_JOBS=primary` on exactly ONE instance, `none` on every replica — the
+  background jobs (conflict scan, deletion sweeper) must never run twice.
+- `NEXT_PUBLIC_TURNSTILE_SITE_KEY` + `TURNSTILE_SECRET_KEY` — Cloudflare
+  Turnstile bot protection on login + register (skipped entirely when unset).
+- `MONGODB_POOL_SIZE` (25–50 for N instances), `UV_THREADPOOL_SIZE=8`.
+- `CACHE_MODE=memory` — dev only, to demo the Redis caches without Redis.
+
+Deploy steps (one-time per environment):
+
+```bash
+npm ci && npm run build
+npm run ensure-indexes      # explicit index build — never autoIndex in prod
+npm start                   # health: GET /api/health and GET /api/health/db
+```
+
+The container definitions live in `deploy/Dockerfile` and
+`deploy/docker-compose.yml`. Security headers (CSP, HSTS, X-Frame-Options,
+nosniff, Referrer-Policy, Permissions-Policy) are stamped on every response
+by `src/proxy.js` automatically.
+
 ## 🧱 Architecture
 
 ```

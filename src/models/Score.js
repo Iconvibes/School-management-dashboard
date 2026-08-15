@@ -39,10 +39,11 @@ const scoreSchema = new mongoose.Schema(
 // One score record per student + subject within a class arm
 scoreSchema.index({ studentId: 1, subject: 1, classArm: 1 }, { unique: true });
 
-scoreSchema.pre("validate", function (next) {
+scoreSchema.pre("validate", async function () {
+  // Mongoose 9 middleware is promise-style (no `next` callback) — the old
+  // callback form crashed every real save. See tests/tenant-scope.test.js.
   this.totalScore = Math.min(100, Math.max(0, this.caScore + this.examScore));
   this.grade = computeGrade(this.totalScore);
-  next();
 });
 
 const Score = mongoose.models.Score || mongoose.model("Score", scoreSchema);

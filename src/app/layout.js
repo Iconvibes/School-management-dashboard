@@ -12,6 +12,13 @@ const geistMono = Geist_Mono({
   subsets: ["latin"],
 });
 
+// Nonce-based CSP (src/proxy.js) needs a FRESH per-request nonce on every
+// page's inline flight scripts — and Next can only apply it when the HTML is
+// rendered per request. Static prerendering bakes the HTML once (no nonce),
+// which the strict prod CSP would block outright. The pages are client-data
+// shells anyway, so the per-request render cost is trivial.
+export const dynamic = "force-dynamic";
+
 export const metadata = {
   title: "Edutrack — All-in-One School Management Platform",
   description:
