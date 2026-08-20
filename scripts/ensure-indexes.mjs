@@ -37,6 +37,14 @@ import "../src/models/FeeAudit.js";
 import "../src/models/RoleAudit.js";
 import "../src/models/DigestPref.js";
 import "../src/models/Digest.js";
+import "../src/models/SchemeOfWork.js";
+import "../src/models/ClassResource.js";
+import "../src/models/Alumni.js";
+import "../src/models/PushSubscription.js";
+import "../src/models/ConflictScan.js";
+import "../src/models/Message.js";
+import "../src/models/Branch.js";
+import "../src/models/NotificationPreference.js";
 import mongoose from "mongoose";
 import { connectDB } from "../src/lib/db.js";
 

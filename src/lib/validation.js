@@ -127,13 +127,36 @@ const scoreRowSchema = z
     studentId: z
       .string({ error: "Each row requires a studentId" })
       .min(1, "Each row requires a studentId"),
+    // Support both legacy (caScore) and new (ca1-4) formats
     caScore: z.unknown().optional(),
+    ca1: z.unknown().optional(),
+    ca2: z.unknown().optional(),
+    ca3: z.unknown().optional(),
+    ca4: z.unknown().optional(),
     examScore: z.unknown().optional(),
   })
   .superRefine((row, ctx) => {
-    const ca = Number(row.caScore) || 0;
-    if (ca < 0 || ca > 40) {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, message: "CA scores must be between 0 and 40", path: ["caScore"] });
+    // Validate individual CA components (0-10 each)
+    const components = [row.ca1, row.ca2, row.ca3, row.ca4];
+    const hasNewFormat = components.some((c) => c !== undefined);
+    if (hasNewFormat) {
+      components.forEach((c, i) => {
+        const val = Number(c) || 0;
+        if (val < 0 || val > 10) {
+          ctx.addIssue({ code: z.ZodIssueCode.custom, message: `CA${i + 1} must be between 0 and 10`, path: [`ca${i + 1}`] });
+        }
+      });
+      // Total CA must not exceed 40
+      const totalCA = components.reduce((sum, c) => sum + (Number(c) || 0), 0);
+      if (totalCA > 40) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Total CA cannot exceed 40", path: ["ca1"] });
+      }
+    } else {
+      // Legacy format validation
+      const ca = Number(row.caScore) || 0;
+      if (ca < 0 || ca > 40) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: "CA scores must be between 0 and 40", path: ["caScore"] });
+      }
     }
   })
   .superRefine((row, ctx) => {

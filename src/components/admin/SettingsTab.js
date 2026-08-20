@@ -247,6 +247,87 @@ export default function SettingsTab({
                     </label>
                   </div>
 
+                  {/* Bank Account Details */}
+                  <div className="mt-6 border-t border-navy-100 pt-6">
+                    <h4 className="text-sm font-bold text-navy-800">School Account Details</h4>
+                    <p className="mb-3 text-xs text-navy-400">
+                      Shown to parents on the payment page so they can make bank transfers.
+                    </p>
+                    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                      <label className="block">
+                        <span className="mb-1 block text-xs font-medium text-navy-600">Bank Name</span>
+                        <input
+                          value={settingsDraft.bankDetails?.bankName || ""}
+                          onChange={(e) =>
+                            setSettingsDraft((d) => ({
+                              ...d,
+                              bankDetails: { ...d.bankDetails, bankName: e.target.value },
+                            }))
+                          }
+                          placeholder="e.g. Guaranty Trust Bank"
+                          className="w-full rounded-lg border border-navy-200 bg-white px-3 py-2 text-sm text-navy-800 outline-none focus:border-brand-500"
+                        />
+                      </label>
+                      <label className="block">
+                        <span className="mb-1 block text-xs font-medium text-navy-600">Account Name</span>
+                        <input
+                          value={settingsDraft.bankDetails?.accountName || ""}
+                          onChange={(e) =>
+                            setSettingsDraft((d) => ({
+                              ...d,
+                              bankDetails: { ...d.bankDetails, accountName: e.target.value },
+                            }))
+                          }
+                          placeholder="e.g. Greenfield Schools Ltd"
+                          className="w-full rounded-lg border border-navy-200 bg-white px-3 py-2 text-sm text-navy-800 outline-none focus:border-brand-500"
+                        />
+                      </label>
+                      <label className="block">
+                        <span className="mb-1 block text-xs font-medium text-navy-600">Account Number</span>
+                        <input
+                          value={settingsDraft.bankDetails?.accountNumber || ""}
+                          onChange={(e) =>
+                            setSettingsDraft((d) => ({
+                              ...d,
+                              bankDetails: { ...d.bankDetails, accountNumber: e.target.value },
+                            }))
+                          }
+                          placeholder="e.g. 0123456789"
+                          className="w-full rounded-lg border border-navy-200 bg-white px-3 py-2 text-sm text-navy-800 outline-none focus:border-brand-500"
+                        />
+                      </label>
+                      <label className="block">
+                        <span className="mb-1 block text-xs font-medium text-navy-600">Sort Code</span>
+                        <input
+                          value={settingsDraft.bankDetails?.sortCode || ""}
+                          onChange={(e) =>
+                            setSettingsDraft((d) => ({
+                              ...d,
+                              bankDetails: { ...d.bankDetails, sortCode: e.target.value },
+                            }))
+                          }
+                          placeholder="e.g. 058"
+                          className="w-full rounded-lg border border-navy-200 bg-white px-3 py-2 text-sm text-navy-800 outline-none focus:border-brand-500"
+                        />
+                      </label>
+                    </div>
+                    <label className="mt-3 block">
+                      <span className="mb-1 block text-xs font-medium text-navy-600">Other Instructions</span>
+                      <textarea
+                        value={settingsDraft.bankDetails?.otherInstructions || ""}
+                        onChange={(e) =>
+                          setSettingsDraft((d) => ({
+                            ...d,
+                            bankDetails: { ...d.bankDetails, otherInstructions: e.target.value },
+                          }))
+                        }
+                        placeholder="e.g. Please include your child's name as reference"
+                        rows={2}
+                        className="w-full rounded-lg border border-navy-200 bg-white px-3 py-2 text-sm text-navy-800 outline-none focus:border-brand-500"
+                      />
+                    </label>
+                  </div>
+
                   {settingsError && (
                     <p className="mt-4 rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-medium text-rose-700">
                       {settingsError}

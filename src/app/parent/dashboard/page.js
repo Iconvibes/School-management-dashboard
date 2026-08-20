@@ -24,6 +24,11 @@ import {
 import Sidebar from "@/components/Sidebar";
 import ReportCardModal from "@/components/ReportCardModal";
 import ReceiptModal from "@/components/ReceiptModal";
+import MessagingPanel from "@/components/MessagingPanel";
+import AttendanceCalendar from "@/components/parent/AttendanceCalendar";
+import GradeTrends from "@/components/parent/GradeTrends";
+import PaymentHistory from "@/components/parent/PaymentHistory";
+import ReportPaymentModal from "@/components/parent/ReportPaymentModal";
 import Modal from "@/components/Modal";
 import { gradeBadgeClasses, ordinal } from "@/lib/grading";
 import { summarizeFamilyFees } from "@/lib/family-fees";
@@ -49,10 +54,9 @@ export default function ParentDashboard() {
   const [reportLoading, setReportLoading] = useState(false);
   // Receipts — shown once a payment is confirmed by the school
   const [receiptChild, setReceiptChild] = useState(null);
-  // Pay Now flow
+  // Report Payment flow (bank transfer / cash / POS)
   const [payOpen, setPayOpen] = useState(false);
-  const [payTarget, setPayTarget] = useState(null); // the child being paid for
-  const [payForm, setPayForm] = useState({ amount: "", method: "CARD" });
+  const [payTarget, setPayTarget] = useState(null);
   const [paying, setPaying] = useState(false);
   const [payResult, setPayResult] = useState(null);
   // Fee reminders from the school (children with outstanding balances)
@@ -164,24 +168,29 @@ export default function ParentDashboard() {
     if (!target) return;
     setPayTarget(target);
     setSelectedId(target.id);
-    setPayForm({ amount: target.fee.balance > 0 ? String(target.fee.balance) : "", method: "CARD" });
     setPayResult(null);
     setPayOpen(true);
   }
 
-  async function submitPay() {
+  async function submitPayment(paymentData) {
     if (!payTarget) return;
     setPaying(true);
     try {
       const res = await fetch("/api/parent/pay", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ studentId: payTarget.id, ...payForm }),
+        body: JSON.stringify({
+          studentId: payTarget.id,
+          amount: paymentData.amount,
+          method: paymentData.method,
+          bankReference: paymentData.bankReference,
+          datePaid: paymentData.datePaid,
+          note: paymentData.note,
+        }),
       });
       const body = await res.json();
-      if (!res.ok) throw new Error(body.error || "Payment failed");
+      if (!res.ok) throw new Error(body.error || "Payment report failed");
       setPayResult(body.payment);
-      // Refresh children data
       await refresh();
     } catch (err) {
       setToast(err.message);
@@ -515,11 +524,11 @@ export default function ParentDashboard() {
                       <button
                         onClick={() => openPay()}
                         disabled={selected.fee.balance <= 0 || selected.fee.pending > 0}
-                        title={selected.fee.pending > 0 ? "Awaiting school confirmation" : selected.fee.balance <= 0 ? "Fully paid" : "Pay now"}
+                        title={selected.fee.pending > 0 ? "Awaiting school confirmation" : selected.fee.balance <= 0 ? "Fully paid" : "Report payment"}
                         className="mt-5 inline-flex w-full items-center justify-center gap-2 rounded-xl bg-emerald-600 py-3 text-sm font-semibold text-white shadow-lg shadow-emerald-600/30 transition hover:bg-emerald-500 disabled:cursor-not-allowed disabled:opacity-40"
                       >
                         <CreditCard className="h-4 w-4" />
-                        Pay Now
+                        Report Payment
                       </button>
                       {selected.fee.pending > 0 && (
                         <p className="mt-2 text-center text-[11px] text-navy-400">
@@ -721,79 +730,55 @@ export default function ParentDashboard() {
         fileName={receiptChild?.name?.toLowerCase().replace(/[^a-z]+/g, "-")}
       />
 
-      {/* Pay Now modal */}
-      <Modal open={payOpen} onClose={() => setPayOpen(false)} title={`Pay Now — ${payTarget?.name || ""}`}>
-        {payResult ? (
-          <div className="text-center">
-            <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-full bg-amber-100">
-              <Loader2 className="h-7 w-7 animate-spin text-amber-600" />
+      {/* Messaging */}
+      <div className="mt-8">
+        <MessagingPanel session={session} />
+      </div>
+
+      {/* Parent dashboard enhancements */}
+      {selected && (
+        <div className="mt-8 grid gap-6 lg:grid-cols-2">
+          <AttendanceCalendar studentId={selected.id} studentName={selected.name} />
+          <GradeTrends studentId={selected.id} studentName={selected.name} />
+          <PaymentHistory studentId={selected.id} studentName={selected.name} />
+        </div>
+      )}
+      {/* Report Payment modal */}
+      <ReportPaymentModal
+        open={payOpen}
+        onClose={() => { setPayOpen(false); setPayResult(null); }}
+        school={data?.school}
+        student={payTarget}
+        onSubmit={submitPayment}
+        submitting={paying}
+      />
+
+      {/* Payment submitted confirmation */}
+      {payResult && !payOpen && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-navy-950/60 backdrop-blur-sm">
+          <div className="mx-4 w-full max-w-sm rounded-2xl bg-white p-6 text-center shadow-xl">
+            <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-full bg-emerald-100">
+              <CheckCircle2 className="h-7 w-7 text-emerald-600" />
             </div>
-            <h3 className="mt-4 text-lg font-bold text-navy-800">Payment submitted</h3>
+            <h3 className="mt-4 text-lg font-bold text-navy-800">Payment reported</h3>
             <p className="mt-1 text-sm text-navy-500">
-              {naira(payResult.amount)} sent for {payTarget?.name} — the school will
-              confirm it before it clears.
+              {naira(payResult.amount)} reported for {payTarget?.name}.
             </p>
             <p className="mt-3 inline-flex items-center gap-1.5 rounded-full bg-amber-50 px-3 py-1 text-xs font-bold text-amber-700 ring-1 ring-amber-600/20">
-              Receipt: {payResult.receiptNo} · Awaiting confirmation
+              Awaiting school confirmation
             </p>
             <p className="mt-3 text-xs text-navy-400">
-              Once the school confirms this payment, the official receipt will
-              be available for download right here.
+              Your balance will update once the school confirms this payment.
             </p>
             <button
-              onClick={() => {
-                setPayOpen(false);
-                setPayResult(null);
-              }}
+              onClick={() => setPayResult(null)}
               className="mt-6 inline-flex w-full items-center justify-center gap-2 rounded-xl bg-navy-800 py-3 text-sm font-semibold text-white transition hover:bg-navy-700"
             >
               Done
             </button>
           </div>
-        ) : (
-          <div className="space-y-4">
-            <div className="rounded-xl border border-navy-100 bg-navy-50/60 px-4 py-3">
-              <p className="text-xs text-navy-400">Outstanding balance</p>
-              <p className="text-xl font-extrabold text-navy-800">{naira(payTarget?.fee.balance)}</p>
-            </div>
-            <label className="block">
-              <span className="mb-1.5 block text-sm font-medium text-navy-700">Amount (₦)</span>
-              <input
-                type="number"
-                min={0}
-                value={payForm.amount}
-                onChange={(e) => setPayForm({ ...payForm, amount: e.target.value })}
-                placeholder="e.g. 185000"
-                className="w-full rounded-xl border border-navy-200 bg-white px-4 py-2.5 text-sm text-navy-800 outline-none transition focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20"
-              />
-            </label>
-            <label className="block">
-              <span className="mb-1.5 block text-sm font-medium text-navy-700">Payment method</span>
-              <select
-                value={payForm.method}
-                onChange={(e) => setPayForm({ ...payForm, method: e.target.value })}
-                className="w-full rounded-xl border border-navy-200 bg-white px-4 py-2.5 text-sm text-navy-800 outline-none transition focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20"
-              >
-                {METHODS.map((m) => (
-                  <option key={m}>{m}</option>
-                ))}
-              </select>
-            </label>
-            <button
-              onClick={submitPay}
-              disabled={paying || !payForm.amount}
-              className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-emerald-600 py-3 font-semibold text-white shadow-lg shadow-emerald-600/30 transition hover:bg-emerald-500 disabled:opacity-60"
-            >
-              {paying ? <Loader2 className="h-5 w-5 animate-spin" /> : <CreditCard className="h-5 w-5" />}
-              {paying ? "Processing…" : "Pay now"}
-            </button>
-            <p className="text-center text-xs text-navy-400">
-              A receipt is generated automatically. Payments clear only after the
-              school confirms receipt. (Demo — no real charge.)
-            </p>
-          </div>
-        )}
-      </Modal>
+        </div>
+      )}
 
       {toast && (
         <div className="fixed bottom-6 left-1/2 z-50 -translate-x-1/2 animate-fade-up rounded-xl bg-navy-900 px-5 py-3 text-sm font-semibold text-white shadow-2xl">

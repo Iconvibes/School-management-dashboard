@@ -30,6 +30,7 @@ import PrintableTimetable from "@/components/PrintableTimetable";
 import { gradeBadgeClasses, standingFromAverage, standingRemark, ordinal } from "@/lib/grading";
 import { DAYS, getDayTimeline, getPeriodTimes, MAX_PERIOD, PERIODS, schoolDayOf } from "@/lib/timetable";
 import { bounceToLogin } from "@/lib/auth-client";
+import ResourcesView from "@/components/student/ResourcesView";
 
 const naira = (n) =>
   new Intl.NumberFormat("en-NG", {
@@ -95,8 +96,8 @@ export default function StudentDashboard() {
   useEffect(() => {
     const applyHash = () => {
       const hash = window.location.hash.replace("#", "");
-      if (hash === "timetable") {
-        setView("timetable");
+      if ("timetable" === hash || "resources" === hash) {
+        setView(hash);
         window.scrollTo({ top: 0 });
       }
     };
@@ -679,6 +680,13 @@ export default function StudentDashboard() {
             )}
           </div>
             </>
+          )}
+
+          {view === "resources" && (
+            <ResourcesView
+              classArm={session.user.assignedClass}
+              subject=""
+            />
           )}
         </div>
       </div>

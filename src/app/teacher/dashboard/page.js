@@ -43,6 +43,8 @@ import TimetableView from "@/components/teacher/TimetableView";
 import ReportsView from "@/components/teacher/ReportsView";
 import MatrixView from "@/components/teacher/MatrixView";
 import { useTabFetch } from "@/hooks/useTabFetch";
+import SchemeView from "@/components/teacher/SchemeView";
+import ResourcesTab from "@/components/teacher/ResourcesTab";
 
 
 export default function TeacherDashboard() {
@@ -229,7 +231,7 @@ export default function TeacherDashboard() {
         setRows((prev) => {
           const next = { ...prev };
           data.users.forEach((u) => {
-            if (next[u.id] === undefined) next[u.id] = { ca: "", exam: "" };
+            if (next[u.id] === undefined) next[u.id] = { ca1: "", ca2: "", ca3: "", ca4: "", exam: "" };
           });
           return next;
         });
@@ -240,7 +242,7 @@ export default function TeacherDashboard() {
   useEffect(() => {
     const applyHash = () => {
       const hash = window.location.hash.replace("#", "");
-      if (hash === "reports" || hash === "attendance" || hash === "timetable") {
+      if (["reports", "attendance", "timetable", "scheme", "resources"].includes(hash)) {
         setView(hash);
         window.scrollTo({ top: 0 });
       }
@@ -284,9 +286,14 @@ export default function TeacherDashboard() {
         const map = {};
         const saved = {};
         (data.scores || []).forEach((s) => {
-          map[s.studentId] = { ca: s.caScore, exam: s.examScore };
-          // Store the saved values so dirty-comparison works (not just a boolean)
-          saved[s.studentId] = { ca: s.caScore, exam: s.examScore };
+          map[s.studentId] = {
+            ca1: s.ca1 ?? s.caScore ?? 0,
+            ca2: s.ca2 ?? 0,
+            ca3: s.ca3 ?? 0,
+            ca4: s.ca4 ?? 0,
+            exam: s.examScore,
+          };
+          saved[s.studentId] = { ...map[s.studentId] };
         });
         setSavedMap(saved);
         setRows((prev) => {
@@ -305,13 +312,16 @@ export default function TeacherDashboard() {
   }
 
   function computeRow(row) {
-    const ca = Math.min(MAX_CA, Math.max(0, Number(row?.ca) || 0));
+    const ca = computeCA(row?.ca1, row?.ca2, row?.ca3, row?.ca4);
     const exam = Math.min(MAX_EXAM, Math.max(0, Number(row?.exam) || 0));
     const total = ca + exam;
     return { ca, exam, total, grade: computeGrade(total) };
   }
 
-  const totalEntered = Object.keys(rows).filter((id) => rows[id]?.ca !== "" && rows[id]?.exam !== "").length;
+  const totalEntered = Object.keys(rows).filter((id) => {
+    const r = rows[id] || {};
+    return (Number(r.ca1) || 0) + (Number(r.ca2) || 0) + (Number(r.ca3) || 0) + (Number(r.ca4) || 0) > 0 || r.exam !== "";
+  }).length;
 
   const filteredStudents = students.filter((s) =>
     (s.name + s.email).toLowerCase().includes(search.toLowerCase())
@@ -341,8 +351,18 @@ export default function TeacherDashboard() {
     setSaving(true);
     try {
       const payload = Object.keys(rows)
-        .filter((id) => rows[id]?.ca !== "" || rows[id]?.exam !== "")
-        .map((id) => ({ studentId: id, caScore: rows[id].ca, examScore: rows[id].exam }));
+        .filter((id) => {
+          const r = rows[id] || {};
+          return (Number(r.ca1) || 0) + (Number(r.ca2) || 0) + (Number(r.ca3) || 0) + (Number(r.ca4) || 0) > 0 || r.exam !== "";
+        })
+        .map((id) => ({
+          studentId: id,
+          ca1: Number(rows[id].ca1) || 0,
+          ca2: Number(rows[id].ca2) || 0,
+          ca3: Number(rows[id].ca3) || 0,
+          ca4: Number(rows[id].ca4) || 0,
+          examScore: rows[id].exam,
+        }));
 
       const res = await fetch("/api/scores", {
         method: "POST",
@@ -356,7 +376,7 @@ export default function TeacherDashboard() {
         Object.fromEntries(
           payload.map((p) => [
             p.studentId,
-            { ca: Number(p.caScore), exam: Number(p.examScore) },
+            { ca1: p.ca1, ca2: p.ca2, ca3: p.ca3, ca4: p.ca4, exam: p.examScore },
           ])
         )
       );
@@ -638,6 +658,28 @@ export default function TeacherDashboard() {
             >
               <FileText className="h-4 w-4" /> Report Cards
             </button>
+            <button
+              onClick={() => {
+                setView("scheme");
+                history.replaceState(null, "", "/teacher/dashboard#scheme");
+              }}
+              className={`inline-flex items-center gap-1.5 rounded-lg px-4 py-2 text-sm font-semibold transition ${
+                view === "scheme" ? "bg-white text-navy-800 shadow-sm" : "text-navy-500 hover:text-navy-700"
+              }`}
+            >
+              <BookOpen className="h-4 w-4" /> Scheme
+            </button>
+            <button
+              onClick={() => {
+                setView("resources");
+                history.replaceState(null, "", "/teacher/dashboard#resources");
+              }}
+              className={`inline-flex items-center gap-1.5 rounded-lg px-4 py-2 text-sm font-semibold transition ${
+                view === "resources" ? "bg-white text-navy-800 shadow-sm" : "text-navy-500 hover:text-navy-700"
+              }`}
+            >
+              <FileText className="h-4 w-4" /> Resources
+            </button>
             </div>
           </div>
 
@@ -688,6 +730,16 @@ export default function TeacherDashboard() {
             openReport={openReport}
             classArm={classArm}
           />
+        )}
+
+          {/* SCHEME OF WORK VIEW */}
+{view === "scheme" && (
+          <SchemeView classArm={classArm} subject={subject} />
+        )}
+
+          {/* RESOURCES VIEW */}
+{view === "resources" && (
+          <ResourcesTab classArm={classArm} subject={subject} session={session} />
         )}
 
           {/* GRADING MATRIX VIEW */}

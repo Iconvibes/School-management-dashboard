@@ -19,6 +19,10 @@ import {
   ShieldCheck,
   Layers,
   History,
+  AlertTriangle,
+  TrendingUp,
+  GraduationCap,
+  Building2,
 } from "lucide-react";
 import Logo from "@/components/Logo";
 import NotificationsBell from "@/components/NotificationsBell";
@@ -38,13 +42,18 @@ export default function Sidebar({ role, open, onClose }) {
           { href: "/teacher/dashboard#attendance", label: "Attendance", icon: CalendarCheck },
           { href: "/teacher/dashboard#timetable", label: "My Timetable", icon: CalendarDays },
           { href: "/teacher/dashboard#reports", label: "Report Cards", icon: FileText },
+          { href: "/teacher/dashboard#scheme", label: "Scheme of Work", icon: BookOpen },
+          { href: "/teacher/dashboard#resources", label: "Class Resources", icon: FileText },
         ]
       : role === "PARENT"
-      ? [{ href: "/parent/dashboard", label: "My Children", icon: HeartHandshake }]
+      ? [
+          { href: "/parent/dashboard", label: "My Children", icon: HeartHandshake },
+        ]
       : role === "STUDENT"
       ? [
           { href: "/student/dashboard", label: "My Report", icon: BookOpen },
           { href: "/student/dashboard#timetable", label: "My Timetable", icon: CalendarDays },
+          { href: "/student/dashboard#resources", label: "Class Resources", icon: FileText },
         ]
       : [
           ...(can(role, "stats.view")
@@ -80,6 +89,16 @@ export default function Sidebar({ role, open, onClose }) {
             : []),
           ...(can(role, "reports.view")
             ? [{ href: "/admin/dashboard#archives", label: "Previous Terms", icon: History }]
+            : []),
+          ...(can(role, "school.edit")
+            ? [
+                { href: "/admin/dashboard#scheme", label: "Scheme of Work", icon: BookOpen },
+                { href: "/admin/dashboard#risk", label: "Risk Alerts", icon: AlertTriangle },
+                { href: "/admin/dashboard#performance", label: "Teacher Performance", icon: TrendingUp },
+                { href: "/admin/dashboard#alumni", label: "Alumni", icon: GraduationCap },
+                { href: "/admin/dashboard#engagement", label: "Parent Engagement", icon: HeartHandshake },
+                { href: "/admin/dashboard#branches", label: "Branches", icon: Building2 },
+              ]
             : []),
         ];
 

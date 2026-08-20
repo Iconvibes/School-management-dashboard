@@ -62,6 +62,15 @@ const schoolSchema = new mongoose.Schema(
     // student's parent is linked). Default false: deleted means hidden from
     // every staff view, including reconcile.
     reconcileDeletedReminders: { type: Boolean, default: false },
+    // School bank account details — shown to parents on the fee payment page
+    // so they can make bank transfers and then report the payment.
+    bankDetails: {
+      bankName: { type: String, default: "" },
+      accountName: { type: String, default: "" },
+      accountNumber: { type: String, default: "" },
+      sortCode: { type: String, default: "" },
+      otherInstructions: { type: String, default: "" },
+    },
   },
   {
     timestamps: true,

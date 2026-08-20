@@ -1,7 +1,7 @@
 "use client";
 
 import { Check, ChevronDown, ClipboardList, Loader2, Plus, RotateCcw, Save, Search } from "lucide-react";
-import { gradeBadgeClasses, MAX_CA, MAX_EXAM } from "@/lib/grading";
+import { gradeBadgeClasses, MAX_CA, MAX_CA_PER_COMPONENT, CA_COMPONENTS, MAX_EXAM, computeCA } from "@/lib/grading";
 
 export default function MatrixView({
   classArm, setClassArm, teacherArms, subject, setSubject, teacherSubjects,
@@ -94,7 +94,10 @@ export default function MatrixView({
                 <thead>
                   <tr className="border-b border-navy-100 bg-navy-50/60 text-xs font-semibold uppercase tracking-wider text-navy-400">
                     <th className="px-5 py-3.5">Student</th>
-                    <th className="px-5 py-3.5 text-center">CA (0–{MAX_CA})</th>
+                    {[1, 2, 3, 4].map((i) => (
+                      <th key={i} className="px-3 py-3.5 text-center text-[10px]">CA{i}<br/>(0–{MAX_CA_PER_COMPONENT})</th>
+                    ))}
+                    <th className="px-5 py-3.5 text-center">CA Total<br/>(0–{MAX_CA})</th>
                     <th className="px-5 py-3.5 text-center">Exam (0–{MAX_EXAM})</th>
                     <th className="px-5 py-3.5 text-center">Total</th>
                     <th className="px-5 py-3.5 text-center">Grade</th>
@@ -103,13 +106,17 @@ export default function MatrixView({
                 </thead>
                 <tbody>
                   {filteredStudents.map((student) => {
-                    const row = rows[student.id] || { ca: "", exam: "" };
+                    const row = rows[student.id] || { ca1: "", ca2: "", ca3: "", ca4: "", exam: "" };
                     const { ca, exam, total, grade } = computeRow(row);
-                    const isSaved = savedMap[student.id] && rows[student.id]?.ca !== "";
+                    const caTotal = computeCA(row.ca1, row.ca2, row.ca3, row.ca4);
+                    const isSaved = savedMap[student.id] && rows[student.id]?.ca1 !== undefined;
                     const isDirty =
-                      (row.ca !== "" || row.exam !== "") &&
+                      (caTotal > 0 || row.exam !== "") &&
                       (!savedMap[student.id] ||
-                        Number(row.ca) !== Number(savedMap[student.id]?.ca) ||
+                        Number(row.ca1) !== Number(savedMap[student.id]?.ca1) ||
+                        Number(row.ca2) !== Number(savedMap[student.id]?.ca2) ||
+                        Number(row.ca3) !== Number(savedMap[student.id]?.ca3) ||
+                        Number(row.ca4) !== Number(savedMap[student.id]?.ca4) ||
                         Number(row.exam) !== Number(savedMap[student.id]?.exam));
                     return (
                       <tr
@@ -129,17 +136,22 @@ export default function MatrixView({
                             </div>
                           </div>
                         </td>
+                        {[1, 2, 3, 4].map((i) => (
+                          <td key={i} className="px-2 py-3 text-center">
+                            <input
+                              type="number"
+                              min={0}
+                              max={MAX_CA_PER_COMPONENT}
+                              value={row[`ca${i}`] || ""}
+                              onChange={(e) => setScore(student.id, `ca${i}`, e.target.value)}
+                              onBlur={(e) => setScore(student.id, `ca${i}`, Math.min(MAX_CA_PER_COMPONENT, Math.max(0, Number(e.target.value) || 0)))}
+                              placeholder="—"
+                              className="w-14 rounded-lg border border-navy-200 bg-white px-1 py-2 text-center text-sm font-medium text-navy-800 outline-none transition focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20"
+                            />
+                          </td>
+                        ))}
                         <td className="px-5 py-3 text-center">
-                          <input
-                            type="number"
-                            min={0}
-                            max={MAX_CA}
-                            value={row.ca}
-                            onChange={(e) => setScore(student.id, "ca", e.target.value)}
-                            onBlur={(e) => setScore(student.id, "ca", Math.min(MAX_CA, Math.max(0, Number(e.target.value) || 0)))}
-                            placeholder="—"
-                            className="w-20 rounded-lg border border-navy-200 bg-white px-2 py-2 text-center text-sm font-medium text-navy-800 outline-none transition focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20"
-                          />
+                          <span className="text-sm font-bold text-navy-600">{caTotal > 0 ? caTotal : "—"}</span>
                         </td>
                         <td className="px-5 py-3 text-center">
                           <input
@@ -167,11 +179,11 @@ export default function MatrixView({
                                 : "text-navy-300"
                             }`}
                           >
-                            {row.ca !== "" || row.exam !== "" ? total : "—"}
+                            {caTotal > 0 || row.exam !== "" ? total : "—"}
                           </span>
                         </td>
                         <td className="px-5 py-3 text-center">
-                          {row.ca !== "" || row.exam !== "" ? (
+                          {caTotal > 0 || row.exam !== "" ? (
                             <span
                               className={`inline-flex h-7 w-7 items-center justify-center rounded-lg text-sm font-bold ring-1 ${gradeBadgeClasses(grade)}`}
                             >

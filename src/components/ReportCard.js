@@ -146,14 +146,14 @@ export default function ReportCard({ school, user, scores, summary, attendance }
       <table style={{ width: "100%", marginTop: "26px", borderCollapse: "collapse", fontSize: "14px" }}>
         <thead>
           <tr style={{ background: brand, color: "#ffffff" }}>
-            {["Subject", "CA (40)", "Exam (60)", "Total (100)", "Grade", "Remark"].map((h, i) => (
+            {["Subject", "CA1", "CA2", "CA3", "CA4", "CA Total", "Exam (60)", "Total (100)", "Grade", "Remark"].map((h, i) => (
               <th
                 key={h}
                 style={{
-                  padding: "12px 12px",
-                  textAlign: i === 0 || i === 5 ? "left" : "center",
+                  padding: "8px 6px",
+                  textAlign: i === 0 || i === 9 ? "left" : "center",
                   fontWeight: "700",
-                  fontSize: "12px",
+                  fontSize: "10px",
                   letterSpacing: "0.5px",
                   textTransform: "uppercase",
                 }}
@@ -168,9 +168,13 @@ export default function ReportCard({ school, user, scores, summary, attendance }
             const bg = i % 2 === 0 ? "#f8fafc" : "#ffffff";
             return (
               <tr key={`${s.subject}-${i}`} style={{ background: bg, borderBottom: "1px solid #e2e8f0" }}>
-                <td style={{ padding: "9px 12px", fontWeight: "600", color: "#0f172a" }}>{s.subject}</td>
-                <td style={{ padding: "9px 12px", textAlign: "center", color: "#334155" }}>{s.caScore}</td>
-                <td style={{ padding: "9px 12px", textAlign: "center", color: "#334155" }}>{s.examScore}</td>
+                <td style={{ padding: "9px 6px", fontWeight: "600", color: "#0f172a", fontSize: "12px" }}>{s.subject}</td>
+                <td style={{ padding: "9px 6px", textAlign: "center", color: "#334155", fontSize: "12px" }}>{s.ca1 ?? "—"}</td>
+                <td style={{ padding: "9px 6px", textAlign: "center", color: "#334155", fontSize: "12px" }}>{s.ca2 ?? "—"}</td>
+                <td style={{ padding: "9px 6px", textAlign: "center", color: "#334155", fontSize: "12px" }}>{s.ca3 ?? "—"}</td>
+                <td style={{ padding: "9px 6px", textAlign: "center", color: "#334155", fontSize: "12px" }}>{s.ca4 ?? "—"}</td>
+                <td style={{ padding: "9px 6px", textAlign: "center", fontWeight: "700", color: "#0f172a", fontSize: "12px" }}>{s.caScore}</td>
+                <td style={{ padding: "9px 6px", textAlign: "center", color: "#334155", fontSize: "12px" }}>{s.examScore}</td>
                 <td style={{ padding: "9px 12px", textAlign: "center", fontWeight: "700", color: "#0f172a" }}>{s.totalScore}</td>
                 <td style={{ padding: "6px 12px", textAlign: "center" }}>
                   <span
@@ -206,7 +210,7 @@ export default function ReportCard({ school, user, scores, summary, attendance }
         </tbody>
         <tfoot>
           <tr>
-            <td style={{ padding: "12px 14px", fontWeight: "700", color: "#0f172a", borderTop: `3px solid ${brand}` }} colSpan={5}>
+            <td style={{ padding: "12px 14px", fontWeight: "700", color: "#0f172a", borderTop: `3px solid ${brand}` }} colSpan={9}>
               TOTAL · {summary.subjects || 0} subjects
             </td>
             <td style={{ padding: "12px 14px", textAlign: "center", fontWeight: "800", fontSize: "18px", color: brand, borderTop: `3px solid ${brand}` }}>
@@ -227,12 +231,47 @@ export default function ReportCard({ school, user, scores, summary, attendance }
             <br />
             Days absent: <strong style={{ color: att.absent > 5 ? "#e11d48" : "#0f172a" }}>{att.absent}</strong>
           </div>
+          {/* Attendance rate bar */}
+          {att.total > 0 && (
+            <div style={{ marginTop: "8px" }}>
+              <div style={{ height: "6px", borderRadius: "3px", background: "#e2e8f0", overflow: "hidden" }}>
+                <div style={{ height: "100%", width: `${Math.round((att.present / att.total) * 100)}%`, borderRadius: "3px", background: att.present / att.total >= 0.9 ? "#059669" : att.present / att.total >= 0.75 ? "#d97706" : "#e11d48" }} />
+              </div>
+              <div style={{ fontSize: "11px", color: "#94a3b8", marginTop: "4px", textAlign: "right" }}>
+                {Math.round((att.present / att.total) * 100)}% attendance rate
+              </div>
+            </div>
+          )}
         </div>
         <div style={{ padding: "14px 16px", background: "#f1f5f9", borderRadius: "10px", fontSize: "13px", color: "#475569" }}>
           <span style={{ fontWeight: "700", color: "#0f172a" }}>Class Teacher&apos;s Remark: </span>
           {summary.standing?.remark || "Keep working hard — every effort counts!"}
         </div>
       </div>
+
+      {/* Class Position History sparkline (if term history exists) */}
+      {summary.positionHistory && summary.positionHistory.length > 1 && (
+        <div style={{ marginTop: "16px", padding: "14px 16px", background: "#f8fafc", border: "1px solid #e2e8f0", borderRadius: "10px" }}>
+          <div style={{ fontSize: "10px", fontWeight: "700", letterSpacing: "1px", textTransform: "uppercase", color: "#94a3b8" }}>
+            Class Position Trend
+          </div>
+          <div style={{ display: "flex", alignItems: "flex-end", gap: "6px", marginTop: "8px", height: "40px" }}>
+            {summary.positionHistory.map((p, i) => {
+              const maxPos = Math.max(...summary.positionHistory.map((x) => x.position || 1));
+              const height = Math.max(8, ((maxPos - (p.position || 1) + 1) / maxPos) * 40);
+              return (
+                <div key={i} style={{ flex: 1, textAlign: "center" }}>
+                  <div style={{ height: `${height}px`, borderRadius: "4px", background: i === summary.positionHistory.length - 1 ? brand : "#cbd5e1", marginBottom: "2px" }} />
+                  <div style={{ fontSize: "8px", color: "#94a3b8" }}>{p.term?.split(" ")[0] || `T${i + 1}`}</div>
+                </div>
+              );
+            })}
+          </div>
+          <div style={{ fontSize: "10px", color: "#64748b", marginTop: "4px" }}>
+            Current: {ordinal(position)} of {outOf} · Trend: {summary.positionTrend === "improving" ? "📈 Improving" : summary.positionTrend === "declining" ? "📉 Declining" : "➡️ Stable"}
+          </div>
+        </div>
+      )}
 
       {/* Signatures */}
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "40px", marginTop: "56px" }}>

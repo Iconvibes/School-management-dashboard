@@ -915,13 +915,19 @@ export async function saveScores({ schoolId, classArm, subject, rows }) {
   await ready();
   const saved = [];
   for (const row of rows) {
-    const caScore = Math.min(40, Math.max(0, Number(row.caScore) || 0));
+    // Support both legacy (caScore) and new (ca1-4) formats
+    const ca1 = Math.min(10, Math.max(0, Number(row.ca1) || 0));
+    const ca2 = Math.min(10, Math.max(0, Number(row.ca2) || 0));
+    const ca3 = Math.min(10, Math.max(0, Number(row.ca3) || 0));
+    const ca4 = Math.min(10, Math.max(0, Number(row.ca4) || 0));
+    const caScore = row.ca1 !== undefined ? Math.min(40, ca1 + ca2 + ca3 + ca4) : Math.min(40, Math.max(0, Number(row.caScore) || 0));
     const examScore = Math.min(60, Math.max(0, Number(row.examScore) || 0));
     const totalScore = caScore + examScore;
     const grade = computeGrade(totalScore);
+    const update = { schoolId, ca1, ca2, ca3, ca4, caScore, examScore, totalScore, grade };
     const score = await Score.findOneAndUpdate(
       { studentId: row.studentId, schoolId, subject, classArm },
-      { schoolId, caScore, examScore, totalScore, grade },
+      update,
       { upsert: true, new: true }
     );
     saved.push(score.toJSON());
@@ -1730,4 +1736,374 @@ export async function listDigests(schoolId, userId, { limit = 20 } = {}) {
   return (
     await Digest.find({ schoolId, userId }).sort({ createdAt: -1 }).limit(limit)
   ).map(safe);
+}
+
+// ── Scheme of Work ──────────────────────────────────────────────────
+import SchemeOfWork from "@/models/SchemeOfWork";
+
+export async function createSchemeOfWork({ schoolId, subject, classArm, session, term, topics, createdBy }) {
+  await ready();
+  const existing = await SchemeOfWork.findOne({ schoolId, subject, classArm, session, term });
+  if (existing) {
+    existing.topics = topics || [];
+    existing.updatedBy = createdBy;
+    await existing.save();
+    return safe(existing);
+  }
+  const doc = await SchemeOfWork.create({ schoolId, subject, classArm, session, term, topics: topics || [], createdBy, updatedBy: createdBy });
+  return safe(doc);
+}
+
+export async function getSchemesOfWork(schoolId, { subject, classArm, session, term } = {}) {
+  await ready();
+  const q = { schoolId };
+  if (subject) q.subject = subject;
+  if (classArm) q.classArm = classArm;
+  if (session) q.session = session;
+  if (term) q.term = term;
+  return (await SchemeOfWork.find(q).sort({ createdAt: -1 })).map(safe);
+}
+
+export async function getSchemeOfWork(schemeId) {
+  await ready();
+  return safe(await SchemeOfWork.findById(schemeId));
+}
+
+export async function updateSchemeOfWork(schemeId, updates) {
+  await ready();
+  return safe(await SchemeOfWork.findByIdAndUpdate(schemeId, updates, { new: true }));
+}
+
+export async function deleteSchemeOfWork(schemeId) {
+  await ready();
+  await SchemeOfWork.findByIdAndDelete(schemeId);
+  return true;
+}
+
+// ── Class Resources ─────────────────────────────────────────────────
+import ClassResource from "@/models/ClassResource";
+
+export async function createClassResource({ schoolId, teacherId, classArm, subject, type, title, description, content, attachments, dueDate, maxScore, isReadAhead, readAheadDate, ocrSource }) {
+  await ready();
+  const doc = await ClassResource.create({
+    schoolId, teacherId, classArm, subject, type, title,
+    description: description || "", content: content || "",
+    attachments: attachments || [],
+    dueDate: dueDate || null, maxScore: maxScore || null,
+    isReadAhead: isReadAhead || false, readAheadDate: readAheadDate || null,
+    published: true, publishedAt: new Date(),
+    ocrSource: ocrSource || null,
+  });
+  return safe(doc);
+}
+
+export async function listClassResources(schoolId, { classArm, subject, teacherId, type } = {}) {
+  await ready();
+  const q = { schoolId, published: true };
+  if (classArm) q.classArm = classArm;
+  if (subject) q.subject = subject;
+  if (teacherId) q.teacherId = teacherId;
+  if (type) q.type = type;
+  return (await ClassResource.find(q).sort({ createdAt: -1 })).map(safe);
+}
+
+export async function getClassResource(resourceId) {
+  await ready();
+  return safe(await ClassResource.findById(resourceId));
+}
+
+export async function updateClassResource(resourceId, updates) {
+  await ready();
+  return safe(await ClassResource.findByIdAndUpdate(resourceId, updates, { new: true }));
+}
+
+export async function deleteClassResource(resourceId) {
+  await ready();
+  await ClassResource.findByIdAndDelete(resourceId);
+  return true;
+}
+
+// ── Alumni ──────────────────────────────────────────────────────────
+import Alumni from "@/models/Alumni";
+
+export async function createAlumni({ schoolId, studentId, name, graduationYear, classArm, university, program, career, contactEmail, contactPhone, linkedIn, optedIn, notes }) {
+  await ready();
+  const doc = await Alumni.create({
+    schoolId, studentId: studentId || null, name, graduationYear,
+    classArm: classArm || "", university: university || "", program: program || "",
+    career: career || "", contactEmail: contactEmail || "", contactPhone: contactPhone || "",
+    linkedIn: linkedIn || "", optedIn: optedIn || false,
+    optedInAt: optedIn ? new Date() : null,
+    notes: notes || "",
+  });
+  return safe(doc);
+}
+
+export async function listAlumni(schoolId, { graduationYear, search } = {}) {
+  await ready();
+  const q = { schoolId };
+  if (graduationYear) q.graduationYear = graduationYear;
+  if (search) q.name = { $regex: search, $options: "i" };
+  return (await Alumni.find(q).sort({ graduationYear: -1, name: 1 })).map(safe);
+}
+
+export async function getAlumniRecord(alumniId) {
+  await ready();
+  return safe(await Alumni.findById(alumniId));
+}
+
+export async function updateAlumni(alumniId, updates) {
+  await ready();
+  return safe(await Alumni.findByIdAndUpdate(alumniId, updates, { new: true }));
+}
+
+export async function deleteAlumni(alumniId) {
+  await ready();
+  await Alumni.findByIdAndDelete(alumniId);
+  return true;
+}
+
+export async function getAlumniStats(schoolId) {
+  await ready();
+  const all = await Alumni.find({ schoolId });
+  const total = all.length;
+  const byYear = {};
+  const universities = {};
+  for (const a of all) {
+    byYear[a.graduationYear] = (byYear[a.graduationYear] || 0) + 1;
+    if (a.university) universities[a.university] = (universities[a.university] || 0) + 1;
+  }
+  const placed = all.filter((a) => a.university).length;
+  return { total, byYear, universities, placementRate: total ? Math.round((placed / total) * 100) : 0 };
+}
+
+// ── Push Subscriptions ──────────────────────────────────────────────
+import PushSubscription from "@/models/PushSubscription";
+
+export async function savePushSubscription({ schoolId, userId, endpoint, keys, userAgent }) {
+  await ready();
+  const existing = await PushSubscription.findOne({ endpoint });
+  if (existing) {
+    existing.keys = keys;
+    existing.userAgent = userAgent || existing.userAgent;
+    existing.active = true;
+    existing.lastUsedAt = new Date();
+    await existing.save();
+    return safe(existing);
+  }
+  const doc = await PushSubscription.create({ schoolId, userId, endpoint, keys, userAgent: userAgent || "", active: true, lastUsedAt: new Date() });
+  return safe(doc);
+}
+
+export async function listPushSubscriptions(schoolId, userIds) {
+  await ready();
+  const q = { schoolId, active: true };
+  if (userIds && userIds.length) q.userId = { $in: userIds };
+  return (await PushSubscription.find(q)).map(safe);
+}
+
+export async function removePushSubscriptions(ids) {
+  await ready();
+  await PushSubscription.updateMany({ _id: { $in: ids } }, { active: false });
+}
+
+export async function deletePushSubscription(endpoint) {
+  await ready();
+  await PushSubscription.deleteOne({ endpoint });
+  return true;
+}
+
+// ── Academic Risk ───────────────────────────────────────────────────
+export async function detectAcademicRisks(schoolId) {
+  await ready();
+  const allScores = await Score.find({ schoolId }).sort({ session: 1, term: 1 });
+  const byStudent = {};
+  for (const s of allScores) {
+    const key = `${s.studentId}::${s.subject}`;
+    if (!byStudent[key]) byStudent[key] = [];
+    byStudent[key].push(s);
+  }
+  const risks = [];
+  for (const [key, studentScores] of Object.entries(byStudent)) {
+    if (studentScores.length < 2) continue;
+    const latest = studentScores[studentScores.length - 1];
+    const previous = studentScores[studentScores.length - 2];
+    const latestAvg = (Number(latest.ca) + Number(latest.exam)) / 2;
+    const previousAvg = (Number(previous.ca) + Number(previous.exam)) / 2;
+    const drop = previousAvg - latestAvg;
+    if (drop >= 15) {
+      risks.push({
+        studentId: latest.studentId, subject: latest.subject,
+        classArm: latest.classArm || "",
+        previousAverage: Math.round(previousAvg),
+        currentAverage: Math.round(latestAvg),
+        drop: Math.round(drop),
+        severity: drop >= 25 ? "high" : "medium",
+        previousTerm: previous.term, currentTerm: latest.term,
+      });
+    }
+  }
+  return risks.sort((a, b) => b.drop - a.drop);
+}
+
+// ── Teacher Performance ─────────────────────────────────────────────
+export async function getTeacherPerformance(schoolId, teacherId) {
+  await ready();
+  const teacherEntries = await TimetableEntry.find({ schoolId, teacherId });
+  const taughtClasses = [...new Set(teacherEntries.map((e) => `${e.subject}::${e.classArm}`))];
+  const classMetrics = [];
+  for (const combo of taughtClasses) {
+    const [subject, classArm] = combo.split("::");
+    const classScores = await Score.find({ schoolId, subject, classArm });
+    if (classScores.length === 0) continue;
+    const avg = classScores.reduce((sum, s) => sum + (Number(s.ca) + Number(s.exam)) / 2, 0) / classScores.length;
+    const allSubjectScores = await Score.find({ schoolId, subject });
+    const schoolAvg = allSubjectScores.reduce((sum, s) => sum + (Number(s.ca) + Number(s.exam)) / 2, 0) / Math.max(1, allSubjectScores.length);
+    classMetrics.push({ subject, classArm, studentCount: classScores.length, averageScore: Math.round(avg), schoolAverage: Math.round(schoolAvg), vsSchool: Math.round(avg - schoolAvg) });
+  }
+  const overallAvg = classMetrics.length ? classMetrics.reduce((sum, m) => sum + m.averageScore, 0) / classMetrics.length : 0;
+  return { teacherId, classMetrics, overallAverage: Math.round(overallAvg) };
+}
+
+// ── Messages ───────────────────────────────────────────────────────
+import Message from "@/models/Message";
+
+export async function sendMessage({ schoolId, from, to, studentId, subject, body, type, replyTo, attachments }) {
+  await ready();
+  const doc = await Message.create({
+    schoolId, from, to,
+    studentId: studentId || null,
+    subject: subject || "",
+    body,
+    type: type || "direct",
+    replyTo: replyTo || null,
+    attachments: attachments || [],
+  });
+  return safe(doc);
+}
+
+export async function getConversation(schoolId, userId1, userId2, { limit = 50, before } = {}) {
+  await ready();
+  const q = {
+    schoolId,
+    $or: [
+      { from: userId1, to: userId2 },
+      { from: userId2, to: userId1 },
+    ],
+  };
+  if (before) q.createdAt = { $lt: new Date(before) };
+  return (await Message.find(q).sort({ createdAt: -1 }).limit(limit)).map(safe).reverse();
+}
+
+export async function listConversations(schoolId, userId) {
+  await ready();
+  // Get the most recent message from each conversation partner
+  const pipeline = [
+    { $match: { schoolId, $or: [{ from: userId }, { to: userId }] } },
+    { $sort: { createdAt: -1 } },
+    {
+      $group: {
+        _id: {
+          $cond: [{ $eq: ["$from", userId] }, "$to", "$from"],
+        },
+        lastMessage: { $first: "$body" },
+        lastDate: { $first: "$createdAt" },
+        unread: { $sum: { $cond: [{ $and: [{ $eq: ["$to", userId] }, { $eq: ["$read", false] }] }, 1, 0] } },
+      },
+    },
+    { $sort: { lastDate: -1 } },
+  ];
+  const results = await Message.aggregate(pipeline);
+  // Populate user names
+  const conversations = [];
+  for (const r of results) {
+    const user = await User.findById(r._id).select("name role assignedClass").lean();
+    if (user) {
+      conversations.push({
+        partnerId: r._id.toString(),
+        partnerName: user.name,
+        partnerRole: user.role,
+        partnerClass: user.assignedClass,
+        lastMessage: r.lastMessage,
+        lastDate: r.lastDate,
+        unread: r.unread,
+      });
+    }
+  }
+  return conversations;
+}
+
+export async function markMessageRead(messageId) {
+  await ready();
+  await Message.findByIdAndUpdate(messageId, { read: true, readAt: new Date() });
+}
+
+export async function markConversationRead(schoolId, userId, partnerId) {
+  await ready();
+  await Message.updateMany(
+    { schoolId, from: partnerId, to: userId, read: false },
+    { read: true, readAt: new Date() }
+  );
+}
+
+export async function getUnreadMessageCount(schoolId, userId) {
+  await ready();
+  return Message.countDocuments({ schoolId, to: userId, read: false });
+}
+
+// ── Notification Preferences ────────────────────────────────────────
+import NotificationPreference from "@/models/NotificationPreference";
+
+const DEFAULT_CHANNEL_PREF = { inApp: true, email: true, sms: false, whatsapp: false, push: true };
+
+export async function getNotificationPreferences(schoolId, userId) {
+  await ready();
+  const existing = await NotificationPreference.findOne({ schoolId, userId });
+  if (existing) return safe(existing);
+  return {
+    id: null, schoolId, userId,
+    feeReminder: { ...DEFAULT_CHANNEL_PREF },
+    reportCard: { ...DEFAULT_CHANNEL_PREF },
+    announcement: { ...DEFAULT_CHANNEL_PREF },
+    classResource: { ...DEFAULT_CHANNEL_PREF, email: false },
+    paymentConfirmation: { ...DEFAULT_CHANNEL_PREF },
+    readAhead: { ...DEFAULT_CHANNEL_PREF, email: false },
+    message: { ...DEFAULT_CHANNEL_PREF, email: false },
+    allDisabled: false,
+  };
+}
+
+export async function updateNotificationPreferences(schoolId, userId, updates) {
+  await ready();
+  const existing = await NotificationPreference.findOne({ schoolId, userId });
+  if (existing) {
+    Object.assign(existing, updates);
+    await existing.save();
+    return safe(existing);
+  }
+  const doc = await NotificationPreference.create({
+    schoolId, userId,
+    feeReminder: updates.feeReminder || { ...DEFAULT_CHANNEL_PREF },
+    reportCard: updates.reportCard || { ...DEFAULT_CHANNEL_PREF },
+    announcement: updates.announcement || { ...DEFAULT_CHANNEL_PREF },
+    classResource: updates.classResource || { ...DEFAULT_CHANNEL_PREF, email: false },
+    paymentConfirmation: updates.paymentConfirmation || { ...DEFAULT_CHANNEL_PREF },
+    readAhead: updates.readAhead || { ...DEFAULT_CHANNEL_PREF, email: false },
+    message: updates.message || { ...DEFAULT_CHANNEL_PREF, email: false },
+    allDisabled: updates.allDisabled || false,
+  });
+  return safe(doc);
+}
+
+export async function getEnabledChannels(schoolId, userId, notificationType) {
+  const prefs = await getNotificationPreferences(schoolId, userId);
+  if (prefs.allDisabled) return ["in_app"];
+  const typePrefs = prefs[notificationType] || prefs.announcement || DEFAULT_CHANNEL_PREF;
+  const channels = [];
+  if (typePrefs.inApp) channels.push("in_app");
+  if (typePrefs.email) channels.push("email");
+  if (typePrefs.sms) channels.push("sms");
+  if (typePrefs.whatsapp) channels.push("whatsapp");
+  if (typePrefs.push) channels.push("push");
+  return channels.length ? channels : ["in_app"];
 }

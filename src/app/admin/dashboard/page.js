@@ -79,6 +79,12 @@ import RolesTab from "@/components/admin/RolesTab";
 import LoginsTab from "@/components/admin/LoginsTab";
 import TimetableTab from "@/components/admin/TimetableTab";
 import SettingsTab from "@/components/admin/SettingsTab";
+import SchemeOfWorkTab from "@/components/admin/SchemeOfWorkTab";
+import RiskAlerts from "@/components/admin/RiskAlerts";
+import TeacherPerformance from "@/components/admin/TeacherPerformance";
+import AlumniTab from "@/components/admin/AlumniTab";
+import EngagementTab from "@/components/admin/EngagementTab";
+import BranchesTab from "@/components/admin/BranchesTab";
 import { armAlreadyExists } from "@/lib/arms";
 import { downloadBlob, toCSV, withBOM } from "@/lib/csv";
 import { getSubjects, gradeBadgeClasses, ordinal, TERMS } from "@/lib/grading";
@@ -438,7 +444,7 @@ export default function AdminDashboard() {
   useEffect(() => {
     const applyHash = () => {
       const hash = window.location.hash.replace("#", "");
-      if (["classes", "teachers", "roles", "logins", "students", "fees", "reports", "timetable", "archives", "settings"].includes(hash)) setTab(hash);
+      if (["classes", "teachers", "roles", "logins", "students", "fees", "reports", "timetable", "archives", "settings", "scheme", "risk", "performance", "alumni", "engagement", "branches"].includes(hash)) setTab(hash);
     };
     applyHash();
     window.addEventListener("hashchange", applyHash);
@@ -2356,6 +2362,13 @@ export default function AdminDashboard() {
     ...(isSuper || myRole === "REGISTRAR" ? [{ key: "archives", label: "Previous Terms" }] : []),
     // Branding lives with the school owner — logo upload + brand color.
     ...(isSuper ? [{ key: "settings", label: "Settings" }] : []),
+    // Scheme of work, risk alerts, teacher performance, alumni.
+    ...(isSuper ? [{ key: "scheme", label: "Scheme of Work" }] : []),
+    ...(isSuper ? [{ key: "risk", label: "Risk Alerts" }] : []),
+    ...(isSuper ? [{ key: "performance", label: "Teacher Performance" }] : []),
+    ...(isSuper ? [{ key: "alumni", label: "Alumni" }] : []),
+    ...(isSuper ? [{ key: "engagement", label: "Parent Engagement" }] : []),
+    ...(isSuper ? [{ key: "branches", label: "Branches" }] : []),
   ];
   // A role-specific hash (e.g. /admin/dashboard#fees as a BURSAR) must not
   // land on a tab they can't see — fall back to the first visible tab.
@@ -2967,6 +2980,30 @@ export default function AdminDashboard() {
             saveSettings={saveSettings}
             handleImageFile={handleImageFile}
           />
+        )}
+
+        {activeTab === "scheme" && (
+          <SchemeOfWorkTab session={session} />
+        )}
+
+        {activeTab === "risk" && (
+          <RiskAlerts session={session} />
+        )}
+
+        {activeTab === "performance" && (
+          <TeacherPerformance session={session} />
+        )}
+
+        {activeTab === "alumni" && (
+          <AlumniTab session={session} />
+        )}
+
+        {activeTab === "engagement" && (
+          <EngagementTab session={session} />
+        )}
+
+        {activeTab === "branches" && (
+          <BranchesTab session={session} />
         )}
 
       {/* Report card viewer modal */}

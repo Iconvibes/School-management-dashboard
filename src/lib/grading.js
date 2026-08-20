@@ -1,5 +1,17 @@
 export const MAX_CA = 40;
+export const MAX_CA_PER_COMPONENT = 10;
+export const CA_COMPONENTS = 4;
 export const MAX_EXAM = 60;
+
+/** Compute total CA from 4 components */
+export function computeCA(ca1, ca2, ca3, ca4) {
+  return Math.min(MAX_CA, Math.max(0,
+    (Number(ca1) || 0) +
+    (Number(ca2) || 0) +
+    (Number(ca3) || 0) +
+    (Number(ca4) || 0)
+  ));
+}
 
 export const DEFAULT_SUBJECTS = [
   "Mathematics",

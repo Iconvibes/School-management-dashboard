@@ -1908,7 +1908,12 @@ export async function setSchoolStatus(schoolId, status) {
 export async function saveScores({ schoolId, classArm, subject, rows }) {
   const saved = [];
   for (const row of rows) {
-    const caScore = Math.min(40, Math.max(0, Number(row.caScore) || 0));
+    // Support both legacy (caScore) and new (ca1-4) formats
+    const ca1 = Math.min(10, Math.max(0, Number(row.ca1) || 0));
+    const ca2 = Math.min(10, Math.max(0, Number(row.ca2) || 0));
+    const ca3 = Math.min(10, Math.max(0, Number(row.ca3) || 0));
+    const ca4 = Math.min(10, Math.max(0, Number(row.ca4) || 0));
+    const caScore = row.ca1 !== undefined ? Math.min(40, ca1 + ca2 + ca3 + ca4) : Math.min(40, Math.max(0, Number(row.caScore) || 0));
     const examScore = Math.min(60, Math.max(0, Number(row.examScore) || 0));
     const totalScore = caScore + examScore;
     const grade = totalScore >= 70 ? "A" : totalScore >= 60 ? "B" : totalScore >= 50 ? "C" : totalScore >= 40 ? "D" : "F";
@@ -1926,6 +1931,10 @@ export async function saveScores({ schoolId, classArm, subject, rows }) {
       };
       scores.push(score);
     }
+    score.ca1 = ca1;
+    score.ca2 = ca2;
+    score.ca3 = ca3;
+    score.ca4 = ca4;
     score.caScore = caScore;
     score.examScore = examScore;
     score.totalScore = totalScore;
@@ -2871,4 +2880,488 @@ export async function listDigests(schoolId, userId, { limit = 20 } = {}) {
     )
     .slice(0, limit)
     .map(clone);
+}
+
+// ── Scheme of Work ──────────────────────────────────────────────────
+const schemesOfWork = [];
+
+export async function createSchemeOfWork({ schoolId, subject, classArm, session, term, topics, createdBy }) {
+  const existing = schemesOfWork.find(
+    (s) => s.schoolId === schoolId && s.subject === subject && s.classArm === classArm && s.session === session && s.term === term
+  );
+  if (existing) {
+    existing.topics = topics || [];
+    existing.updatedBy = createdBy;
+    existing.updatedAt = nowIso();
+    persist();
+    return clone(existing);
+  }
+  const scheme = {
+    id: nid("sch"),
+    schoolId, subject, classArm, session, term,
+    topics: topics || [],
+    createdBy, updatedBy: createdBy,
+    createdAt: nowIso(), updatedAt: nowIso(),
+  };
+  schemesOfWork.push(scheme);
+  persist();
+  return clone(scheme);
+}
+
+export async function getSchemesOfWork(schoolId, { subject, classArm, session, term } = {}) {
+  return schemesOfWork
+    .filter((s) => {
+      if (s.schoolId !== schoolId) return false;
+      if (subject && s.subject !== subject) return false;
+      if (classArm && s.classArm !== classArm) return false;
+      if (session && s.session !== session) return false;
+      if (term && s.term !== term) return false;
+      return true;
+    })
+    .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
+    .map(clone);
+}
+
+export async function getSchemeOfWork(schemeId) {
+  return clone(schemesOfWork.find((s) => s.id === schemeId) || null);
+}
+
+export async function updateSchemeOfWork(schemeId, updates) {
+  const scheme = schemesOfWork.find((s) => s.id === schemeId);
+  if (!scheme) return null;
+  Object.assign(scheme, updates, { updatedAt: nowIso() });
+  persist();
+  return clone(scheme);
+}
+
+export async function deleteSchemeOfWork(schemeId) {
+  const idx = schemesOfWork.findIndex((s) => s.id === schemeId);
+  if (idx === -1) return false;
+  schemesOfWork.splice(idx, 1);
+  persist();
+  return true;
+}
+
+// ── Class Resources ─────────────────────────────────────────────────
+const classResources = [];
+
+export async function createClassResource({ schoolId, teacherId, classArm, subject, type, title, description, content, attachments, dueDate, maxScore, isReadAhead, readAheadDate, ocrSource }) {
+  const resource = {
+    id: nid("res"),
+    schoolId, teacherId, classArm, subject, type, title,
+    description: description || "", content: content || "",
+    attachments: attachments || [],
+    dueDate: dueDate || null, maxScore: maxScore || null,
+    isReadAhead: isReadAhead || false, readAheadDate: readAheadDate || null,
+    published: true, publishedAt: nowIso(),
+    ocrSource: ocrSource || null,
+    createdAt: nowIso(), updatedAt: nowIso(),
+  };
+  classResources.push(resource);
+  persist();
+  return clone(resource);
+}
+
+export async function listClassResources(schoolId, { classArm, subject, teacherId, type } = {}) {
+  return classResources
+    .filter((r) => {
+      if (r.schoolId !== schoolId) return false;
+      if (!r.published) return false;
+      if (classArm && r.classArm !== classArm) return false;
+      if (subject && r.subject !== subject) return false;
+      if (teacherId && r.teacherId !== teacherId) return false;
+      if (type && r.type !== type) return false;
+      return true;
+    })
+    .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
+    .map(clone);
+}
+
+export async function getClassResource(resourceId) {
+  return clone(classResources.find((r) => r.id === resourceId) || null);
+}
+
+export async function updateClassResource(resourceId, updates) {
+  const resource = classResources.find((r) => r.id === resourceId);
+  if (!resource) return null;
+  Object.assign(resource, updates, { updatedAt: nowIso() });
+  persist();
+  return clone(resource);
+}
+
+export async function deleteClassResource(resourceId) {
+  const idx = classResources.findIndex((r) => r.id === resourceId);
+  if (idx === -1) return false;
+  classResources.splice(idx, 1);
+  persist();
+  return true;
+}
+
+// ── Alumni ──────────────────────────────────────────────────────────
+const alumni = [];
+
+export async function createAlumni({ schoolId, studentId, name, graduationYear, classArm, university, program, career, contactEmail, contactPhone, linkedIn, optedIn, notes }) {
+  const record = {
+    id: nid("alum"),
+    schoolId, studentId: studentId || null, name, graduationYear,
+    classArm: classArm || "", university: university || "", program: program || "",
+    career: career || "", contactEmail: contactEmail || "", contactPhone: contactPhone || "",
+    linkedIn: linkedIn || "", optedIn: optedIn || false,
+    optedInAt: optedIn ? nowIso() : null,
+    notes: notes || "",
+    createdAt: nowIso(), updatedAt: nowIso(),
+  };
+  alumni.push(record);
+  persist();
+  return clone(record);
+}
+
+export async function listAlumni(schoolId, { graduationYear, search } = {}) {
+  return alumni
+    .filter((a) => {
+      if (a.schoolId !== schoolId) return false;
+      if (graduationYear && a.graduationYear !== graduationYear) return false;
+      if (search && !a.name.toLowerCase().includes(search.toLowerCase())) return false;
+      return true;
+    })
+    .sort((a, b) => b.graduationYear - a.graduationYear || a.name.localeCompare(b.name))
+    .map(clone);
+}
+
+export async function getAlumniRecord(alumniId) {
+  return clone(alumni.find((a) => a.id === alumniId) || null);
+}
+
+export async function updateAlumni(alumniId, updates) {
+  const record = alumni.find((a) => a.id === alumniId);
+  if (!record) return null;
+  Object.assign(record, updates, { updatedAt: nowIso() });
+  persist();
+  return clone(record);
+}
+
+export async function deleteAlumni(alumniId) {
+  const idx = alumni.findIndex((a) => a.id === alumniId);
+  if (idx === -1) return false;
+  alumni.splice(idx, 1);
+  persist();
+  return true;
+}
+
+export async function getAlumniStats(schoolId) {
+  const schoolAlumni = alumni.filter((a) => a.schoolId === schoolId);
+  const total = schoolAlumni.length;
+  const byYear = {};
+  const universities = {};
+  for (const a of schoolAlumni) {
+    byYear[a.graduationYear] = (byYear[a.graduationYear] || 0) + 1;
+    if (a.university) universities[a.university] = (universities[a.university] || 0) + 1;
+  }
+  const placed = schoolAlumni.filter((a) => a.university).length;
+  return { total, byYear, universities, placementRate: total ? Math.round((placed / total) * 100) : 0 };
+}
+
+// ── Push Subscriptions ──────────────────────────────────────────────
+const pushSubscriptions = [];
+
+export async function savePushSubscription({ schoolId, userId, endpoint, keys, userAgent }) {
+  // Upsert: one subscription per endpoint
+  const existing = pushSubscriptions.find((s) => s.endpoint === endpoint);
+  if (existing) {
+    existing.keys = keys;
+    existing.userAgent = userAgent || existing.userAgent;
+    existing.active = true;
+    existing.lastUsedAt = nowIso();
+    existing.updatedAt = nowIso();
+    persist();
+    return clone(existing);
+  }
+  const sub = {
+    id: nid("push"),
+    schoolId, userId, endpoint, keys,
+    userAgent: userAgent || "", active: true,
+    lastUsedAt: nowIso(),
+    createdAt: nowIso(), updatedAt: nowIso(),
+  };
+  pushSubscriptions.push(sub);
+  persist();
+  return clone(sub);
+}
+
+export async function listPushSubscriptions(schoolId, userIds) {
+  return pushSubscriptions
+    .filter((s) => {
+      if (s.schoolId !== schoolId || !s.active) return false;
+      if (userIds && userIds.length && !userIds.includes(s.userId)) return false;
+      return true;
+    })
+    .map(clone);
+}
+
+export async function removePushSubscriptions(ids) {
+  for (const id of ids) {
+    const sub = pushSubscriptions.find((s) => s.id === id);
+    if (sub) sub.active = false;
+  }
+  persist();
+}
+
+export async function deletePushSubscription(endpoint) {
+  const idx = pushSubscriptions.findIndex((s) => s.endpoint === endpoint);
+  if (idx === -1) return false;
+  pushSubscriptions.splice(idx, 1);
+  persist();
+  return true;
+}
+
+// ── Academic Risk ───────────────────────────────────────────────────
+
+/**
+ * Detect students whose grades are declining across terms.
+ * Returns an array of risk alerts for the school.
+ */
+export async function detectAcademicRisks(schoolId) {
+  // Group scores by student + subject
+  const byStudent = {};
+  for (const s of scores) {
+    if (s.schoolId !== schoolId) continue;
+    const key = `${s.studentId}::${s.subject}`;
+    if (!byStudent[key]) byStudent[key] = [];
+    byStudent[key].push(s);
+  }
+
+  const risks = [];
+  for (const [key, studentScores] of Object.entries(byStudent)) {
+    // Sort by term (assuming term field exists or use session+term combo)
+    studentScores.sort((a, b) => {
+      if (a.session !== b.session) return a.session?.localeCompare(b.session);
+      const termOrder = { "First Term": 1, "Second Term": 2, "Third Term": 3 };
+      return (termOrder[a.term] || 0) - (termOrder[b.term] || 0);
+    });
+
+    if (studentScores.length < 2) continue;
+
+    const latest = studentScores[studentScores.length - 1];
+    const previous = studentScores[studentScores.length - 2];
+    const latestAvg = (Number(latest.ca) + Number(latest.exam)) / 2;
+    const previousAvg = (Number(previous.ca) + Number(previous.exam)) / 2;
+    const drop = previousAvg - latestAvg;
+
+    if (drop >= 15) {
+      risks.push({
+        studentId: latest.studentId,
+        subject: latest.subject,
+        classArm: latest.classArm || "",
+        previousAverage: Math.round(previousAvg),
+        currentAverage: Math.round(latestAvg),
+        drop: Math.round(drop),
+        severity: drop >= 25 ? "high" : "medium",
+        previousTerm: previous.term,
+        currentTerm: latest.term,
+      });
+    }
+  }
+
+  return risks.sort((a, b) => b.drop - a.drop);
+}
+
+// ── Teacher Performance ─────────────────────────────────────────────
+
+/**
+ * Compute teacher performance metrics: average scores across their classes,
+ * student improvement rates, comparison with school average.
+ */
+export async function getTeacherPerformance(schoolId, teacherId) {
+  // Find classes this teacher teaches (from timetable entries)
+  const teacherEntries = timetableEntries.filter(
+    (e) => e.schoolId === schoolId && e.teacherId === teacherId
+  );
+  const taughtClasses = [...new Set(teacherEntries.map((e) => `${e.subject}::${e.classArm}`))];
+
+  const classMetrics = [];
+  for (const combo of taughtClasses) {
+    const [subject, classArm] = combo.split("::");
+    const classScores = scores.filter(
+      (s) => s.schoolId === schoolId && s.subject === subject && s.classArm === classArm
+    );
+    if (classScores.length === 0) continue;
+
+    const avg = classScores.reduce((sum, s) => sum + (Number(s.ca) + Number(s.exam)) / 2, 0) / classScores.length;
+    const schoolAvg = scores
+      .filter((s) => s.schoolId === schoolId && s.subject === subject)
+      .reduce((sum, s) => sum + (Number(s.ca) + Number(s.exam)) / 2, 0) /
+      Math.max(1, scores.filter((s) => s.schoolId === schoolId && s.subject === subject).length);
+
+    classMetrics.push({
+      subject,
+      classArm,
+      studentCount: classScores.length,
+      averageScore: Math.round(avg),
+      schoolAverage: Math.round(schoolAvg),
+      vsSchool: Math.round(avg - schoolAvg),
+    });
+  }
+
+  const overallAvg = classMetrics.length
+    ? classMetrics.reduce((sum, m) => sum + m.averageScore, 0) / classMetrics.length
+    : 0;
+
+  return { teacherId, classMetrics, overallAverage: Math.round(overallAvg) };
+}
+
+// ── Messages ───────────────────────────────────────────────────────
+const messages = [];
+
+export async function sendMessage({ schoolId, from, to, studentId, subject, body, type, replyTo, attachments }) {
+  const msg = {
+    id: nid("msg"),
+    schoolId, from, to,
+    studentId: studentId || null,
+    subject: subject || "",
+    body,
+    type: type || "direct",
+    replyTo: replyTo || null,
+    attachments: attachments || [],
+    read: false,
+    readAt: null,
+    createdAt: nowIso(), updatedAt: nowIso(),
+  };
+  messages.push(msg);
+  persist();
+  return clone(msg);
+}
+
+export async function getConversation(schoolId, userId1, userId2, { limit = 50, before } = {}) {
+  return messages
+    .filter((m) => {
+      if (m.schoolId !== schoolId) return false;
+      const isBetween = (m.from === userId1 && m.to === userId2) || (m.from === userId2 && m.to === userId1);
+      if (!isBetween) return false;
+      if (before && new Date(m.createdAt) >= new Date(before)) return false;
+      return true;
+    })
+    .sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt))
+    .slice(-limit)
+    .map(clone);
+}
+
+export async function listConversations(schoolId, userId) {
+  const convos = {};
+  for (const m of messages) {
+    if (m.schoolId !== schoolId) continue;
+    const isMine = m.from === userId || m.to === userId;
+    if (!isMine) continue;
+    const partnerId = m.from === userId ? m.to : m.from;
+    if (!convos[partnerId] || new Date(m.createdAt) > new Date(convos[partnerId].lastDate)) {
+      convos[partnerId] = {
+        partnerId,
+        lastMessage: m.body,
+        lastDate: m.createdAt,
+        unread: 0,
+      };
+    }
+    if (m.to === userId && !m.read) {
+      convos[partnerId].unread = (convos[partnerId].unread || 0) + 1;
+    }
+  }
+  const result = Object.values(convos).sort((a, b) => new Date(b.lastDate) - new Date(a.lastDate));
+  // Enrich with partner name
+  for (const c of result) {
+    const user = users.find((u) => u.id === c.partnerId);
+    if (user) {
+      c.partnerName = user.name;
+      c.partnerRole = user.role;
+      c.partnerClass = user.assignedClass;
+    }
+  }
+  return result;
+}
+
+export async function markMessageRead(messageId) {
+  const msg = messages.find((m) => m.id === messageId);
+  if (msg) {
+    msg.read = true;
+    msg.readAt = nowIso();
+    persist();
+  }
+}
+
+export async function markConversationRead(schoolId, userId, partnerId) {
+  for (const m of messages) {
+    if (m.schoolId === schoolId && m.from === partnerId && m.to === userId && !m.read) {
+      m.read = true;
+      m.readAt = nowIso();
+    }
+  }
+  persist();
+}
+
+export async function getUnreadMessageCount(schoolId, userId) {
+  return messages.filter((m) => m.schoolId === schoolId && m.to === userId && !m.read).length;
+}
+
+// ── Notification Preferences ────────────────────────────────────────
+const notificationPreferences = [];
+
+const DEFAULT_CHANNEL_PREF = { inApp: true, email: true, sms: false, whatsapp: false, push: true };
+
+export async function getNotificationPreferences(schoolId, userId) {
+  const existing = notificationPreferences.find((p) => p.schoolId === schoolId && p.userId === userId);
+  if (existing) return clone(existing);
+  // Return defaults
+  return {
+    id: null,
+    schoolId,
+    userId,
+    feeReminder: { ...DEFAULT_CHANNEL_PREF },
+    reportCard: { ...DEFAULT_CHANNEL_PREF },
+    announcement: { ...DEFAULT_CHANNEL_PREF },
+    classResource: { ...DEFAULT_CHANNEL_PREF, email: false },
+    paymentConfirmation: { ...DEFAULT_CHANNEL_PREF },
+    readAhead: { ...DEFAULT_CHANNEL_PREF, email: false },
+    message: { ...DEFAULT_CHANNEL_PREF, email: false },
+    allDisabled: false,
+  };
+}
+
+export async function updateNotificationPreferences(schoolId, userId, updates) {
+  const existing = notificationPreferences.find((p) => p.schoolId === schoolId && p.userId === userId);
+  if (existing) {
+    Object.assign(existing, updates, { updatedAt: nowIso() });
+    persist();
+    return clone(existing);
+  }
+  const pref = {
+    id: nid("npref"),
+    schoolId, userId,
+    feeReminder: updates.feeReminder || { ...DEFAULT_CHANNEL_PREF },
+    reportCard: updates.reportCard || { ...DEFAULT_CHANNEL_PREF },
+    announcement: updates.announcement || { ...DEFAULT_CHANNEL_PREF },
+    classResource: updates.classResource || { ...DEFAULT_CHANNEL_PREF, email: false },
+    paymentConfirmation: updates.paymentConfirmation || { ...DEFAULT_CHANNEL_PREF },
+    readAhead: updates.readAhead || { ...DEFAULT_CHANNEL_PREF, email: false },
+    message: updates.message || { ...DEFAULT_CHANNEL_PREF, email: false },
+    allDisabled: updates.allDisabled || false,
+    createdAt: nowIso(), updatedAt: nowIso(),
+  };
+  notificationPreferences.push(pref);
+  persist();
+  return clone(pref);
+}
+
+/**
+ * Get the effective channels for a notification type and user.
+ * Returns an array of enabled channel names.
+ */
+export async function getEnabledChannels(schoolId, userId, notificationType) {
+  const prefs = await getNotificationPreferences(schoolId, userId);
+  if (prefs.allDisabled) return ["in_app"]; // always keep in-app
+  const typePrefs = prefs[notificationType] || prefs.announcement || DEFAULT_CHANNEL_PREF;
+  const channels = [];
+  if (typePrefs.inApp) channels.push("in_app");
+  if (typePrefs.email) channels.push("email");
+  if (typePrefs.sms) channels.push("sms");
+  if (typePrefs.whatsapp) channels.push("whatsapp");
+  if (typePrefs.push) channels.push("push");
+  return channels.length ? channels : ["in_app"];
 }

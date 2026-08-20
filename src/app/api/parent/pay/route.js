@@ -27,6 +27,9 @@ export async function POST(request) {
   if (invalid) return jsonError(invalid);
   const { studentId, amount, method } = feePaymentSchema.parse(body);
   const amt = Number(amount);
+  const bankReference = body.bankReference || "";
+  const datePaid = body.datePaid || new Date().toISOString().slice(0, 10);
+  const noteText = body.note || "";
 
   // Tenant + relationship check: the child must be linked to this parent
   const child = await requireOwnChild(session, studentId, "You can only pay fees for your own children");
@@ -50,9 +53,11 @@ export async function POST(request) {
     schoolId: session.schoolId,
     studentId,
     amount: amt,
-    method: method || "CARD",
-    note: "Paid by parent via Pay Now",
+    method: method || "TRANSFER",
+    note: noteText || `Reported by parent — ${method || "TRANSFER"}${bankReference ? ` · Ref: ${bankReference}` : ""}`,
     status: "PENDING",
+    bankReference: bankReference || undefined,
+    datePaid: datePaid || undefined,
   });
 
   // Audit: a parent payment is a money event even before it clears — the
@@ -71,7 +76,7 @@ export async function POST(request) {
       receiptNo: payment.receiptNo,
       amount: amt,
       method: method || "CARD",
-      note: "Paid by parent via Pay Now — awaiting confirmation",
+      note: `Reported by parent — ${method || "TRANSFER"}${bankReference ? ` · Ref: ${bankReference}` : ""} — awaiting confirmation`,
     });
   } catch {
     // An audit failure must never fail a successful payment.
