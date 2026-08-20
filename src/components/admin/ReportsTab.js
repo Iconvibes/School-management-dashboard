@@ -1,24 +1,56 @@
 "use client";
 
+import { useState, useMemo } from "react";
 import { FileText, Loader2, Search, Trophy } from "lucide-react";
 import { gradeBadgeClasses } from "@/lib/grading";
 import TopStudents from "@/components/TopStudents";
+import { useAdminShell } from "./context/AdminContext";
+import { useTabFetch } from "@/hooks/useTabFetch";
 
 /**
- * Report Cards tab — extracted from admin dashboard page.js.
- * Presentational: all data and handlers arrive through props.
+ * Report Cards tab — fully self-contained.
+ * Manages its own fetch, search, class filter, and report modal.
  */
-export default function ReportsTab({
-  reportStudents,
-  filteredReports,
-  reportSearch,
-  setReportSearch,
-  reportClass,
-  setReportClass,
-  reportLoading,
-  openReport,
-  activeArms,
-}) {
+export default function ReportsTab({ openReportModal }) {
+  const { session, showToast } = useAdminShell();
+  const [search, setSearch] = useState("");
+  const [reportClass, setReportClass] = useState("");
+  const [reportLoading, setReportLoading] = useState(false);
+
+  const activeArms = session.school?.activeArms || [];
+
+  const reportsUrl = "/api/reports?limit=200" + (reportClass ? "&classArm=" + encodeURIComponent(reportClass) : "");
+
+  const { data: reportStudents, loading } = useTabFetch(reportsUrl, {
+    enabled: true,
+    deps: [reportClass],
+    transform: (d) => d.students || [],
+  });
+
+  const filteredReports = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    const list = reportStudents || [];
+    if (!q) return list;
+    return list.filter(
+      (s) =>
+        (s.name + s.email + (s.assignedClass || "")).toLowerCase().includes(q)
+    );
+  }, [reportStudents, search]);
+
+  async function openReport(studentId) {
+    setReportLoading(true);
+    try {
+      const res = await fetch(`/api/reports/${studentId}`);
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Could not load report");
+      openReportModal(data);
+    } catch (err) {
+      showToast(err.message);
+    } finally {
+      setReportLoading(false);
+    }
+  }
+
   return (
     <div className="mt-5 animate-fade-up">
       {/* Class filter + search row */}
@@ -31,7 +63,7 @@ export default function ReportsTab({
             className="bg-transparent text-sm font-medium text-navy-700 outline-none"
           >
             <option value="">All class arms</option>
-            {(activeArms || []).map((arm) => (
+            {activeArms.map((arm) => (
               <option key={arm}>{arm}</option>
             ))}
           </select>
@@ -39,8 +71,8 @@ export default function ReportsTab({
         <div className="relative min-w-0 flex-1">
           <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-navy-300" />
           <input
-            value={reportSearch}
-            onChange={(e) => setReportSearch(e.target.value)}
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
             placeholder="Search any student by name, email or class…"
             className="w-full rounded-xl border border-navy-200 bg-white py-2.5 pl-9 pr-3 text-sm outline-none transition focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20"
           />
@@ -49,7 +81,7 @@ export default function ReportsTab({
 
       <div className="grid gap-5 lg:grid-cols-3">
         <TopStudents
-          students={reportStudents}
+          students={reportStudents || []}
           onView={(id) => openReport(id)}
           title={"Best students" + (reportClass ? ` · ${reportClass}` : " · whole school")}
         />

@@ -85,6 +85,7 @@ import TeacherPerformance from "@/components/admin/TeacherPerformance";
 import AlumniTab from "@/components/admin/AlumniTab";
 import EngagementTab from "@/components/admin/EngagementTab";
 import BranchesTab from "@/components/admin/BranchesTab";
+import { AdminProvider } from "@/components/admin/context/AdminContext";
 import { armAlreadyExists } from "@/lib/arms";
 import { downloadBlob, toCSV, withBOM } from "@/lib/csv";
 import { getSubjects, gradeBadgeClasses, ordinal, TERMS } from "@/lib/grading";
@@ -100,7 +101,6 @@ import {
 } from "@/lib/timetable";
 import { can, STAFF_ROLES, summarizeRolePermissions } from "@/lib/permissions";
 import { bounceToLogin } from "@/lib/auth-client";
-import { compressImageFile } from "@/lib/image-upload";
 import { safeFetchJson } from "@/lib/safe-fetch";
 import { MANAGED_ROLES, ROLE_LABELS } from "@/lib/roles";
 import { sparklinePoints } from "@/lib/conflict-scan";
@@ -308,35 +308,9 @@ export default function AdminDashboard() {
   const [scopeTarget, setScopeTarget] = useState(null); // teacher being edited
   const [scopeDraft, setScopeDraft] = useState({ subjects: [], assignedClasses: [], assignedClass: "" });
   const [scopeSaving, setScopeSaving] = useState(false);
-  // Roles & Access tab state
-  const [staffList, setStaffList] = useState([]);
-  const [roleAudit, setRoleAudit] = useState([]);
-  const [roleDraft, setRoleDraft] = useState({}); // userId -> selected role
-  const [roleConfirm, setRoleConfirm] = useState(null); // { id, name, from, to }
-  const [roleSaving, setRoleSaving] = useState(false);
-  // Login Details tab state — staff + parents (the common view), plus a
-  // Students view for looking up any student's current password from one
-  // place. Students load lazily (the roster can be hundreds of rows).
-  const [loginUsers, setLoginUsers] = useState([]);
-  const [printSheet, setPrintSheet] = useState(null);
-  const [loginMode, setLoginMode] = useState("staff"); // "staff" | "students"
-  const [loginStudents, setLoginStudents] = useState([]);
-  const [loginStudentsLoaded, setLoginStudentsLoaded] = useState(false);
-  const [loginStudentsSearch, setLoginStudentsSearch] = useState("");
-  // Per-class export scope — "" means the whole roster (default).
-  const [loginExportClass, setLoginExportClass] = useState("");
-  // Student ids whose password is currently revealed in the students view.
-  const [revealedPasswords, setRevealedPasswords] = useState(new Set());
 
-  function toggleRevealPassword(id) {
-    setRevealedPasswords((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  }
-  // Timetable tab state — SUPER_ADMIN builds the weekly schedule here; the
+
+  // Roles — SUPER_ADMIN builds the weekly schedule here; the
   // assigned slots surface instantly in every teacher's portal.
   const [ttArm, setTtArm] = useState("");
   const [ttEntries, setTtEntries] = useState([]);
@@ -364,17 +338,6 @@ export default function AdminDashboard() {
   // at period 6). dailyDrafts holds only days the school has customized.
   const [bellDay, setBellDay] = useState("ALL");
   const [dailyDrafts, setDailyDrafts] = useState({});
-  // Classes & Arms — the SUPER_ADMIN arm manager. armsDraft is null until the
-  // tab opens, so a tab switch always re-syncs the draft from the session.
-  const [armsDraft, setArmsDraft] = useState(null);
-  const [armsSlotCounts, setArmsSlotCounts] = useState({});
-  const [armsFeeAmounts, setArmsFeeAmounts] = useState({});
-  const [armsSaving, setArmsSaving] = useState(false);
-  const [newArm, setNewArm] = useState("");
-  // Rename arm modal — renameTarget is the arm being renamed (null = closed).
-  const [renameTarget, setRenameTarget] = useState(null);
-  const [renameValue, setRenameValue] = useState("");
-  const [renameSaving, setRenameSaving] = useState(false);
   // Term rollover modal — moving the school to a new term archives the old
   // term's scores/attendance and clones fees + timetable forward.
   const [rolloverOpen, setRolloverOpen] = useState(false);
@@ -383,55 +346,6 @@ export default function AdminDashboard() {
   const [rolloverPreview, setRolloverPreview] = useState(null); // dry-run counts
   const [rolloverPreviewing, setRolloverPreviewing] = useState(false);
   const [rolloverSaving, setRolloverSaving] = useState(false);
-  // Previous Terms — read-only viewer over the term archive (rollover
-  // snapshots of each old term's scores + attendance).
-  const [archTerms, setArchTerms] = useState([]);
-  const [archTerm, setArchTerm] = useState(null); // { session, term }
-  const [archArm, setArchArm] = useState(null); // classArm string
-  const [archDetail, setArchDetail] = useState(null); // per-student payload
-  const [archLoading, setArchLoading] = useState(false);
-  // Alumni — archived-roster students no longer on the live roster.
-  const [archMode, setArchMode] = useState("terms"); // "terms" | "alumni"
-  const [archAlumni, setArchAlumni] = useState([]);
-  const [archAlumniLoading, setArchAlumniLoading] = useState(false);
-  const [archAlumniLoaded, setArchAlumniLoaded] = useState(false);
-  // Settings tab — the SUPER_ADMIN configures the school after onboarding:
-  // branding (logo + seal + brand color) and notification preferences, saved
-  // via PATCH /api/school.
-  const [settingsDraft, setSettingsDraft] = useState({
-    brandColor: "#2563EB",
-    logoUrl: "",
-    sealUrl: "",
-    notificationRetentionDays: 90,
-    reconcileDeletedReminders: false,
-  });
-  const [settingsSaving, setSettingsSaving] = useState(false);
-  const [settingsError, setSettingsError] = useState("");
-  const [settingsSaved, setSettingsSaved] = useState(false);
-  const [logoError, setLogoError] = useState("");
-  const [sealError, setSealError] = useState("");
-  const logoInputRef = useRef(null);
-  const sealInputRef = useRef(null);
-
-  // Read an uploaded image file into a data URL — same path as onboarding:
-  // oversized files are compressed in the browser (compressImageFile) so a
-  // huge PNG shrinks instead of being rejected over 1 MB.
-  async function handleImageFile(file, field, setError) {
-    setError("");
-    if (!file) return;
-    try {
-      const dataUrl = await compressImageFile(file);
-      setSettingsDraft((prev) => ({ ...prev, [field]: dataUrl }));
-    } catch (err) {
-      setError(err.message);
-    }
-  }
-
-  // The custom color well needs a valid #rrggbb; a partial hex typed in the
-  // text box falls back to the default until it's complete.
-  const settingsColorWell = /^#[0-9a-fA-F]{6}$/.test(settingsDraft.brandColor)
-    ? settingsDraft.brandColor
-    : "#2563EB";
 
   const subjects = getSubjects();
 
@@ -467,52 +381,6 @@ export default function AdminDashboard() {
     },
   });
 
-  const { data: archivesResult } = useTabFetch("/api/school/archives", {
-    enabled: tab === "archives",
-    transform: (d) => d.terms || [],
-  });
-  useEffect(() => {
-    if (!archivesResult) return;
-    setArchTerms(archivesResult);
-    if (!archivesResult.length) { setArchTerm(null); setArchArm(null); setArchDetail(null); }
-    setArchMode("terms");
-    setArchAlumniLoaded(false);
-    setArchAlumni([]);
-  }, [archivesResult]);
-
-  // Classes & Arms: when the tab opens, re-read the school's arms from the
-  // server (authoritative — a save elsewhere already mirrored into the
-  // session) and load per-arm stats (timetable slots across ALL arms + fee
-  // structure amounts). All setState calls happen after awaits, never
-  // synchronously inside the effect.
-  useEffect(() => {
-    if (tab !== "classes") return;
-    let cancelled = false;
-    const load = async () => {
-      const [schoolRes, tt, fees] = await Promise.all([
-        fetch("/api/school").then((r) => r.json()).catch(() => null),
-        fetch("/api/timetable").then((r) => r.json()).catch(() => null),
-        fetch("/api/fees/structures").then((r) => r.json()).catch(() => null),
-      ]);
-      if (cancelled) return;
-      setArmsDraft(schoolRes?.school?.activeArms || []);
-      const counts = {};
-      (tt?.entries || []).forEach((e) => {
-        counts[e.classArm] = (counts[e.classArm] || 0) + 1;
-      });
-      setArmsSlotCounts(counts);
-      const amounts = {};
-      (fees?.structures || []).forEach((s) => {
-        amounts[s.classArm] = s.amount;
-      });
-      setArmsFeeAmounts(amounts);
-    };
-    load();
-    return () => {
-      cancelled = true;
-    };
-  }, [tab]);
-
   const feeLedgerUrl = tab === "fees" ? "/api/fees?" + new URLSearchParams(Object.entries({ classArm: feeClass || "", defaulters: feeDefaultersOnly ? "1" : "" }).filter(([,v]) => v)).toString() : null;
   useTabFetch(feeLedgerUrl, {
     enabled: tab === "fees",
@@ -521,23 +389,6 @@ export default function AdminDashboard() {
       setFeeLedger(d.ledger || []);
       setFeeTotals(d.totals || null);
       setPendingPayments(d.pendingPayments || []);
-    },
-  });
-
-  // Settings: load the school's current branding into the draft every time
-  // the tab opens — server-side truth wins over any unsaved edits.
-  useTabFetch("/api/school", {
-    enabled: tab === "settings",
-    onData: (data) => {
-      setSettingsDraft({
-        brandColor: data.school?.brandColor || "#2563EB",
-        logoUrl: data.school?.logoUrl || "",
-        sealUrl: data.school?.sealUrl || "",
-        notificationRetentionDays: Number(data.school?.notificationRetentionDays) || 90,
-        reconcileDeletedReminders: data.school?.reconcileDeletedReminders === true,
-      });
-      setSettingsError("");
-      setSettingsSaved(false);
     },
   });
 
@@ -588,70 +439,6 @@ export default function AdminDashboard() {
     transform: (d) => d.entries || [],
   });
   useEffect(() => { if (roleAuditData) setRoleAudit(roleAuditData); }, [roleAuditData]);
-
-  // Staff directory — one query per staff role (Promise.all, not a single endpoint)
-  useEffect(() => {
-    if (tab !== "roles") return;
-    // One query per staff role instead of shipping the whole roster.
-    Promise.all(
-      MANAGED_ROLES.map((r) =>
-        fetch(`/api/users?role=${encodeURIComponent(r)}`)
-          .then((res) => res.json())
-          .then((d) => d.users || [])
-      )
-    )
-      .then((groups) => setStaffList(groups.flat()))
-      .catch((e) => console.warn("[staff-list] load failed:", e?.message));
-  }, [tab]);
-
-  // Login Details: staff + parents (the default view) — one query per role
-  // to avoid shipping the whole student roster. Students load lazily in the
-  // separate effect below, only when the Students view is opened.
-  useEffect(() => {
-    if (tab !== "logins") return;
-    Promise.all(
-      ["SUPER_ADMIN", "BURSAR", "REGISTRAR", "TEACHER", "PARENT"].map((r) =>
-        fetch(`/api/users?role=${encodeURIComponent(r)}`)
-          .then((res) => res.json())
-          .then((d) => d.users || [])
-      )
-    )
-      .then((groups) => setLoginUsers(groups.flat()))
-      .catch((e) => console.warn("[login-users] load failed:", e?.message));
-  }, [tab]);
-
-  // Students load on demand — the roster can be hundreds of rows.
-  const loginStudentsUrl = tab === "logins" && loginMode === "students" && !loginStudentsLoaded
-    ? "/api/users?role=STUDENT" : null;
-  const { data: loginStudentsResult } = useTabFetch(loginStudentsUrl, {
-    enabled: tab === "logins" && loginMode === "students" && !loginStudentsLoaded,
-    deps: [loginMode, loginStudentsLoaded],
-    onData: (d) => {
-      setLoginStudents(d.users || []);
-      setLoginStudentsLoaded(true);
-    },
-  });
-
-  // Student search within the Login Details students view (name / email / arm).
-  const filteredLoginStudents = useMemo(() => {
-    const q = loginStudentsSearch.trim().toLowerCase();
-    if (!q) return loginStudents;
-    return loginStudents.filter(
-      (s) =>
-        s.name.toLowerCase().includes(q) ||
-        (s.email || "").toLowerCase().includes(q) ||
-        (s.assignedClass || "").toLowerCase().includes(q)
-    );
-  }, [loginStudents, loginStudentsSearch]);
-
-  // Distinct class arms present in the roster — the per-class export options.
-  const loginClasses = useMemo(
-    () =>
-      [...new Set(loginStudents.map((s) => s.assignedClass).filter(Boolean))].sort((a, b) =>
-        a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" })
-      ),
-    [loginStudents]
-  );
 
   async function confirmPayment(id) {
     setConfirmingId(id);
@@ -1084,46 +871,11 @@ export default function AdminDashboard() {
     }
   }
 
-  function requestRoleChange(user, to) {
-    setRoleConfirm({ id: user.id, name: user.name, from: user.role, to });
-  }
-
-  async function confirmRoleChange() {
-    if (!roleConfirm) return;
-    setRoleSaving(true);
-    try {
-      const res = await fetch(`/api/users/${roleConfirm.id}/role`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ role: roleConfirm.to }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Failed to change role");
-      setStaffList((list) =>
-        list.map((u) => (u.id === roleConfirm.id ? { ...u, role: roleConfirm.to } : u))
-      );
-      showToast(`${roleConfirm.name} is now ${ROLE_LABELS[roleConfirm.to] || roleConfirm.to}`);
-      setRoleConfirm(null);
-      // Refresh the trail — the change was logged server-side.
-      const ar = await fetch("/api/users/roles/audit");
-      setRoleAudit((await ar.json()).entries || []);
-    } catch (err) {
-      // Put the select back — the badge still shows the real (unchanged) role.
-      setRoleDraft((d) => ({ ...d, [roleConfirm.id]: roleConfirm.from }));
-      showToast(err.message);
-    } finally {
-      setRoleSaving(false);
-    }
-  }
-
   const filteredTeachers = teachers.filter((t) =>
     (t.name + t.email + (t.assignedClass || "")).toLowerCase().includes(search.toLowerCase())
   );
   const filteredStudents = students.filter((s) =>
     (s.name + s.email + (s.assignedClass || "")).toLowerCase().includes(search.toLowerCase())
-  );
-  const filteredReports = reportStudents.filter((s) =>
-    (s.name + s.email + (s.assignedClass || "")).toLowerCase().includes(reportSearch.toLowerCase())
   );
 
   const parentNameById = Object.fromEntries(parents.map((p) => [p.id, p.name]));
@@ -1620,49 +1372,6 @@ export default function AdminDashboard() {
     });
   }
 
-  async function saveSettings() {
-    setSettingsSaving(true);
-    setSettingsError("");
-    setSettingsSaved(false);
-    try {
-      // Branding + notification fields — the PATCH route re-validates the
-      // logo and seal (image data, ≤ 2 MB) and the retention window exactly
-      // as it does for onboarding.
-      const res = await fetch("/api/school", {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          brandColor: settingsDraft.brandColor,
-          logoUrl: settingsDraft.logoUrl,
-          sealUrl: settingsDraft.sealUrl,
-          notificationRetentionDays: settingsDraft.notificationRetentionDays,
-          reconcileDeletedReminders: settingsDraft.reconcileDeletedReminders,
-        }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Failed to save settings");
-      // Mirror into the session so headers, report cards and every portal pick
-      // it up immediately without a reload.
-      setSession((s) => ({
-        ...s,
-        school: {
-          ...s.school,
-          brandColor: settingsDraft.brandColor,
-          logoUrl: settingsDraft.logoUrl,
-          sealUrl: settingsDraft.sealUrl,
-          notificationRetentionDays: settingsDraft.notificationRetentionDays,
-          reconcileDeletedReminders: settingsDraft.reconcileDeletedReminders,
-        },
-      }));
-      setSettingsSaved(true);
-      showToast("School settings updated");
-    } catch (err) {
-      setSettingsError(err.message);
-    } finally {
-      setSettingsSaving(false);
-    }
-  }
-
   async function savePeriodTimes() {
     setPeriodTimesSaving(true);
     try {
@@ -1707,128 +1416,6 @@ export default function AdminDashboard() {
       showToast(err.message);
     } finally {
       setPeriodTimesSaving(false);
-    }
-  }
-
-  // ---- Classes & Arms helpers ---------------------------------------------
-  function addArm() {
-    const arm = newArm.trim();
-    if (!arm) return;
-    if (!armAlreadyExists(armsDraft || [], arm)) {
-      setArmsDraft((d) => [...(d || []), arm]);
-    }
-    setNewArm("");
-  }
-
-  // Merge streamed variants (from ArmStreamSplitter) into the draft, skipping
-  // any that already exist (case-insensitively).
-  function addStreamedArms(names) {
-    setArmsDraft((d) => [
-      ...(d || []),
-      ...names.filter((n) => !armAlreadyExists(d || [], n)),
-    ]);
-  }
-
-  function removeArm(arm) {
-    const studentCount = stats?.classDistribution?.[arm] || 0;
-    const slotCount = armsSlotCounts[arm] || 0;
-    const msg =
-      studentCount > 0 || slotCount > 0
-        ? `${arm} still has ${studentCount} student${studentCount === 1 ? "" : "s"} and ${slotCount} timetable slot${slotCount === 1 ? "" : "s"}. Removing it leaves that data orphaned (the timetable scan flags it). Remove ${arm}?`
-        : `Remove ${arm}?`;
-    if (!window.confirm(msg)) return;
-    setArmsDraft((d) => (d || []).filter((a) => a !== arm));
-  }
-
-  async function saveArms() {
-    setArmsSaving(true);
-    try {
-      const res = await fetch("/api/school", {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ activeArms: armsDraft }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Failed to save classes");
-      // Mirror into the session so every arm selector (timetable, teachers,
-      // students…) reflects the change without a page reload.
-      setSession((s) =>
-        s
-          ? {
-              ...s,
-              school: {
-                ...s.school,
-                activeArms: data.school?.activeArms ?? s.school?.activeArms,
-              },
-            }
-          : s
-      );
-      showToast("Classes & arms saved");
-    } catch (err) {
-      showToast(err.message);
-    } finally {
-      setArmsSaving(false);
-    }
-  }
-
-  // Rename an arm: POST the migration, then re-key every local mirror
-  // (armsDraft, session school.activeArms, stats.classDistribution, slot
-  // counts and fee amounts) so the tab reflects the new name without a reload.
-  function openRename(arm) {
-    setRenameTarget(arm);
-    setRenameValue(arm);
-  }
-
-  async function saveRename() {
-    if (!renameTarget) return;
-    const to = renameValue.trim();
-    if (!to || to === renameTarget) return;
-    setRenameSaving(true);
-    try {
-      const res = await fetch("/api/school/rename-arm", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ from: renameTarget, to }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Failed to rename class");
-      const { counts } = data;
-      const from = renameTarget;
-      // Re-key the draft, the session's activeArms and all per-arm stat maps.
-      setArmsDraft((d) => (d || []).map((a) => (a === from ? to : a)));
-      setSession((s) =>
-        s
-          ? {
-              ...s,
-              school: {
-                ...s.school,
-                activeArms: (s.school?.activeArms || []).map((a) => (a === from ? to : a)),
-              },
-            }
-          : s
-      );
-      setStats((st) => ({
-        ...st,
-        classDistribution: Object.fromEntries(
-          Object.entries(st.classDistribution || {}).map(([arm, n]) => [arm === from ? to : arm, n])
-        ),
-      }));
-      setArmsSlotCounts((c) =>
-        Object.fromEntries(Object.entries(c).map(([arm, n]) => [arm === from ? to : arm, n]))
-      );
-      setArmsFeeAmounts((c) =>
-        Object.fromEntries(Object.entries(c).map(([arm, n]) => [arm === from ? to : arm, n]))
-      );
-      const moved = Object.entries(counts || {})
-        .filter(([, n]) => n > 0)
-        .map(([k, n]) => `${n} ${k}`)
-        .join(", ");
-      showToast(moved ? `Renamed ${from} → ${to} · ${moved}` : `Renamed ${from} → ${to}`);
-      setRenameTarget(null);
-    } catch (err) {
-      showToast(err.message);
-    } finally {
-      setRenameSaving(false);
     }
   }
 
@@ -1919,272 +1506,6 @@ export default function AdminDashboard() {
     } finally {
       setRolloverSaving(false);
     }
-  }
-
-  // ---- Previous Terms (term archive viewer) --------------------------------
-  function selectArchTerm(t) {
-    setArchTerm((prev) =>
-      prev && prev.session === t.session && prev.term === t.term
-        ? null
-        : { session: t.session, term: t.term }
-    );
-    setArchArm(null);
-    setArchDetail(null);
-  }
-
-  async function selectArchArm(t, arm) {
-    if (archArm === arm && archDetail) return;
-    setArchArm(arm);
-    setArchDetail(null);
-    setArchLoading(true);
-    try {
-      const params = new URLSearchParams({ session: t.session, term: t.term, classArm: arm });
-      const res = await fetch(`/api/school/archives?${params}`);
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Could not load the archived term");
-      setArchDetail(data);
-    } catch (err) {
-      showToast(err.message);
-      setArchDetail(null);
-    } finally {
-      setArchLoading(false);
-    }
-  }
-
-  // Open the existing report-card modal with the ARCHIVED payload — the
-  // school object is synthesized with the archived session/term, so the
-  // printed card reads the term it belongs to.
-  function openArchReport(st) {
-    setReportPayload({
-      school: archDetail.school,
-      student: { name: st.studentName, assignedClass: st.classArm },
-      scores: st.scores,
-      summary: st.summary,
-      attendance: st.attendance,
-    });
-  }
-
-  // Alumni view — students in an archived roster who are no longer on the
-  // live roster (graduated / deleted), with the term they last appeared in.
-  async function loadAlumni() {
-    setArchMode("alumni");
-    if (archAlumniLoaded) return; // already fetched this visit
-    setArchAlumniLoading(true);
-    try {
-      const res = await fetch("/api/school/archives?alumni=1");
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Could not load alumni");
-      setArchAlumni(data.alumni || []);
-      setArchAlumniLoaded(true);
-    } catch (err) {
-      showToast(err.message);
-    } finally {
-      setArchAlumniLoading(false);
-    }
-  }
-
-  // Download the alumni list as a CSV from the SERVER-side export
-  // (GET /api/school/archives?alumni=1&format=csv) — the same tested
-  // buildAlumniCsv helper runs there, so the file is byte-identical to the
-  // old client-side export but doesn't depend on the browser (works for
-  // large lists and can be reused by scheduled reports).
-  //
-  // The click is intercepted and the CSV is fetched first: an expired
-  // session (the server answers 401 with a JSON body) shows a friendly
-  // toast instead of the browser downloading the error payload as a file.
-  // On success the blob is saved with the server's Content-Disposition
-  // filename (school slug + date), exactly what the anchor navigation
-  // would have produced.
-  async function exportAlumniCsv(e) {
-    if (!archAlumni.length) return;
-    e.preventDefault();
-    try {
-      const res = await fetch("/api/school/archives?alumni=1&format=csv");
-      if (res.status === 401) {
-        showToast("Your session has expired — sign in again to export.");
-        return;
-      }
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
-        showToast(data.error || "Could not export the CSV");
-        return;
-      }
-      const blob = await res.blob();
-      const disposition = res.headers.get("Content-Disposition") || "";
-      const match = disposition.match(/filename="?([^";]+)"?/);
-      const filename = match ? match[1] : "alumni.csv";
-      downloadBlob(filename, blob);
-      showToast(`Exported ${archAlumni.length} alumni to CSV`);
-    } catch (err) {
-      showToast(err.message || "Could not export the CSV");
-    }
-  }
-
-  // Bulk-distribute student logins: name, email, class arm and the current
-  // password (auto-generated name+class, or whatever the student changed it
-  // to / an admin reset it to). Built client-side from the already-loaded
-  // roster — the Login Details students list is fetched without pagination.
-  // When a class arm is selected in the toolbar, only that arm's students are
-  // exported (one class at a time for bulk distribution).
-  function exportStudentLoginsCsv() {
-    const scope = loginExportClass
-      ? loginStudents.filter((s) => s.assignedClass === loginExportClass)
-      : loginStudents;
-    if (!scope.length) {
-      showToast(loginExportClass ? `No students in ${loginExportClass} yet.` : "No students to export yet.");
-      return;
-    }
-    const rows = [
-      ["name", "email", "class", "password"],
-      ...scope.map((s) => [
-        s.name || "",
-        s.email || "",
-        s.assignedClass || "",
-        s.generatedPassword || "",
-      ]),
-    ];
-    const csv = withBOM(toCSV(rows));
-    const base = (session.school?.name || "school").toLowerCase().replace(/[^a-z0-9]+/g, "-");
-    const armSlug = loginExportClass ? `-${loginExportClass.toLowerCase().replace(/[^a-z0-9]+/g, "-")}` : "";
-    downloadBlob(`${base}-student-logins${armSlug}.csv`, new Blob([csv], { type: "text/csv;charset=utf-8" }));
-    showToast(
-      `Exported ${scope.length} student login${scope.length === 1 ? "" : "s"}${loginExportClass ? ` (${loginExportClass})` : ""} to CSV`
-    );
-  }
-
-  // Bulk-distribute staff & parent logins (super admin, teachers, bursars,
-  // registrars + parents): name, email, role, class arm and the current
-  // password — recorded at creation/reset/self-service change so it can be
-  // handed out from one place.
-  function exportStaffLoginsCsv() {
-    if (!loginUsers.length) {
-      showToast("No staff or parent accounts to export yet.");
-      return;
-    }
-    const rows = [
-      ["name", "email", "role", "class", "password"],
-      ...loginUsers.map((u) => [
-        u.name || "",
-        u.email || "",
-        ROLE_LABELS[u.role] || u.role || "",
-        u.assignedClass || (u.assignedClasses?.length ? u.assignedClasses.join(" | ") : "") || "",
-        // Teachers bootstrap with the school name (derived at login), but
-        // once they set their OWN password it's recorded in generatedPassword
-        // — the export shows whichever currently applies.
-        u.role === "TEACHER"
-          ? u.generatedPassword || session.school?.name || ""
-          : u.generatedPassword || "",
-      ]),
-    ];
-    const csv = withBOM(toCSV(rows));
-    const base = (session.school?.name || "school").toLowerCase().replace(/[^a-z0-9]+/g, "-");
-    downloadBlob(`${base}-staff-logins.csv`, new Blob([csv], { type: "text/csv;charset=utf-8" }));
-    showToast(`Exported ${loginUsers.length} staff & parent logins to CSV`);
-  }
-
-  // parentId → linked children's full names, in roster order. Reuses the
-  // already-loaded student roster when the Students view has been opened;
-  // otherwise fetches it on demand. Used by the parent-logins CSV export and
-  // the printable credentials sheet.
-  async function getChildrenByParent() {
-    let roster = loginStudents;
-    if (!roster.length) {
-      const res = await fetch("/api/users?role=STUDENT");
-      const data = await res.json();
-      roster = data.users || [];
-    }
-    const childrenByParent = {};
-    for (const s of roster) {
-      if (!s.parentId) continue;
-      (childrenByParent[s.parentId] ||= []).push(s.name || "");
-    }
-    return childrenByParent;
-  }
-
-  // Bulk-distribute parent logins: parent name, email, linked children and
-  // the login password — which is ANY linked child's full name (case- and
-  // spacing-insensitive, e.g. "Adam Tope Johnson" works as typed), so a
-  // parent with several children can sign in with whichever name they
-  // remember. Each valid child name is listed; parents with no linked child
-  // yet fall back to the admin-set generated password.
-  async function exportParentLoginsCsv() {
-    const parents = loginUsers.filter((u) => u.role === "PARENT");
-    if (!parents.length) {
-      showToast("No parent accounts to export yet.");
-      return;
-    }
-    let childrenByParent = {};
-    try {
-      childrenByParent = await getChildrenByParent();
-    } catch {
-      showToast("Could not load the student roster for this export.");
-      return;
-    }
-    const rows = [
-      ["parent name", "email", "linked children", "password"],
-      ...parents.map((p) => {
-        const children = (childrenByParent[p.id] || []).filter(Boolean);
-        return [
-          p.name || "",
-          p.email || "",
-          children.join("; "),
-          children.length ? children.join(" / ") : p.generatedPassword || "",
-        ];
-      }),
-    ];
-    const csv = withBOM(toCSV(rows));
-    const base = (session.school?.name || "school").toLowerCase().replace(/[^a-z0-9]+/g, "-");
-    downloadBlob(`${base}-parent-logins.csv`, new Blob([csv], { type: "text/csv;charset=utf-8" }));
-    showToast(`Exported ${parents.length} parent logins to CSV`);
-  }
-
-  // Printable credentials sheet — names + passwords side by side on paper.
-  // Staff & parents: every non-student account; parent slips show their
-  // linked children's full names as the password (the friendly form that
-  // actually signs them in), falling back to the recorded password when a
-  // parent has no linked child yet.
-  async function openStaffPrintSheet() {
-    if (!loginUsers.length) {
-      showToast("No staff or parent accounts to print yet.");
-      return;
-    }
-    let childrenByParent = {};
-    try {
-      childrenByParent = await getChildrenByParent();
-    } catch {
-      /* roster fetch failed — parent slips fall back to generatedPassword */
-    }
-    setPrintSheet({
-      title: "Staff & Parent Login Credentials",
-      rows: loginUsers.map((u) => ({
-        name: u.name || "",
-        email: u.email || "",
-        meta: ROLE_LABELS[u.role] || u.role || "",
-        password:
-          u.role === "PARENT"
-            ? (childrenByParent[u.id] || []).filter(Boolean).join(" / ") || u.generatedPassword || ""
-            : u.role === "TEACHER"
-              ? session.school?.name || ""
-              : u.generatedPassword || "",
-      })),
-    });
-  }
-
-  // Printable credentials sheet for the whole student roster.
-  function openStudentPrintSheet() {
-    if (!loginStudents.length) {
-      showToast("No students to print yet.");
-      return;
-    }
-    setPrintSheet({
-      title: "Student Login Credentials",
-      rows: loginStudents.map((s) => ({
-        name: s.name || "",
-        email: s.email || "",
-        meta: s.assignedClass || "",
-        password: s.generatedPassword || "",
-      })),
-    });
   }
 
   async function clearTtSlot() {
@@ -2377,6 +1698,7 @@ export default function AdminDashboard() {
   const maxArm = Math.max(1, ...Object.values(stats.classDistribution || {}));
 
   return (
+    <AdminProvider value={{ session, setSession, stats, setStats, teachers, setTeachers, students, setStudents, parents, showToast }}>
     <main className="flex min-h-screen flex-1 bg-navy-50">
       <Sidebar role={myRole} open={sidebarOpen} onClose={() => setSidebarOpen(false)} />
 
@@ -2774,43 +2096,12 @@ export default function AdminDashboard() {
 
           {/* Previous Terms */}
 {activeTab === "archives" && (
-          <ArchivesTab
-            archMode={archMode}
-            setArchMode={setArchMode}
-            archTerms={archTerms}
-            archTerm={archTerm}
-            archArm={archArm}
-            archDetail={archDetail}
-            archLoading={archLoading}
-            archAlumni={archAlumni}
-            archAlumniLoading={archAlumniLoading}
-            archAlumniLoaded={archAlumniLoaded}
-            selectArchTerm={selectArchTerm}
-            selectArchArm={selectArchArm}
-            loadAlumni={loadAlumni}
-            exportAlumniCsv={exportAlumniCsv}
-            openArchReport={openArchReport}
-            setArchDetail={setArchDetail}
-          />
+          <ArchivesTab openReportPayload={(data) => setReportPayload(data)} />
         )}
 
           {/* Classes & Arms */}
 {activeTab === "classes" && (
-          <ClassesTab
-            armsDraft={armsDraft}
-            stats={stats}
-            armsSlotCounts={armsSlotCounts}
-            armsFeeAmounts={armsFeeAmounts}
-            armsSaving={armsSaving}
-            newArm={newArm}
-            setNewArm={setNewArm}
-            addArm={addArm}
-            removeArm={removeArm}
-            openRename={openRename}
-            saveArms={saveArms}
-            addStreamedArms={addStreamedArms}
-            session={session}
-          />
+          <ClassesTab />
         )}
 
           {/* Teachers */}
@@ -2828,41 +2119,12 @@ export default function AdminDashboard() {
 
           {/* Roles & Access */}
 {activeTab === "roles" && (
-          <RolesTab
-            staffList={staffList}
-            roleAudit={roleAudit}
-            roleDraft={roleDraft}
-            roleSaving={roleSaving}
-            session={session}
-            openReset={openReset}
-            requestRoleChange={requestRoleChange}
-            setRoleDraft={setRoleDraft}
-          />
+          <RolesTab openReset={openReset} />
         )}
 
           {/* Login Details */}
 {activeTab === "logins" && (
-          <LoginsTab
-            loginMode={loginMode}
-            setLoginMode={setLoginMode}
-            loginUsers={loginUsers}
-            loginStudents={loginStudents}
-            loginStudentsLoaded={loginStudentsLoaded}
-            loginStudentsSearch={loginStudentsSearch}
-            setLoginStudentsSearch={setLoginStudentsSearch}
-            loginExportClass={loginExportClass}
-            setLoginExportClass={setLoginExportClass}
-            revealedPasswords={revealedPasswords}
-            loginClasses={loginClasses}
-            filteredLoginStudents={filteredLoginStudents}
-            openStaffPrintSheet={openStaffPrintSheet}
-            openStudentPrintSheet={openStudentPrintSheet}
-            exportStaffLoginsCsv={exportStaffLoginsCsv}
-            exportParentLoginsCsv={exportParentLoginsCsv}
-            exportStudentLoginsCsv={exportStudentLoginsCsv}
-            openReset={openReset}
-            toggleRevealPassword={toggleRevealPassword}
-          />
+          <LoginsTab openReset={openReset} />
         )}
 
           {/* Timetable */}
@@ -2933,17 +2195,7 @@ export default function AdminDashboard() {
 
           {/* Report Cards */}
 {activeTab === "reports" && (
-          <ReportsTab
-            reportStudents={reportStudents}
-            filteredReports={filteredReports}
-            reportSearch={reportSearch}
-            setReportSearch={setReportSearch}
-            reportClass={reportClass}
-            setReportClass={setReportClass}
-            reportLoading={reportLoading}
-            openReport={openReport}
-            activeArms={session.school?.activeArms}
-          />
+          <ReportsTab openReportModal={(data) => setReportPayload(data)} />
         )}
 
           {/* Students */}
@@ -2964,22 +2216,7 @@ export default function AdminDashboard() {
       </div>
 
 {activeTab === "settings" && (
-          <SettingsTab
-            settingsDraft={settingsDraft}
-            setSettingsDraft={setSettingsDraft}
-            settingsSaving={settingsSaving}
-            settingsError={settingsError}
-            settingsSaved={settingsSaved}
-            logoError={logoError}
-            sealError={sealError}
-            logoInputRef={logoInputRef}
-            sealInputRef={sealInputRef}
-            settingsColorWell={settingsColorWell}
-            session={session}
-            setTab={setTab}
-            saveSettings={saveSettings}
-            handleImageFile={handleImageFile}
-          />
+          <SettingsTab setTab={setTab} />
         )}
 
         {activeTab === "scheme" && (
@@ -4433,50 +3670,6 @@ export default function AdminDashboard() {
         </div>
       </Modal>
 
-      {/* Rename arm — a migration, so every reference moves with it */}
-      <Modal
-        open={renameTarget !== null}
-        onClose={() => setRenameTarget(null)}
-        title={renameTarget ? `Rename ${renameTarget}` : ""}
-      >
-        {renameTarget !== null && (
-          <div className="space-y-4">
-            <p className="text-sm text-navy-500">
-              Renaming re-points <span className="font-semibold text-navy-800">{renameTarget}</span> everywhere:
-              students, teacher scopes, fees, scores, attendance and timetable entries all move to the new
-              name in one go. A collision with an existing arm is rejected.
-            </p>
-            <label className="block">
-              <span className="mb-1.5 block text-sm font-medium text-navy-700">New name</span>
-              <input
-                value={renameValue}
-                onChange={(e) => setRenameValue(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && saveRename()}
-                placeholder="e.g. JSS1 Blue"
-                autoFocus
-                className="w-full rounded-xl border border-navy-200 px-4 py-2.5 text-sm outline-none transition focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20"
-              />
-            </label>
-            <div className="flex gap-2">
-              <button
-                onClick={() => setRenameTarget(null)}
-                className="inline-flex flex-1 items-center justify-center gap-1.5 rounded-xl border border-navy-200 px-4 py-2.5 text-sm font-semibold text-navy-600 transition hover:bg-navy-50"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={saveRename}
-                disabled={renameSaving || !renameValue.trim() || renameValue.trim() === renameTarget}
-                className="inline-flex flex-1 items-center justify-center gap-1.5 rounded-xl bg-brand-600 px-4 py-2.5 text-sm font-semibold text-white shadow-lg shadow-brand-600/30 transition hover:bg-brand-500 disabled:opacity-60"
-              >
-                {renameSaving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Pencil className="h-4 w-4" />}
-                Rename
-              </button>
-            </div>
-          </div>
-        )}
-      </Modal>
-
       {/* Timetable cell editor — pick a subject + teacher for one period */}
       <Modal
         open={ttModal !== null}
@@ -4600,5 +3793,6 @@ export default function AdminDashboard() {
         </div>
       )}
     </main>
+    </AdminProvider>
   );
 }
