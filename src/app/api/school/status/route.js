@@ -2,7 +2,7 @@ import { NextResponse } from "next/server.js";
 import { jsonError } from "@/lib/auth";
 import { store } from "@/lib/store";
 import { invalidateSchoolAuthSnapshots, isDenied, requirePermission } from "@/lib/policy";
-import { sendMail } from "@/lib/mailer";
+import { sendEmail } from "@/lib/mailer";
 import { schoolStatusSchema, firstValidationMessage } from "@/lib/validation";
 
 /**
@@ -72,7 +72,7 @@ export async function POST(request) {
     ].join("\n");
     await Promise.all(
       supers.map((s) =>
-        s.email ? sendMail({ to: s.email, subject, text: emailBody }) : Promise.resolve()
+        s.email ? sendEmail({ to: s.email, subject, text: emailBody }) : Promise.resolve()
       )
     );
     await store.createNotification({

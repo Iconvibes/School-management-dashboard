@@ -24,7 +24,7 @@ export default function DemoLoginButton({ className = "" }) {
     fetch("/api/auth/demo-status")
       .then((r) => r.json())
       .then((d) => setAvailable(!!d.enabled))
-      .catch(() => {});
+      .catch((e) => console.warn("[demo-status] failed:", e?.message));
   }, []);
 
   if (!available || failed) return null;

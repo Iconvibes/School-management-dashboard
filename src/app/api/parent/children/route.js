@@ -2,6 +2,7 @@ import { store } from "@/lib/store";
 import { computeGrade, standingFromAverage } from "@/lib/grading";
 import { buildArmRankings } from "@/lib/ranking";
 import { receiptsFromLedger } from "@/lib/receipts";
+import { paymentsFromLedger } from "@/lib/receipts";
 import { isDenied, requireAuth } from "@/lib/policy";
 
 /**
@@ -92,6 +93,8 @@ export async function GET() {
       // Each carries its own balance-after so old receipts stay historically
       // accurate instead of showing today's balance.
       receipts: receiptsFromLedger(feeEntry, feeEntry?.amount),
+      // All payments (pending + confirmed) — the payment history view.
+      payments: paymentsFromLedger(feeEntry),
     });
   }
 

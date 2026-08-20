@@ -120,7 +120,15 @@ export default function Sidebar({ role, open, onClose }) {
             <Link
               key={item.label}
               href={item.href}
-              onClick={onClose}
+              onClick={(e) => {
+                const hash = item.href.split("#")[1];
+                if (hash) {
+                  e.preventDefault();
+                  window.location.hash = hash;
+                  window.dispatchEvent(new Event("hashchange"));
+                }
+                onClose();
+              }}
               className="flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium text-navy-200 transition hover:bg-white/10 hover:text-white"
             >
               <item.icon className="h-4.5 w-4.5 text-navy-300" />

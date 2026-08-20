@@ -107,7 +107,7 @@ export default function ImportPage() {
         setIsDemo(d.isDemo === true);
         setSchoolArms(d.school?.activeArms || []);
       })
-      .catch(() => {});
+      .catch((e) => { console.warn("[session] load failed:", e?.message); window.location.href = "/login"; });
   }, [router]);
 
   const summary = preview?.summary || result?.summary;

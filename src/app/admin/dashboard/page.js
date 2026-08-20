@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useTabFetch } from "@/hooks/useTabFetch";
 import { useRouter } from "next/navigation";
 import {
   Menu,
@@ -68,6 +69,16 @@ import ReportCardModal from "@/components/ReportCardModal";
 import PrintableCredentials from "@/components/PrintableCredentials";
 import ArmStreamSplitter from "@/components/ArmStreamSplitter";
 import OverviewTab from "@/components/admin/OverviewTab";
+import TeachersTab from "@/components/admin/TeachersTab";
+import StudentsTab from "@/components/admin/StudentsTab";
+import FeesTab from "@/components/admin/FeesTab";
+import ReportsTab from "@/components/admin/ReportsTab";
+import ArchivesTab from "@/components/admin/ArchivesTab";
+import ClassesTab from "@/components/admin/ClassesTab";
+import RolesTab from "@/components/admin/RolesTab";
+import LoginsTab from "@/components/admin/LoginsTab";
+import TimetableTab from "@/components/admin/TimetableTab";
+import SettingsTab from "@/components/admin/SettingsTab";
 import { armAlreadyExists } from "@/lib/arms";
 import { downloadBlob, toCSV, withBOM } from "@/lib/csv";
 import { getSubjects, gradeBadgeClasses, ordinal, TERMS } from "@/lib/grading";
@@ -84,6 +95,7 @@ import {
 import { can, STAFF_ROLES, summarizeRolePermissions } from "@/lib/permissions";
 import { bounceToLogin } from "@/lib/auth-client";
 import { compressImageFile } from "@/lib/image-upload";
+import { safeFetchJson } from "@/lib/safe-fetch";
 import { MANAGED_ROLES, ROLE_LABELS } from "@/lib/roles";
 import { sparklinePoints } from "@/lib/conflict-scan";
 import { payrollToggleDelta, negateToggleDelta } from "@/lib/toggles";
@@ -433,57 +445,34 @@ export default function AdminDashboard() {
     return () => window.removeEventListener("hashchange", applyHash);
   }, []);
 
-  // Load ranked students for the Report Cards tab (scoped by class filter)
-  useEffect(() => {
-    if (tab !== "reports") return;
-    const params = new URLSearchParams({ limit: "200" });
-    if (reportClass) params.set("classArm", reportClass);
-    fetch(`/api/reports?${params}`)
-      .then((r) => r.json())
-      .then((data) => setReportStudents(data.students || []))
-      .catch(() => {});
-  }, [tab, reportClass]);
+  const reportsUrl = tab === "reports" ? "/api/reports?limit=200" + (reportClass ? "&classArm=" + encodeURIComponent(reportClass) : "") : null;
+  const { data: reportsResult } = useTabFetch(reportsUrl, {
+    enabled: tab === "reports",
+    deps: [reportClass],
+    transform: (d) => d.students || [],
+  });
+  useEffect(() => { if (reportsResult) setReportStudents(reportsResult); }, [reportsResult]);
 
-  // Load fee structures once (for the structures editor)
-  useEffect(() => {
-    if (tab !== "fees") return;
-    fetch("/api/fees/structures")
-      .then((r) => r.json())
-      .then((data) => {
-        setFeeStructures(data.structures || []);
-        setFeeDraft(
-          Object.fromEntries(
-            (data.structures || []).map((s) => [s.classArm, s.amount])
-          )
-        );
-      })
-      .catch(() => {});
-  }, [tab]);
+  useTabFetch("/api/fees/structures", {
+    enabled: tab === "fees",
+    onData: (d) => {
+      setFeeStructures(d.structures || []);
+      setFeeDraft(Object.fromEntries((d.structures || []).map((s) => [s.classArm, s.amount])));
+    },
+  });
 
-  // Previous Terms: load the archive summary when the tab opens.
+  const { data: archivesResult } = useTabFetch("/api/school/archives", {
+    enabled: tab === "archives",
+    transform: (d) => d.terms || [],
+  });
   useEffect(() => {
-    if (tab !== "archives") return;
-    let cancelled = false;
-    fetch("/api/school/archives")
-      .then((r) => r.json())
-      .then((data) => {
-        if (cancelled) return;
-        setArchTerms(data.terms || []);
-        if (!data.terms?.length) {
-          setArchTerm(null);
-          setArchArm(null);
-          setArchDetail(null);
-        }
-        // Fresh visit — start on the term list and let the alumni list reload.
-        setArchMode("terms");
-        setArchAlumniLoaded(false);
-        setArchAlumni([]);
-      })
-      .catch(() => {});
-    return () => {
-      cancelled = true;
-    };
-  }, [tab]);
+    if (!archivesResult) return;
+    setArchTerms(archivesResult);
+    if (!archivesResult.length) { setArchTerm(null); setArchArm(null); setArchDetail(null); }
+    setArchMode("terms");
+    setArchAlumniLoaded(false);
+    setArchAlumni([]);
+  }, [archivesResult]);
 
   // Classes & Arms: when the tab opens, re-read the school's arms from the
   // server (authoritative — a save elsewhere already mirrored into the
@@ -518,104 +507,86 @@ export default function AdminDashboard() {
     };
   }, [tab]);
 
-  // Load fee ledger when filters change
-  useEffect(() => {
-    if (tab !== "fees") return;
-    const params = new URLSearchParams();
-    if (feeClass) params.set("classArm", feeClass);
-    if (feeDefaultersOnly) params.set("defaulters", "1");
-    fetch(`/api/fees?${params}`)
-      .then((r) => r.json())
-      .then((data) => {
-        setFeeLedger(data.ledger || []);
-        setFeeTotals(data.totals || null);
-        setPendingPayments(data.pendingPayments || []);
-      })
-      .catch(() => {});
-  }, [tab, feeClass, feeDefaultersOnly]);
+  const feeLedgerUrl = tab === "fees" ? "/api/fees?" + new URLSearchParams(Object.entries({ classArm: feeClass || "", defaulters: feeDefaultersOnly ? "1" : "" }).filter(([,v]) => v)).toString() : null;
+  useTabFetch(feeLedgerUrl, {
+    enabled: tab === "fees",
+    deps: [feeClass, feeDefaultersOnly],
+    onData: (d) => {
+      setFeeLedger(d.ledger || []);
+      setFeeTotals(d.totals || null);
+      setPendingPayments(d.pendingPayments || []);
+    },
+  });
 
   // Settings: load the school's current branding into the draft every time
-  // the tab opens (async, like the Classes tab) so an unsaved edit is
-  // discarded and server-side truth wins.
-  useEffect(() => {
-    if (tab !== "settings") return;
-    let cancelled = false;
-    fetch("/api/school")
-      .then((r) => r.json())
-      .then((data) => {
-        if (cancelled) return;
-        setSettingsDraft({
-          brandColor: data.school?.brandColor || "#2563EB",
-          logoUrl: data.school?.logoUrl || "",
-          sealUrl: data.school?.sealUrl || "",
-          notificationRetentionDays: Number(data.school?.notificationRetentionDays) || 90,
-          reconcileDeletedReminders: data.school?.reconcileDeletedReminders === true,
-        });
-        setSettingsError("");
-        setSettingsSaved(false);
-      })
-      .catch(() => {});
-    return () => {
-      cancelled = true;
-    };
-  }, [tab]);
+  // the tab opens — server-side truth wins over any unsaved edits.
+  useTabFetch("/api/school", {
+    enabled: tab === "settings",
+    onData: (data) => {
+      setSettingsDraft({
+        brandColor: data.school?.brandColor || "#2563EB",
+        logoUrl: data.school?.logoUrl || "",
+        sealUrl: data.school?.sealUrl || "",
+        notificationRetentionDays: Number(data.school?.notificationRetentionDays) || 90,
+        reconcileDeletedReminders: data.school?.reconcileDeletedReminders === true,
+      });
+      setSettingsError("");
+      setSettingsSaved(false);
+    },
+  });
 
-  // Timetable: load the selected arm's schedule when the tab opens, plus the
-  // school's bell schedule for the period-times editor.
-  useEffect(() => {
-    if (tab !== "timetable" || !ttArm) return;
-    fetch(`/api/timetable?classArm=${encodeURIComponent(ttArm)}`)
-      .then((r) => r.json())
-      .then((data) => setTtEntries(data.entries || []))
-      .catch(() => {});
-    fetch("/api/school")
-      .then((r) => r.json())
-      .then((data) => {
-        setPeriodTimesDraft(getPeriodTimes(data.school).map((p) => ({ ...p })));
-        setBreakDraft(getBreakTime(data.school));
-        // Any per-day overrides the school already saved load into their own
-        // drafts, resolved to FULL schedules so the editor shows real values.
-        const ds = data.school?.dailySchedules || {};
-        setDailyDrafts(
-          Object.fromEntries(
-            DAYS.filter((d) => ds[d]).map((d) => [
-              d,
-              {
-                periodTimes: getPeriodTimes(data.school, d).map((p) => ({ ...p })),
-                breakTimes: { ...getBreakTime(data.school, d) },
-              },
-            ])
-          )
-        );
-      })
-      .catch(() => {});
-  }, [tab, ttArm]);
+  // Timetable entries for the selected arm
+  const { data: ttEntriesResult } = useTabFetch(
+    tab === "timetable" && ttArm ? "/api/timetable?classArm=" + encodeURIComponent(ttArm) : null,
+    { enabled: tab === "timetable" && !!ttArm, deps: [ttArm], transform: (d) => d.entries || [] }
+  );
+  useEffect(() => { if (ttEntriesResult) setTtEntries(ttEntriesResult); }, [ttEntriesResult]);
 
-  // Load the fee audit trail once per visit to the tab (the trail is global,
-  // not filtered by class arm or defaulter state).
-  useEffect(() => {
-    if (tab !== "fees") return;
-    fetch("/api/fees/audit")
-      .then((r) => r.json())
-      .then((data) => setAudit(data.entries || []))
-      .catch(() => {});
-  }, [tab]);
+  // Timetable: load the school's bell schedule for the period-times editor.
+  const ttSchoolResult = useTabFetch("/api/school", {
+    enabled: tab === "timetable" && !!ttArm,
+    deps: [ttArm],
+    onData: (data) => {
+      setPeriodTimesDraft(getPeriodTimes(data.school).map((p) => ({ ...p })));
+      setBreakDraft(getBreakTime(data.school));
+      const ds = data.school?.dailySchedules || {};
+      setDailyDrafts(
+        Object.fromEntries(
+          DAYS.filter((d) => ds[d]).map((d) => [
+            d,
+            {
+              periodTimes: getPeriodTimes(data.school, d).map((p) => ({ ...p })),
+              breakTimes: { ...getBreakTime(data.school, d) },
+            },
+          ])
+        )
+      );
+    },
+  });
 
-  // Students whose reminders went to THEM (no parent at send time) and who
-  // have a parent now — the school can forward those reminders to the parent.
-  useEffect(() => {
-    if (tab !== "fees") return;
-    fetch("/api/fees/reconcile")
-      .then((r) => r.json())
-      .then((data) => setPendingReconciles(data.pending || []))
-      .catch(() => {});
-  }, [tab]);
+  const { data: auditData } = useTabFetch("/api/fees/audit", {
+    enabled: tab === "fees",
+    transform: (d) => d.entries || [],
+  });
+  useEffect(() => { if (auditData) setAudit(auditData); }, [auditData]);
 
-  // Roles & Access: staff directory + role-change audit trail (super admin tab)
+  const { data: reconcileData } = useTabFetch("/api/fees/reconcile", {
+    enabled: tab === "fees",
+    transform: (d) => d.pending || [],
+  });
+  useEffect(() => { if (reconcileData) setPendingReconciles(reconcileData); }, [reconcileData]);
+
+  // Roles & Access: role-change audit trail via useTabFetch
+  const { data: roleAuditData } = useTabFetch("/api/users/roles/audit", {
+    enabled: tab === "roles",
+    transform: (d) => d.entries || [],
+  });
+  useEffect(() => { if (roleAuditData) setRoleAudit(roleAuditData); }, [roleAuditData]);
+
+  // Staff directory — one query per staff role (Promise.all, not a single endpoint)
   useEffect(() => {
     if (tab !== "roles") return;
-    // One query per staff role instead of shipping the whole roster (which can
-    // be hundreds of students) just to filter it client-side.
+    // One query per staff role instead of shipping the whole roster.
     Promise.all(
       MANAGED_ROLES.map((r) =>
         fetch(`/api/users?role=${encodeURIComponent(r)}`)
@@ -624,11 +595,7 @@ export default function AdminDashboard() {
       )
     )
       .then((groups) => setStaffList(groups.flat()))
-      .catch(() => {});
-    fetch("/api/users/roles/audit")
-      .then((r) => r.json())
-      .then((d) => setRoleAudit(d.entries || []))
-      .catch(() => {});
+      .catch((e) => console.warn("[staff-list] load failed:", e?.message));
   }, [tab]);
 
   // Login Details: staff + parents (the default view) — one query per role
@@ -644,21 +611,20 @@ export default function AdminDashboard() {
       )
     )
       .then((groups) => setLoginUsers(groups.flat()))
-      .catch(() => {});
+      .catch((e) => console.warn("[login-users] load failed:", e?.message));
   }, [tab]);
 
-  // Students load on demand — the roster can be hundreds of rows and the
-  // staff/parents view is the common path.
-  useEffect(() => {
-    if (tab !== "logins" || loginMode !== "students" || loginStudentsLoaded) return;
-    fetch("/api/users?role=STUDENT")
-      .then((r) => r.json())
-      .then((d) => {
-        setLoginStudents(d.users || []);
-        setLoginStudentsLoaded(true);
-      })
-      .catch(() => {});
-  }, [tab, loginMode, loginStudentsLoaded]);
+  // Students load on demand — the roster can be hundreds of rows.
+  const loginStudentsUrl = tab === "logins" && loginMode === "students" && !loginStudentsLoaded
+    ? "/api/users?role=STUDENT" : null;
+  const { data: loginStudentsResult } = useTabFetch(loginStudentsUrl, {
+    enabled: tab === "logins" && loginMode === "students" && !loginStudentsLoaded,
+    deps: [loginMode, loginStudentsLoaded],
+    onData: (d) => {
+      setLoginStudents(d.users || []);
+      setLoginStudentsLoaded(true);
+    },
+  });
 
   // Student search within the Login Details students view (name / email / arm).
   const filteredLoginStudents = useMemo(() => {
@@ -755,7 +721,7 @@ export default function AdminDashboard() {
         fetch("/api/timetable/health")
           .then((r) => r.json())
           .then((d) => setTtHealth(d))
-          .catch(() => {});
+          .catch((e) => console.warn("[tt-health] refresh failed:", e?.message));
       }
       setLoading(false);
     })();
@@ -1552,7 +1518,7 @@ export default function AdminDashboard() {
       fetch("/api/timetable/health")
         .then((r) => r.json())
         .then((d) => setTtHealth(d))
-        .catch(() => {});
+        .catch((e) => console.warn("[tt-health] refresh failed:", e?.message));
       if (ttConflictsOpen) checkTtConflicts(true);
     } catch (err) {
       showToast(err.message);
@@ -1927,7 +1893,7 @@ export default function AdminDashboard() {
       fetch("/api/admin/stats")
         .then((r) => r.json())
         .then((d) => d.stats && setStats(d.stats))
-        .catch(() => {});
+        .catch((e) => console.warn("[stats] refresh failed:", e?.message));
       fetch("/api/fees/structures")
         .then((r) => r.json())
         .then((d) => {
@@ -1936,7 +1902,7 @@ export default function AdminDashboard() {
             setFeeDraft(Object.fromEntries(d.structures.map((s) => [s.classArm, s.amount])));
           }
         })
-        .catch(() => {});
+        .catch((e) => console.warn("[fee-structures] refresh failed:", e?.message));
       showToast(
         `Started ${data.school?.currentSession} · ${data.school?.currentTerm} — archived ${c.scoresArchived || 0} scores and ${c.attendanceArchived || 0} attendance registers; cloned ${c.feesCloned || 0} fee structures and ${c.timetableCloned || 0} timetable slots; carried ${c.carryovers || 0} unpaid balances and sent ${c.remindersSent || 0} automatic reminders`
       );
@@ -2256,7 +2222,7 @@ export default function AdminDashboard() {
       fetch("/api/timetable/health")
         .then((r) => r.json())
         .then((d) => setTtHealth(d))
-        .catch(() => {});
+        .catch((e) => console.warn("[tt-health] scan refresh failed:", e?.message));
       setTtConflictsOpen(true);
       const total =
         (data.conflicts.teacher?.length || 0) +
@@ -2696,7 +2662,7 @@ export default function AdminDashboard() {
           {/* Tabs — horizontally scrollable on small screens so the strip
               never pushes the page wider than the viewport */}
           <div className="mt-8 flex flex-wrap items-center justify-between gap-3">
-            <div className="-mx-1 max-w-full overflow-x-auto px-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+            <div className="-mx-1 max-w-full overflow-x-auto px-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden lg:hidden">
               {/* w-max + nowrap: single-line strip that scrolls on small screens.
                   On desktop (lg) the strip reverts to filling the row and tabs
                   wrap their labels as before, so nothing is cut off. */}
@@ -2794,2563 +2760,214 @@ export default function AdminDashboard() {
           )}
 
           {/* Previous Terms */}
-          {activeTab === "archives" && (
-            <div className="mt-5 space-y-4">
-              <div className="rounded-2xl border border-navy-200/70 bg-white shadow-sm">
-                <div className="border-b border-navy-100 px-6 py-4">
-                  <h2 className="text-lg font-bold text-navy-800">Previous terms</h2>
-                  <p className="text-sm text-navy-400">
-                    Archived when you started a new term: each old term&apos;s scores &amp; attendance are
-                    kept here per class arm. Open an arm to view its students and print report cards.
-                  </p>
-                  <div className="mt-3 flex w-fit gap-1 rounded-xl bg-navy-100 p-1">
-                    <button
-                      onClick={() => setArchMode("terms")}
-                      className={`rounded-lg px-4 py-2 text-sm font-semibold transition ${
-                        archMode === "terms" ? "bg-white text-navy-800 shadow-sm" : "text-navy-500 hover:text-navy-700"
-                      }`}
-                    >
-                      Archived terms
-                    </button>
-                    <button
-                      onClick={loadAlumni}
-                      className={`rounded-lg px-4 py-2 text-sm font-semibold transition ${
-                        archMode === "alumni" ? "bg-white text-navy-800 shadow-sm" : "text-navy-500 hover:text-navy-700"
-                      }`}
-                    >
-                      Alumni
-                    </button>
-                  </div>
-                </div>
-
-                <div className="p-6">
-                  {archMode === "alumni" ? (
-                    archAlumniLoading ? (
-                      <div className="flex items-center justify-center gap-2 py-10 text-sm text-navy-400">
-                        <Loader2 className="h-4 w-4 animate-spin" /> Loading alumni…
-                      </div>
-                    ) : archAlumni.length === 0 ? (
-                      <div className="rounded-xl border border-dashed border-navy-200 bg-navy-50/40 p-10 text-center">
-                        <GraduationCap className="mx-auto h-8 w-8 text-navy-300" />
-                        <p className="mt-3 text-sm font-medium text-navy-600">No alumni yet</p>
-                        <p className="mt-1 text-xs text-navy-400">
-                          Students who appear in an archived term but are no longer on the live roster
-                          show up here — including the term they last attended.
-                        </p>
-                      </div>
-                    ) : (
-                      <div>
-                        <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
-                          <p className="text-xs text-navy-400">
-                            {archAlumni.length} student{archAlumni.length === 1 ? "" : "s"} no longer on
-                            the live roster
-                          </p>
-                          <a
-                            href="/api/school/archives?alumni=1&format=csv"
-                            download
-                            onClick={exportAlumniCsv}
-                            className="inline-flex items-center gap-1.5 rounded-lg border border-navy-200 bg-white px-3 py-1.5 text-xs font-semibold text-navy-700 transition hover:border-brand-400 hover:text-brand-600"
-                          >
-                            <Download className="h-3.5 w-3.5" /> Export CSV
-                          </a>
-                        </div>
-                        <div className="overflow-x-auto">
-                        <table className="w-full text-sm">
-                          <thead>
-                            <tr className="bg-navy-50 text-left text-xs uppercase tracking-wide text-navy-400">
-                              <th className="px-6 py-3">Student</th>
-                              <th className="px-6 py-3">Last class arm</th>
-                              <th className="px-6 py-3">Last term</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {archAlumni.map((a) => (
-                              <tr key={a.studentId} className="border-t border-navy-100 hover:bg-navy-50/40">
-                                <td className="px-6 py-3 font-semibold text-navy-800">{a.studentName}</td>
-                                <td className="px-6 py-3 text-navy-500">{a.classArm || "—"}</td>
-                                <td className="px-6 py-3 text-navy-500">
-                                  {a.lastSession} · {a.lastTerm}
-                                </td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                        <p className="mt-3 text-xs text-navy-400">
-                          The term shown is the last one each student appears in across the archives.
-                        </p>
-                        </div>
-                      </div>
-                    )
-                  ) : archTerms.length === 0 ? (
-                    <div className="rounded-xl border border-dashed border-navy-200 bg-navy-50/40 p-10 text-center">
-                      <History className="mx-auto h-8 w-8 text-navy-300" />
-                      <p className="mt-3 text-sm font-medium text-navy-600">No archived terms yet</p>
-                      <p className="mt-1 text-xs text-navy-400">
-                        The term rollover on the Overview archives each old term here automatically.
-                      </p>
-                    </div>
-                  ) : (
-                    <div className="space-y-4">
-                      {archTerms.map((t) => {
-                        const selected = archTerm && archTerm.session === t.session && archTerm.term === t.term;
-                        return (
-                          <div
-                            key={`${t.session}|${t.term}`}
-                            className={`rounded-xl border p-4 transition ${
-                              selected
-                                ? "border-brand-400 bg-brand-50/40"
-                                : "border-navy-200/70 bg-white hover:border-brand-300"
-                            }`}
-                          >
-                            <button
-                              onClick={() => selectArchTerm(t)}
-                              className="flex w-full items-center justify-between gap-3 text-left"
-                            >
-                              <div>
-                                <p className="text-sm font-bold text-navy-800">
-                                  {t.session} · {t.term}
-                                </p>
-                                <p className="mt-0.5 text-xs text-navy-400">
-                                  {t.students || 0} students · {t.scoreCount} score records · {t.attendanceCount} attendance registers
-                                </p>
-                              </div>
-                              <ChevronRight
-                                className={`h-4 w-4 text-navy-300 transition ${selected ? "rotate-90" : ""}`}
-                              />
-                            </button>
-
-                            {selected && (
-                              <div className="mt-4 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
-                                {t.arms.map((arm) => (
-                                  <button
-                                    key={arm.classArm}
-                                    onClick={() => selectArchArm(t, arm.classArm)}
-                                    className={`rounded-xl border px-4 py-3 text-left text-sm transition ${
-                                      archArm === arm.classArm
-                                        ? "border-brand-600 bg-brand-600 text-white"
-                                        : "border-navy-200 bg-navy-50/40 hover:border-brand-400"
-                                    }`}
-                                  >
-                                    <p className="font-bold">{arm.classArm}</p>
-                                    <p
-                                      className={`mt-1 text-xs ${
-                                        archArm === arm.classArm ? "text-white/80" : "text-navy-400"
-                                      }`}
-                                    >
-                                      {arm.students || 0} students · {arm.scoreCount} scores · {arm.attendanceCount} registers
-                                    </p>
-                                  </button>
-                                ))}
-                                {t.arms.length === 0 && (
-                                  <p className="col-span-full text-xs text-navy-400">
-                                    No class arms in this archived term.
-                                  </p>
-                                )}
-                              </div>
-                            )}
-                          </div>
-                        );
-                      })}
-                    </div>
-                  )}
-                </div>
-              </div>
-
-              {/* Per-arm detail */}
-              {archMode === "terms" && archDetail && (
-                <div className="overflow-hidden rounded-2xl border border-navy-200/70 bg-white shadow-sm">
-                  <div className="flex flex-wrap items-center justify-between gap-3 border-b border-navy-100 px-6 py-4">
-                    <div>
-                      <h3 className="text-lg font-bold text-navy-800">
-                        {archDetail.classArm} · {archDetail.term}
-                      </h3>
-                      <p className="text-sm text-navy-400">
-                        {archDetail.students.length} students in the archived {archDetail.session} cohort
-                      </p>
-                    </div>
-                    <button
-                      onClick={() => setArchDetail(null)}
-                      className="rounded-lg px-3 py-1.5 text-sm font-semibold text-navy-500 transition hover:bg-navy-50"
-                    >
-                      Close arm
-                    </button>
-                  </div>
-                  {archLoading ? (
-                    <div className="flex items-center justify-center gap-2 py-10 text-sm text-navy-400">
-                      <Loader2 className="h-4 w-4 animate-spin" /> Loading archived scores…
-                    </div>
-                  ) : (
-                    <div className="overflow-x-auto">
-                      <table className="w-full text-sm">
-                        <thead>
-                          <tr className="bg-navy-50 text-left text-xs uppercase tracking-wide text-navy-400">
-                            <th className="px-6 py-3">Student</th>
-                            <th className="px-6 py-3">Subjects</th>
-                            <th className="px-6 py-3">Average</th>
-                            <th className="px-6 py-3">Position</th>
-                            <th className="px-6 py-3">Attendance</th>
-                            <th className="px-6 py-3" />
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {archDetail.students.map((st) => (
-                            <tr key={st.studentId} className="border-t border-navy-100 hover:bg-navy-50/40">
-                              <td className="px-6 py-3 font-semibold text-navy-800">{st.studentName}</td>
-                              <td className="px-6 py-3 text-navy-500">{st.summary.subjects}</td>
-                              <td className="px-6 py-3 font-bold text-navy-800">{st.summary.average}%</td>
-                              <td className="px-6 py-3 text-navy-500">
-                                {st.summary.position ? `${ordinal(st.summary.position)} of ${st.summary.outOf}` : "—"}
-                              </td>
-                              <td className="px-6 py-3 text-navy-500">
-                                {st.attendance.present} of {st.attendance.total} days
-                              </td>
-                              <td className="px-6 py-3 text-right">
-                                <button
-                                  onClick={() => openArchReport(st)}
-                                  className="inline-flex items-center gap-1.5 rounded-lg bg-navy-800 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-navy-700"
-                                >
-                                  <FileText className="h-3.5 w-3.5" /> Report card
-                                </button>
-                              </td>
-                            </tr>
-                          ))}
-                          {archDetail.students.length === 0 && (
-                            <tr>
-                              <td colSpan={6} className="px-6 py-10 text-center text-navy-400">
-                                No scores or attendance were archived for this arm.
-                              </td>
-                            </tr>
-                          )}
-                        </tbody>
-                      </table>
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
-          )}
+{activeTab === "archives" && (
+          <ArchivesTab
+            archMode={archMode}
+            setArchMode={setArchMode}
+            archTerms={archTerms}
+            archTerm={archTerm}
+            archArm={archArm}
+            archDetail={archDetail}
+            archLoading={archLoading}
+            archAlumni={archAlumni}
+            archAlumniLoading={archAlumniLoading}
+            archAlumniLoaded={archAlumniLoaded}
+            selectArchTerm={selectArchTerm}
+            selectArchArm={selectArchArm}
+            loadAlumni={loadAlumni}
+            exportAlumniCsv={exportAlumniCsv}
+            openArchReport={openArchReport}
+            setArchDetail={setArchDetail}
+          />
+        )}
 
           {/* Classes & Arms */}
-          {activeTab === "classes" && (
-            <div className="mt-5 space-y-4">
-              <div className="rounded-2xl border border-navy-200/70 bg-white shadow-sm">
-                <div className="border-b border-navy-100 px-6 py-4">
-                  <h2 className="text-lg font-bold text-navy-800">Classes & arms</h2>
-                  <p className="text-sm text-navy-400">
-                    Class arms are free-form — name them however your school does
-                    (&quot;JSS1 A&quot;, &quot;JSS1 Blue&quot;, &quot;SS1 Science&quot;…). Every feature keys off
-                    these names: timetables, teacher scopes, fees, attendance and report cards.
-                  </p>
-                </div>
-
-                <div className="p-6">
-                  {armsDraft === null ? (
-                    <div className="flex items-center gap-2 py-10 text-sm text-navy-400">
-                      <Loader2 className="h-4 w-4 animate-spin" /> Loading classes…
-                    </div>
-                  ) : armsDraft.length === 0 ? (
-                    <div className="rounded-xl border border-dashed border-navy-200 bg-navy-50/40 p-10 text-center">
-                      <Layers className="mx-auto h-8 w-8 text-navy-300" />
-                      <p className="mt-3 text-sm font-medium text-navy-600">No classes yet</p>
-                      <p className="mt-1 text-xs text-navy-400">
-                        Add your first arm below, or split a class into streams.
-                      </p>
-                    </div>
-                  ) : (
-                    <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-                      {armsDraft.map((arm) => {
-                        const students = stats?.classDistribution?.[arm] || 0;
-                        const slots = armsSlotCounts[arm] || 0;
-                        const fee = armsFeeAmounts[arm];
-                        return (
-                          <div
-                            key={arm}
-                            className="rounded-xl border border-navy-200/70 bg-white p-4 transition hover:border-brand-300"
-                          >
-                            <div className="flex items-start justify-between gap-2">
-                              <p className="text-sm font-bold text-navy-800">{arm}</p>
-                              <div className="flex items-center gap-1">
-                                <button
-                                  onClick={() => openRename(arm)}
-                                  className="rounded-lg p-1 text-navy-300 transition hover:bg-brand-50 hover:text-brand-600"
-                                  title={`Rename ${arm}`}
-                                >
-                                  <Pencil className="h-4 w-4" />
-                                </button>
-                                <button
-                                  onClick={() => removeArm(arm)}
-                                  className="rounded-lg p-1 text-navy-300 transition hover:bg-rose-50 hover:text-rose-600"
-                                  title={`Remove ${arm}`}
-                                >
-                                  <X className="h-4 w-4" />
-                                </button>
-                              </div>
-                            </div>
-                            <div className="mt-3 grid grid-cols-3 gap-2 text-center">
-                              <div className="rounded-lg bg-navy-50 py-2">
-                                <p className="text-sm font-bold text-navy-800">{students}</p>
-                                <p className="text-[10px] uppercase tracking-wide text-navy-400">Students</p>
-                              </div>
-                              <div className="rounded-lg bg-navy-50 py-2">
-                                <p className="text-sm font-bold text-navy-800">{slots}</p>
-                                <p className="text-[10px] uppercase tracking-wide text-navy-400">Timetable</p>
-                              </div>
-                              <div className="rounded-lg bg-navy-50 py-2">
-                                <p className="text-sm font-bold text-navy-800">{fee ? naira(fee) : "—"}</p>
-                                <p className="text-[10px] uppercase tracking-wide text-navy-400">Term fee</p>
-                              </div>
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  )}
-
-                  {/* Add a custom arm */}
-                  <div className="mt-5 flex gap-2">
-                    <input
-                      value={newArm}
-                      onChange={(e) => setNewArm(e.target.value)}
-                      onKeyDown={(e) => e.key === "Enter" && addArm()}
-                      placeholder="Custom arm, e.g. JSS1 Blue"
-                      className="flex-1 rounded-xl border border-navy-200 px-4 py-2.5 text-sm outline-none transition focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20"
-                    />
-                    <button
-                      onClick={addArm}
-                      className="inline-flex items-center gap-1.5 rounded-xl bg-navy-800 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-navy-700"
-                    >
-                      <Plus className="h-4 w-4" /> Add arm
-                    </button>
-                  </div>
-
-                  <div className="mt-4">
-                    <ArmStreamSplitter onAdd={addStreamedArms} />
-                  </div>
-
-                  <div className="mt-5 flex items-center justify-end gap-3">
-                    <span className="text-xs text-navy-400">
-                      {armsDraft !== null &&
-                      JSON.stringify(armsDraft) !== JSON.stringify(session?.school?.activeArms || [])
-                        ? "Unsaved changes"
-                        : "Saved"}
-                    </span>
-                    <button
-                      onClick={saveArms}
-                      disabled={armsSaving || armsDraft === null}
-                      className="inline-flex items-center gap-2 rounded-xl bg-brand-600 px-5 py-2.5 text-sm font-semibold text-white shadow-lg shadow-brand-600/30 transition hover:bg-brand-500 disabled:cursor-not-allowed disabled:opacity-50"
-                    >
-                      {armsSaving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
-                      Save changes
-                    </button>
-                  </div>
-                </div>
-              </div>
-            </div>
-          )}
+{activeTab === "classes" && (
+          <ClassesTab
+            armsDraft={armsDraft}
+            stats={stats}
+            armsSlotCounts={armsSlotCounts}
+            armsFeeAmounts={armsFeeAmounts}
+            armsSaving={armsSaving}
+            newArm={newArm}
+            setNewArm={setNewArm}
+            addArm={addArm}
+            removeArm={removeArm}
+            openRename={openRename}
+            saveArms={saveArms}
+            addStreamedArms={addStreamedArms}
+            session={session}
+          />
+        )}
 
           {/* Teachers */}
-          {activeTab === "teachers" && (
-            <div className="mt-5 overflow-hidden rounded-2xl border border-navy-200/70 bg-white shadow-sm">
-              <div className="border-b border-navy-100 px-6 py-4">
-                <h2 className="text-lg font-bold text-navy-800">Teacher directory & payroll</h2>
-                <p className="text-sm text-navy-400">
-                  Click the status badge to toggle a teacher&apos;s compensation between Paid and Pending.
-                </p>
-              </div>
-              <div className="overflow-x-auto">
-                <table className="w-full text-left text-sm">
-                  <thead>
-                    <tr className="border-b border-navy-100 bg-navy-50/60 text-xs font-semibold uppercase tracking-wider text-navy-400">
-                      <th className="px-6 py-3">Teacher</th>
-                      <th className="px-6 py-3">Email</th>
-                      <th className="px-6 py-3">Teaches</th>
-                      <th className="px-6 py-3">Payroll</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {filteredTeachers.map((t) => (
-                      <tr key={t.id} className="border-b border-navy-50 transition hover:bg-navy-50/40">
-                        <td className="px-6 py-4">
-                          <div className="flex items-center gap-3">
-                            <div className="flex h-9 w-9 items-center justify-center rounded-full bg-brand-50 text-sm font-bold text-brand-600">
-                              {t.name.split(" ").map((w) => w[0]).join("").slice(0, 2).toUpperCase()}
-                            </div>
-                            <span className="font-semibold text-navy-800">{t.name}</span>
-                            <button
-                              onClick={() => openReset(t)}
-                              title={`Reset ${t.name}'s password`}
-                              className="ml-1 rounded-lg p-1.5 text-navy-300 transition hover:bg-brand-50 hover:text-brand-600"
-                            >
-                              <KeyRound className="h-4 w-4" />
-                            </button>
-                            {isSuper && (
-                              <button
-                                onClick={() => openScope(t)}
-                                title={`Assign ${t.name}'s subjects & arms`}
-                                className="rounded-lg p-1.5 text-navy-300 transition hover:bg-violet-50 hover:text-violet-600"
-                              >
-                                <Pencil className="h-4 w-4" />
-                              </button>
-                            )}
-                            <button
-                              onClick={() => openEdit(t)}
-                              title={`Edit ${t.name}'s details`}
-                              className="rounded-lg p-1.5 text-navy-300 transition hover:bg-brand-50 hover:text-brand-600"
-                            >
-                              <UserCog className="h-4 w-4" />
-                            </button>
-                            <button
-                              onClick={() => setDeleteTarget(t)}
-                              title={`Remove ${t.name} (left the school)`}
-                              className="rounded-lg p-1.5 text-navy-300 transition hover:bg-rose-50 hover:text-rose-600"
-                            >
-                              <Trash2 className="h-4 w-4" />
-                            </button>
-                          </div>
-                        </td>
-                        <td className="px-6 py-4 text-navy-500">{t.email}</td>
-                        <td className="px-6 py-4">
-                          <div className="flex flex-col gap-1">
-                            <div className="flex flex-wrap gap-1">
-                              {(t.subjects?.length ? t.subjects : [t.assignedClass || "Unassigned"]).map((s) => (
-                                <span
-                                  key={s}
-                                  className="rounded-md bg-brand-50 px-2 py-0.5 text-[11px] font-bold text-brand-700 ring-1 ring-brand-600/20"
-                                >
-                                  {s}
-                                </span>
-                              ))}
-                            </div>
-                            <span className="text-[11px] font-medium text-navy-400">
-                              {t.assignedClasses?.length
-                                ? `${t.assignedClasses.length} arm${t.assignedClasses.length === 1 ? "" : "s"}: ${t.assignedClasses.join(", ")}`
-                                : t.assignedClass || "No arms assigned"}
-                            </span>
-                          </div>
-                        </td>
-                        <td className="px-6 py-4">
-                          <button
-                            onClick={() => togglePayroll(t.id, t.payrollStatus)}
-                            title="Click to toggle payroll status"
-                          >
-                            <PayrollBadge status={t.payrollStatus} />
-                          </button>
-                        </td>
-                      </tr>
-                    ))}
-                    {filteredTeachers.length === 0 && (
-                      <tr>
-                        <td colSpan={4} className="px-6 py-10 text-center text-navy-400">
-                          No teachers found.
-                        </td>
-                      </tr>
-                    )}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          )}
+{activeTab === "teachers" && (
+          <TeachersTab
+            filteredTeachers={filteredTeachers}
+            isSuper={isSuper}
+            togglePayroll={togglePayroll}
+            openReset={openReset}
+            openScope={openScope}
+            openEdit={openEdit}
+            setDeleteTarget={setDeleteTarget}
+          />
+        )}
 
           {/* Roles & Access */}
-          {activeTab === "roles" && (
-            <div className="mt-5 space-y-5 animate-fade-up">
-              {/* What each role can do — rendered straight from ROLE_PERMISSIONS
-                  (the single source of truth), so what the admin sees here is
-                  exactly what the API enforces on every request. */}
-              <div className="overflow-hidden rounded-2xl border border-navy-200/70 bg-white shadow-sm">
-                <div className="border-b border-navy-100 px-6 py-4">
-                  <h2 className="flex items-center gap-2 text-lg font-bold text-navy-800">
-                    <ShieldCheck className="h-5 w-5 text-brand-600" />
-                    What each role can do
-                  </h2>
-                  <p className="mt-0.5 text-sm text-navy-400">
-                    The exact action list from <code className="rounded bg-navy-100 px-1 py-0.5 font-mono text-xs text-navy-600">ROLE_PERMISSIONS</code> —
-                    a promotion grants exactly this, nothing more.
-                  </p>
-                </div>
-                <div className="grid gap-4 p-5 md:grid-cols-2 xl:grid-cols-4">
-                  {MANAGED_ROLES.map((role) => {
-                    const summary = summarizeRolePermissions(role);
-                    return (
-                      <div
-                        key={role}
-                        className="rounded-xl border border-navy-100 bg-navy-50/40 p-4 transition hover:border-brand-200 hover:bg-brand-50/30"
-                      >
-                        <div className="flex items-center justify-between gap-2">
-                          <span
-                            className={`inline-flex items-center rounded-full px-2.5 py-1 text-xs font-bold ring-1 ${ROLE_BADGES[role] || "bg-navy-100 text-navy-600"}`}
-                          >
-                            {ROLE_LABELS[role] || role}
-                          </span>
-                          <span className="rounded-full bg-white px-2 py-0.5 text-[11px] font-bold text-navy-500 ring-1 ring-navy-200/70">
-                            {summary.count} action{summary.count === 1 ? "" : "s"}
-                          </span>
-                        </div>
-                        <div className="mt-3 space-y-3">
-                          {summary.domains.map((d) => (
-                            <div key={d.key}>
-                              <p className="text-[10px] font-bold uppercase tracking-wider text-navy-400">
-                                {d.label}
-                              </p>
-                              <ul className="mt-1 space-y-1">
-                                {d.actions.map((a) => (
-                                  <li
-                                    key={a.action}
-                                    className="flex items-start gap-1.5 text-xs text-navy-700"
-                                    title={a.action}
-                                  >
-                                    <Check className="mt-0.5 h-3.5 w-3.5 shrink-0 text-emerald-500" />
-                                    {a.label}
-                                  </li>
-                                ))}
-                              </ul>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-                <div className="border-t border-navy-100 bg-navy-50/40 px-6 py-3 text-xs text-navy-500">
-                  Row-level scoping applies on top of this list — a teacher&apos;s actions cover
-                  only their assigned class arm, a parent only their own children.
-                </div>
-              </div>
-
-              {/* Staff directory */}
-              <div className="overflow-hidden rounded-2xl border border-navy-200/70 bg-white shadow-sm">
-                <div className="border-b border-navy-100 px-6 py-4">
-                  <h2 className="flex items-center gap-2 text-lg font-bold text-navy-800">
-                    <UserCog className="h-5 w-5 text-brand-600" />
-                    Staff roles &amp; access
-                  </h2>
-                  <p className="mt-0.5 text-sm text-navy-400">
-                    Promote or demote staff between Super Admin, Bursar, Registrar and Teacher.
-                    Changes apply immediately — the staff member will need to sign in again.
-                  </p>
-                </div>
-                <div className="overflow-x-auto">
-                  <table className="w-full text-left text-sm">
-                    <thead>
-                      <tr className="border-b border-navy-100 bg-navy-50/60 text-xs font-semibold uppercase tracking-wider text-navy-400">
-                        <th className="px-6 py-3">Staff</th>
-                        <th className="px-6 py-3">Current role</th>
-                        <th className="px-6 py-3">New role</th>
-                        <th className="px-6 py-3 text-right">Actions</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {staffList.map((u) => {
-                        const isYou = u.id === session.user.id;
-                        const draft = roleDraft[u.id] ?? u.role;
-                        const dirty = draft !== u.role;
-                        return (
-                          <tr key={u.id} className="border-b border-navy-50 transition hover:bg-navy-50/40">
-                            <td className="px-6 py-3.5">
-                              <div className="flex items-center gap-3">
-                                <div className="flex h-9 w-9 items-center justify-center rounded-full bg-navy-800 text-sm font-bold text-white">
-                                  {u.name.split(" ").map((w) => w[0]).join("").slice(0, 2).toUpperCase()}
-                                </div>
-                                <div>
-                                  <p className="flex items-center gap-2 font-semibold text-navy-800">
-                                    {u.name}
-                                    {isYou && (
-                                      <span className="rounded-full bg-navy-100 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-navy-500">
-                                        You
-                                      </span>
-                                    )}
-                                  </p>
-                                  <p className="text-xs text-navy-400">{u.email}</p>
-                                </div>
-                              </div>
-                            </td>
-                            <td className="px-6 py-3.5">
-                              <span className={`inline-flex items-center rounded-full px-2.5 py-1 text-xs font-bold ring-1 ${ROLE_BADGES[u.role] || "bg-navy-100 text-navy-600"}`}>
-                                {ROLE_LABELS[u.role] || u.role}
-                              </span>
-                            </td>
-                            <td className="px-6 py-3.5">
-                              {isYou ? (
-                                <span className="text-xs text-navy-300">—</span>
-                              ) : (
-                                <select
-                                  value={draft}
-                                  onChange={(e) => setRoleDraft((d) => ({ ...d, [u.id]: e.target.value }))}
-                                  className="rounded-lg border border-navy-200 bg-white px-3 py-1.5 text-sm font-medium text-navy-700 outline-none transition focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20"
-                                >
-                                  {Object.keys(ROLE_LABELS).map((r) => (
-                                    <option key={r} value={r}>
-                                      {ROLE_LABELS[r]}
-                                    </option>
-                                  ))}
-                                </select>
-                              )}
-                            </td>
-                            <td className="px-6 py-3.5 text-right">
-                              <div className="flex items-center justify-end gap-2">
-                                <button
-                                  onClick={() => openReset(u)}
-                                  title={`Reset ${u.name}'s password`}
-                                  className="rounded-lg p-1.5 text-navy-300 transition hover:bg-brand-50 hover:text-brand-600"
-                                >
-                                  <KeyRound className="h-4 w-4" />
-                                </button>
-                                {!isYou && (
-                                  <button
-                                    onClick={() => requestRoleChange(u, draft)}
-                                    disabled={!dirty || roleSaving}
-                                    className="inline-flex items-center gap-1.5 rounded-lg bg-navy-800 px-3.5 py-2 text-xs font-semibold text-white transition hover:bg-navy-700 disabled:cursor-not-allowed disabled:opacity-40"
-                                  >
-                                    <ArrowLeftRight className="h-3.5 w-3.5" />
-                                    Change role
-                                  </button>
-                                )}
-                              </div>
-                            </td>
-                          </tr>
-                        );
-                      })}
-                      {staffList.length === 0 && (
-                        <tr>
-                          <td colSpan={4} className="px-6 py-10 text-center text-navy-400">
-                            No staff accounts yet.
-                          </td>
-                        </tr>
-                      )}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-
-              {/* Audit trail */}
-              <div className="overflow-hidden rounded-2xl border border-navy-200/70 bg-white shadow-sm">
-                <div className="border-b border-navy-100 px-6 py-4">
-                  <h2 className="flex items-center gap-2 text-lg font-bold text-navy-800">
-                    <History className="h-5 w-5 text-brand-600" />
-                    Role change audit trail
-                  </h2>
-                  <p className="text-sm text-navy-400">
-                    Every promotion or demotion — who did it, and when.
-                  </p>
-                </div>
-                <div className="overflow-x-auto">
-                  <table className="w-full text-left text-sm">
-                    <thead>
-                      <tr className="border-b border-navy-100 bg-navy-50/60 text-xs font-semibold uppercase tracking-wider text-navy-400">
-                        <th className="px-6 py-3">When</th>
-                        <th className="px-6 py-3">Change</th>
-                        <th className="px-6 py-3">By</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {roleAudit.map((e) => (
-                        <tr key={e.id} className="border-b border-navy-50 transition hover:bg-navy-50/40">
-                          <td className="whitespace-nowrap px-6 py-3.5 text-xs text-navy-500">
-                            {new Date(e.createdAt).toLocaleString()}
-                          </td>
-                          <td className="px-6 py-3.5">
-                            <div className="flex flex-wrap items-center gap-1.5">
-                              <span className="font-semibold text-navy-800">{e.targetName}</span>
-                              <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-bold ring-1 ${ROLE_BADGES[e.fromRole] || "bg-navy-100 text-navy-600"}`}>
-                                {ROLE_LABELS[e.fromRole] || e.fromRole}
-                              </span>
-                              <ArrowLeftRight className="h-3.5 w-3.5 text-navy-300" />
-                              <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-bold ring-1 ${ROLE_BADGES[e.toRole] || "bg-navy-100 text-navy-600"}`}>
-                                {ROLE_LABELS[e.toRole] || e.toRole}
-                              </span>
-                            </div>
-                          </td>
-                          <td className="px-6 py-3.5">
-                            <p className="font-semibold text-navy-800">{e.actorName}</p>
-                            <p className="text-xs text-navy-400">{ROLE_LABELS[e.actorRole] || e.actorRole}</p>
-                          </td>
-                        </tr>
-                      ))}
-                      {roleAudit.length === 0 && (
-                        <tr>
-                          <td colSpan={3} className="px-6 py-10 text-center text-navy-400">
-                            No role changes yet — the first promotion or demotion will appear here.
-                          </td>
-                        </tr>
-                      )}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-            </div>
-          )}
+{activeTab === "roles" && (
+          <RolesTab
+            staffList={staffList}
+            roleAudit={roleAudit}
+            roleDraft={roleDraft}
+            roleSaving={roleSaving}
+            session={session}
+            openReset={openReset}
+            requestRoleChange={requestRoleChange}
+            setRoleDraft={setRoleDraft}
+          />
+        )}
 
           {/* Login Details */}
-          {activeTab === "logins" && (
-            <div className="mt-5 space-y-5 animate-fade-up">
-              <div className="overflow-hidden rounded-2xl border border-navy-200/70 bg-white shadow-sm">
-                <div className="border-b border-navy-100 px-6 py-4">
-                  <div className="flex flex-wrap items-center justify-between gap-3">
-                    <div>
-                      <h2 className="flex items-center gap-2 text-lg font-bold text-navy-800">
-                        <KeyRound className="h-5 w-5 text-brand-600" />
-                        Login Details
-                      </h2>
-                      <p className="mt-0.5 text-sm text-navy-400">
-                        Look up or reset any account&apos;s login — staff, parents and
-                        students, all from one place.
-                      </p>
-                    </div>
-                    <div className="flex w-fit gap-1 rounded-xl bg-navy-100 p-1">
-                      <button
-                        onClick={() => setLoginMode("staff")}
-                        className={`rounded-lg px-4 py-2 text-sm font-semibold transition ${
-                          loginMode === "staff" ? "bg-white text-navy-800 shadow-sm" : "text-navy-500 hover:text-navy-700"
-                        }`}
-                      >
-                        Staff &amp; parents
-                      </button>
-                      <button
-                        onClick={() => setLoginMode("students")}
-                        className={`rounded-lg px-4 py-2 text-sm font-semibold transition ${
-                          loginMode === "students" ? "bg-white text-navy-800 shadow-sm" : "text-navy-500 hover:text-navy-700"
-                        }`}
-                      >
-                        Students
-                      </button>
-                    </div>
-                  </div>
-                </div>
-
-                {loginMode === "staff" ? (
-                  <div>
-                    {/* Staff & parents — count plus bulk CSV export of logins
-                        for printing/distribution */}
-                    <div className="flex flex-wrap items-center justify-between gap-2 border-b border-navy-100 px-6 py-3">
-                      <p className="text-xs font-medium text-navy-400">
-                        {loginUsers.length} staff &amp; parent account{loginUsers.length === 1 ? "" : "s"}
-                      </p>
-                      <div className="flex flex-wrap items-center gap-2">
-                        {loginUsers.length > 0 && (
-                          <button
-                            onClick={openStaffPrintSheet}
-                            title="Open a printable sheet with every staff & parent login — name and password side by side"
-                            className="inline-flex items-center gap-1.5 rounded-lg border border-navy-200 bg-white px-3 py-2 text-xs font-semibold text-navy-700 transition hover:border-brand-400 hover:text-brand-600"
-                          >
-                            <Printer className="h-3.5 w-3.5" /> Print sheet
-                          </button>
-                        )}
-                        {loginUsers.some((u) => u.role === "PARENT") && (
-                          <button
-                            onClick={exportParentLoginsCsv}
-                            title="Download parent logins — the password is any linked child's full name"
-                            className="inline-flex items-center gap-1.5 rounded-lg border border-navy-200 bg-white px-3 py-2 text-xs font-semibold text-navy-700 transition hover:border-brand-400 hover:text-brand-600"
-                          >
-                            <Users className="h-3.5 w-3.5" /> Export parent logins
-                          </button>
-                        )}
-                        {loginUsers.length > 0 && (
-                          <button
-                            onClick={exportStaffLoginsCsv}
-                            title="Download name, email, role, class and password for every staff & parent account"
-                            className="inline-flex items-center gap-1.5 rounded-lg border border-navy-200 bg-white px-3 py-2 text-xs font-semibold text-navy-700 transition hover:border-brand-400 hover:text-brand-600"
-                          >
-                            <Download className="h-3.5 w-3.5" /> Export CSV
-                          </button>
-                        )}
-                      </div>
-                    </div>
-                    <div className="overflow-x-auto">
-                    <table className="w-full text-sm">
-                      <thead>
-                        <tr className="border-b border-navy-100 bg-navy-50/60 text-left text-xs font-semibold uppercase tracking-wider text-navy-400">
-                          <th className="px-6 py-3">User</th>
-                          <th className="px-6 py-3">Role</th>
-                          <th className="px-6 py-3">Class</th>
-                          <th className="px-6 py-3 text-right">Actions</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {loginUsers.map((u) => (
-                          <tr key={u.id} className="border-b border-navy-50 transition hover:bg-navy-50/40">
-                            <td className="px-6 py-3.5">
-                              <div className="flex items-center gap-3">
-                                <div className="flex h-9 w-9 items-center justify-center rounded-full bg-navy-800 text-sm font-bold text-white">
-                                  {u.name.split(" ").map((w) => w[0]).join("").slice(0, 2).toUpperCase()}
-                                </div>
-                                <div>
-                                  <p className="font-semibold text-navy-800">{u.name}</p>
-                                  <p className="text-xs text-navy-400">{u.email}</p>
-                                </div>
-                              </div>
-                            </td>
-                            <td className="px-6 py-3.5">
-                              <span className={`inline-flex items-center rounded-full px-2.5 py-1 text-xs font-bold ring-1 ${ROLE_BADGES[u.role] || "bg-navy-100 text-navy-600"}`}>
-                                {ROLE_LABELS[u.role] || u.role}
-                              </span>
-                            </td>
-                            <td className="px-6 py-3.5 text-xs text-navy-500">
-                              {u.assignedClass || (u.assignedClasses?.length ? u.assignedClasses.join(", ") : "—")}
-                            </td>
-                            <td className="px-6 py-3.5 text-right">
-                              <button
-                                onClick={() => openReset(u)}
-                                title={`Reset ${u.name}'s password`}
-                                className="inline-flex items-center gap-1.5 rounded-lg bg-navy-800 px-3.5 py-2 text-xs font-semibold text-white transition hover:bg-navy-700"
-                              >
-                                <KeyRound className="h-3.5 w-3.5" />
-                                Reset password
-                              </button>
-                            </td>
-                          </tr>
-                        ))}
-                        {loginUsers.length === 0 && (
-                          <tr>
-                            <td colSpan={4} className="px-6 py-10 text-center text-navy-400">
-                              No accounts yet beyond the super admin.
-                            </td>
-                          </tr>
-                        )}
-                      </tbody>
-                    </table>
-                    </div>
-                  </div>
-                ) : (
-                  <div>
-                    {/* Student search — name / email / class arm, plus bulk
-                        CSV export of logins for printing/distribution */}
-                    <div className="flex flex-wrap items-center gap-2 border-b border-navy-100 px-6 py-3">
-                      <div className="relative w-full max-w-sm flex-1">
-                        <Search className="pointer-events-none absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-navy-300" />
-                        <input
-                          value={loginStudentsSearch}
-                          onChange={(e) => setLoginStudentsSearch(e.target.value)}
-                          placeholder="Search students…"
-                          className="w-full rounded-xl border border-navy-200 bg-white py-2.5 pl-10 pr-4 text-sm text-navy-800 outline-none transition placeholder:text-navy-300 focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20"
-                        />
-                      </div>
-                      {loginClasses.length > 0 && (
-                        <select
-                          value={loginExportClass}
-                          onChange={(e) => setLoginExportClass(e.target.value)}
-                          title="Export one class arm at a time — pick a class to limit the CSV to those students"
-                          className="rounded-xl border border-navy-200 bg-white px-3 py-2.5 text-xs font-semibold text-navy-700 outline-none transition hover:border-brand-400 focus:border-brand-500"
-                        >
-                          <option value="">All classes</option>
-                          {loginClasses.map((c) => (
-                            <option key={c} value={c}>
-                              {c}
-                            </option>
-                          ))}
-                        </select>
-                      )}
-                      {loginStudents.length > 0 && (
-                        <button
-                          onClick={openStudentPrintSheet}
-                          title="Open a printable sheet with every student's login — name and password side by side"
-                          className="inline-flex items-center gap-1.5 rounded-lg border border-navy-200 bg-white px-3 py-2 text-xs font-semibold text-navy-700 transition hover:border-brand-400 hover:text-brand-600"
-                        >
-                          <Printer className="h-3.5 w-3.5" /> Print sheet
-                        </button>
-                      )}
-                      {loginStudents.length > 0 && (
-                        <button
-                          onClick={exportStudentLoginsCsv}
-                          title={
-                            loginExportClass
-                              ? `Download name, email, class and password for every student in ${loginExportClass}`
-                              : "Download name, email, class and password for every student"
-                          }
-                          className="inline-flex items-center gap-1.5 rounded-lg border border-navy-200 bg-white px-3 py-2 text-xs font-semibold text-navy-700 transition hover:border-brand-400 hover:text-brand-600"
-                        >
-                          <Download className="h-3.5 w-3.5" /> Export CSV
-                        </button>
-                      )}
-                    </div>
-                    <div className="overflow-x-auto">
-                      <table className="w-full text-sm">
-                        <thead>
-                          <tr className="border-b border-navy-100 bg-navy-50/60 text-left text-xs font-semibold uppercase tracking-wider text-navy-400">
-                            <th className="px-6 py-3">Student</th>
-                            <th className="px-6 py-3">Email</th>
-                            <th className="px-6 py-3">Class Arm</th>
-                            <th className="px-6 py-3">Password</th>
-                            <th className="px-6 py-3 text-right">Actions</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {filteredLoginStudents.map((s) => {
-                            const revealed = revealedPasswords.has(s.id);
-                            return (
-                              <tr key={s.id} className="border-b border-navy-50 transition hover:bg-navy-50/40">
-                                <td className="px-6 py-3.5">
-                                  <div className="flex items-center gap-3">
-                                    <div className="flex h-9 w-9 items-center justify-center rounded-full bg-emerald-50 text-sm font-bold text-emerald-600">
-                                      {s.name.split(" ").map((w) => w[0]).join("").slice(0, 2).toUpperCase()}
-                                    </div>
-                                    <p className="font-semibold text-navy-800">{s.name}</p>
-                                  </div>
-                                </td>
-                                <td className="px-6 py-3.5 text-navy-500">{s.email}</td>
-                                <td className="px-6 py-3.5">
-                                  <span className="rounded-md bg-navy-100 px-2 py-1 text-xs font-semibold text-navy-600">
-                                    {s.assignedClass || "Unassigned"}
-                                  </span>
-                                </td>
-                                <td className="px-6 py-3.5">
-                                  {s.generatedPassword ? (
-                                    revealed ? (
-                                      <span className="inline-flex items-center gap-2">
-                                        <code className="select-all rounded bg-navy-800 px-2 py-1 font-mono text-xs font-bold text-white">
-                                          {s.generatedPassword}
-                                        </code>
-                                        <button
-                                          onClick={() => toggleRevealPassword(s.id)}
-                                          title="Hide password"
-                                          className="rounded-lg p-1.5 text-navy-300 transition hover:bg-navy-100 hover:text-navy-600"
-                                        >
-                                          <EyeOff className="h-4 w-4" />
-                                        </button>
-                                      </span>
-                                    ) : (
-                                      <button
-                                        onClick={() => toggleRevealPassword(s.id)}
-                                        title="Show password"
-                                        className="inline-flex items-center gap-1.5 rounded-lg border border-navy-200 px-2.5 py-1.5 text-xs font-semibold text-navy-500 transition hover:border-brand-300 hover:text-brand-600"
-                                      >
-                                        <Eye className="h-3.5 w-3.5" />
-                                        Reveal
-                                      </button>
-                                    )
-                                  ) : (
-                                    <span className="text-xs text-navy-300">—</span>
-                                  )}
-                                </td>
-                                <td className="px-6 py-3.5 text-right">
-                                  <button
-                                    onClick={() => openReset(s)}
-                                    title={`Reset ${s.name}'s password`}
-                                    className="inline-flex items-center gap-1.5 rounded-lg bg-navy-800 px-3.5 py-2 text-xs font-semibold text-white transition hover:bg-navy-700"
-                                  >
-                                    <KeyRound className="h-3.5 w-3.5" />
-                                    Reset password
-                                  </button>
-                                </td>
-                              </tr>
-                            );
-                          })}
-                          {filteredLoginStudents.length === 0 && (
-                            <tr>
-                              <td colSpan={5} className="px-6 py-10 text-center text-navy-400">
-                                {loginStudentsLoaded
-                                  ? "No students match your search."
-                                  : "Loading students…"}
-                              </td>
-                            </tr>
-                          )}
-                        </tbody>
-                      </table>
-                    </div>
-                  </div>
-                )}
-              </div>
-            </div>
-          )}
+{activeTab === "logins" && (
+          <LoginsTab
+            loginMode={loginMode}
+            setLoginMode={setLoginMode}
+            loginUsers={loginUsers}
+            loginStudents={loginStudents}
+            loginStudentsLoaded={loginStudentsLoaded}
+            loginStudentsSearch={loginStudentsSearch}
+            setLoginStudentsSearch={setLoginStudentsSearch}
+            loginExportClass={loginExportClass}
+            setLoginExportClass={setLoginExportClass}
+            revealedPasswords={revealedPasswords}
+            loginClasses={loginClasses}
+            filteredLoginStudents={filteredLoginStudents}
+            openStaffPrintSheet={openStaffPrintSheet}
+            openStudentPrintSheet={openStudentPrintSheet}
+            exportStaffLoginsCsv={exportStaffLoginsCsv}
+            exportParentLoginsCsv={exportParentLoginsCsv}
+            exportStudentLoginsCsv={exportStudentLoginsCsv}
+            openReset={openReset}
+            toggleRevealPassword={toggleRevealPassword}
+          />
+        )}
 
           {/* Timetable */}
-          {activeTab === "timetable" && (
-            <div className="mt-5 space-y-5 animate-fade-up">
-              <div className="overflow-hidden rounded-2xl border border-navy-200/70 bg-white shadow-sm">
-                <div className="flex flex-wrap items-center justify-between gap-3 border-b border-navy-100 px-6 py-4">
-                  <div>
-                    <h2 className="flex items-center gap-2 text-lg font-bold text-navy-800">
-                      <CalendarDays className="h-5 w-5 text-brand-600" />
-                      Weekly timetable
-                    </h2>
-                    <p className="mt-0.5 text-sm text-navy-400">
-                      Set the schedule for each class arm — click any cell to assign a subject and teacher.
-                      Teachers see their own slots the moment you save.
-                    </p>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <button
-                      onClick={() => checkTtConflicts()}
-                      disabled={ttConflictsLoading}
-                      title="Scan every arm for teachers double-booked at the same day + period (including pre-existing data)"
-                      className="inline-flex items-center gap-2 rounded-xl border border-navy-200 bg-white px-4 py-2.5 text-sm font-semibold text-navy-700 transition hover:border-rose-300 hover:bg-rose-50 hover:text-rose-700 disabled:opacity-60"
-                    >
-                      {ttConflictsLoading ? (
-                        <Loader2 className="h-4 w-4 animate-spin" />
-                      ) : (
-                        <AlertTriangle className="h-4 w-4" />
-                      )}
-                      Check conflicts
-                      {ttConflicts &&
-                        (ttConflicts.teacher?.length || 0) +
-                          (ttConflicts.arm?.length || 0) +
-                          (ttConflicts.scope?.length || 0) >
-                          0 && (
-                          <span className="rounded-full bg-rose-600 px-2 py-0.5 text-[11px] font-bold text-white">
-                            {(ttConflicts.teacher?.length || 0) +
-                              (ttConflicts.arm?.length || 0) +
-                              (ttConflicts.scope?.length || 0)}
-                          </span>
-                        )}
-                    </button>
-                    <div className="relative w-64">
-                      <select
-                        value={ttArm}
-                        onChange={(e) => setTtArm(e.target.value)}
-                        className={`${inputCls} appearance-none pr-9`}
-                      >
-                        {(session.school?.activeArms || []).map((arm) => (
-                          <option key={arm}>{arm}</option>
-                        ))}
-                      </select>
-                      <ChevronDown className="pointer-events-none absolute right-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-navy-300" />
-                    </div>
-                  </div>
-                </div>
-                <div className="overflow-x-auto">
-                  <table className="w-full text-left text-sm">
-                    <thead>
-                      <tr className="border-b border-navy-100 bg-navy-50/60 text-xs font-semibold uppercase tracking-wider text-navy-400">
-                        <th className="px-4 py-3">Period</th>
-                        {DAYS.map((d) => {
-                          const count = (dayTimelines[d] || []).filter((b) => b.type === "teaching").length;
-                          return (
-                            <th key={d} className="px-4 py-3 text-center">
-                              {d}
-                              {count < MAX_PERIOD && (
-                                <span className="ml-1 rounded-full bg-amber-100 px-1.5 py-0.5 text-[10px] font-bold text-amber-700">
-                                  {count} periods
-                                </span>
-                              )}
-                            </th>
-                          );
-                        })}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {dayTimeline.map((block) =>
-                        block.type === "break" ? (
-                          <tr key="break" className="border-b border-navy-50">
-                            <td className="bg-violet-50/60 px-4 py-3">
-                              <p className="text-xs font-bold text-violet-700">Break</p>
-                              <p className="text-[10px] font-medium text-violet-500">
-                                {block.start}–{block.end}
-                              </p>
-                            </td>
-                            {DAYS.map((d) => {
-                              const br = (dayTimelines[d] || []).find((b) => b.type === "break");
-                              return (
-                                <td key={d} className="bg-violet-50/40 px-2 py-2 text-center">
-                                  <span className="inline-flex items-center gap-1 rounded-full bg-violet-100 px-3 py-1 text-[10px] font-bold uppercase tracking-wider text-violet-500">
-                                    {br ? `${br.start}–${br.end}` : "No break"}
-                                  </span>
-                                </td>
-                              );
-                            })}
-                          </tr>
-                        ) : (
-                          <tr key={block.period} className="border-b border-navy-50">
-                            <td className="px-4 py-3">
-                              <p className="text-xs font-bold text-navy-500">Period {block.period}</p>
-                              <p className="text-[10px] font-medium text-navy-400">
-                                {block.start}–{block.end}
-                              </p>
-                            </td>
-                            {DAYS.map((d) => {
-                              // A period that isn't on this day's bell (e.g.
-                              // Friday ends at period 6) is not schedulable.
-                              if (!(dayPeriodSets[d] || new Set()).has(Number(block.period))) {
-                                return (
-                                  <td key={d} className="px-2 py-2 text-center">
-                                    <span className="text-[10px] font-medium text-navy-300">
-                                      not scheduled
-                                    </span>
-                                  </td>
-                                );
-                              }
-                              const entry = ttByKey[`${d}|${block.period}`];
-                              return (
-                                <td key={d} className="px-2 py-2 text-center">
-                                  <button
-                                    onClick={() => openTtCell(d, block.period)}
-                                    className={`w-full min-w-[7.5rem] rounded-xl border px-2 py-2 text-left transition ${
-                                      entry
-                                        ? "border-brand-200 bg-brand-50/70 hover:border-brand-400 hover:bg-brand-50"
-                                        : "border-dashed border-navy-200 bg-navy-50/40 text-navy-400 hover:border-brand-300 hover:bg-brand-50/40"
-                                    }`}
-                                  >
-                                    {entry ? (
-                                      <span className="flex flex-col items-center gap-0.5">
-                                        <span className="text-xs font-bold text-brand-800">{entry.subject}</span>
-                                        <span className="text-[10px] font-medium text-navy-500">
-                                          {entry.teacherName || "—"}
-                                        </span>
-                                      </span>
-                                    ) : (
-                                      <span className="flex items-center justify-center gap-1 text-[11px] font-semibold">
-                                        <Plus className="h-3 w-3" /> Assign
-                                      </span>
-                                    )}
-                                  </button>
-                                </td>
-                              );
-                            })}
-                          </tr>
-                        )
-                      )}
-                    </tbody>
-                  </table>
-                </div>
-                <div className="border-t border-navy-100 bg-navy-50/40 px-6 py-3 text-xs text-navy-500">
-                  {ttFilled} of {DAYS.length * PERIODS.length} slots assigned for {ttArm}. Assigning a period
-                  replaces what was there; the API refuses a teacher who is already booked in another arm at the
-                  same day and period.
-                </div>
-              </div>
-
-              {/* Conflicts checker — scans EVERY arm, including pre-existing data */}
-              {ttConflictsOpen && (
-                <div className="overflow-hidden rounded-2xl border border-navy-200/70 bg-white shadow-sm">
-                  <div className="flex flex-wrap items-center justify-between gap-3 border-b border-navy-100 px-6 py-4">
-                    <div>
-                      <h2 className="flex items-center gap-2 text-lg font-bold text-navy-800">
-                        <AlertTriangle className="h-5 w-5 text-rose-600" /> Timetable scan
-                      </h2>
-                      <p className="mt-0.5 text-sm text-navy-400">
-                        Every class arm, including pre-existing data — double-bookings, scope violations, and the
-                        other integrity checks (unassigned days, unscheduled teachers, orphaned entries).
-                      </p>
-                    </div>
-                    <button
-                      onClick={() => checkTtConflicts()}
-                      disabled={ttConflictsLoading}
-                      className="inline-flex items-center gap-2 rounded-xl border border-navy-200 px-4 py-2 text-sm font-semibold text-navy-600 transition hover:bg-navy-50 disabled:opacity-60"
-                    >
-                      {ttConflictsLoading ? (
-                        <Loader2 className="h-4 w-4 animate-spin" />
-                      ) : (
-                        <RefreshCw className="h-4 w-4" />
-                      )}
-                      Re-scan
-                    </button>
-                  </div>
-                  <div className="p-5">
-                    {ttConflictsLoading ? (
-                      <div className="flex items-center justify-center gap-2 py-8 text-sm text-navy-400">
-                        <Loader2 className="h-4 w-4 animate-spin" />
-                        Scanning all {(session.school?.activeArms || []).length} arms…
-                      </div>
-                    ) : (ttConflicts?.teacher?.length || 0) +
-                      (ttConflicts?.arm?.length || 0) +
-                      (ttConflicts?.scope?.length || 0) +
-                      (ttConflicts?.unassignedPeriods?.length || 0) +
-                      (ttConflicts?.unstaffedTeachers?.length || 0) +
-                      (ttConflicts?.orphanedEntries?.length || 0) ===
-                      0 ? (
-                      <div className="flex items-center gap-2 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-medium text-emerald-800">
-                        <CheckCircle2 className="h-4 w-4 shrink-0" />
-                        No issues — no double-bookings, every teacher has slots, and every arm is scheduled.
-                      </div>
-                    ) : (
-                      <div className="space-y-4">
-                        {(ttConflicts?.teacher || []).map((c) => (
-                          <div
-                            key={`t|${c.teacherId}|${c.day}|${c.period}`}
-                            className="rounded-xl border border-rose-200 bg-rose-50/50 p-4"
-                          >
-                            <p className="text-sm font-bold text-navy-800">
-                              <span className="text-rose-700">{c.teacherName || "Unknown teacher"}</span> is booked
-                              in {c.slots.length} classes on <strong>{c.day}</strong>, period{" "}
-                              <strong>{c.period}</strong>
-                            </p>
-                            <div className="mt-2 flex flex-wrap gap-2">
-                              {c.slots.map((s) => (
-                                <div
-                                  key={s.id}
-                                  className="flex items-center gap-2 rounded-lg border border-navy-200 bg-white px-3 py-2 text-xs"
-                                >
-                                  <span className="font-bold text-navy-700">{s.classArm}</span>
-                                  <span className="text-navy-400">·</span>
-                                  <span className="text-navy-500">{s.subject}</span>
-                                  <button
-                                    onClick={() => fixTtConflict(s)}
-                                    disabled={
-                                      ttConflictFixing === `${s.classArm}|${s.day}|${s.period}`
-                                    }
-                                    className="ml-1 inline-flex items-center gap-1 rounded-md bg-rose-600 px-2 py-1 text-[11px] font-semibold text-white transition hover:bg-rose-500 disabled:opacity-60"
-                                  >
-                                    {ttConflictFixing === `${s.classArm}|${s.day}|${s.period}` ? (
-                                      <Loader2 className="h-3 w-3 animate-spin" />
-                                    ) : (
-                                      <X className="h-3 w-3" />
-                                    )}
-                                    Clear slot
-                                  </button>
-                                </div>
-                              ))}
-                            </div>
-                            <p className="mt-2 text-[11px] text-navy-400">
-                              Clearing a slot frees the teacher for that period — reassign it from the grid if
-                              the arm should keep the subject.
-                            </p>
-                          </div>
-                        ))}
-                        {(ttConflicts?.arm || []).map((c) => (
-                          <div
-                            key={`a|${c.classArm}|${c.day}|${c.period}`}
-                            className="rounded-xl border border-amber-200 bg-amber-50/50 p-4"
-                          >
-                            <p className="text-sm font-bold text-navy-800">
-                              <span className="text-amber-700">{c.classArm}</span> has {c.slots.length} entries
-                              on <strong>{c.day}</strong>, period <strong>{c.period}</strong> — keep one, clear
-                              the rest.
-                            </p>
-                            <div className="mt-2 flex flex-wrap gap-2">
-                              {c.slots.map((s) => (
-                                <div
-                                  key={s.id}
-                                  className="flex items-center gap-2 rounded-lg border border-navy-200 bg-white px-3 py-2 text-xs"
-                                >
-                                  <span className="font-bold text-navy-700">{s.subject}</span>
-                                  <span className="text-navy-400">·</span>
-                                  <span className="text-navy-500">{s.teacherName || "—"}</span>
-                                  <button
-                                    onClick={() => fixTtConflict(s)}
-                                    disabled={
-                                      ttConflictFixing === `${s.classArm}|${s.day}|${s.period}`
-                                    }
-                                    className="ml-1 inline-flex items-center gap-1 rounded-md bg-amber-600 px-2 py-1 text-[11px] font-semibold text-white transition hover:bg-amber-500 disabled:opacity-60"
-                                  >
-                                    {ttConflictFixing === `${s.classArm}|${s.day}|${s.period}` ? (
-                                      <Loader2 className="h-3 w-3 animate-spin" />
-                                    ) : (
-                                      <X className="h-3 w-3" />
-                                    )}
-                                    Clear slot
-                                  </button>
-                                </div>
-                              ))}
-                            </div>
-                          </div>
-                        ))}
-                        {/* Scope violations — a teacher scheduled for a subject/arm
-                            they don't teach (or no longer in the roster). Offer a
-                            one-click swap to a valid, free teacher. */}
-                        {(ttConflicts?.scope || []).map((v) => {
-                          const chosen =
-                            ttSwapDraft[v.entryId] || v.candidates?.[0]?.id || "";
-                          const problemText = v.problems.includes("teacher")
-                            ? "but is no longer in the roster"
-                            : v.problems.includes("subject") && v.problems.includes("arm")
-                              ? `but does not teach ${v.subject} nor is assigned to ${v.classArm}`
-                              : v.problems.includes("subject")
-                                ? `but does not teach ${v.subject}`
-                                : `but is not assigned to ${v.classArm}`;
-                          return (
-                            <div
-                              key={`s|${v.entryId}`}
-                              className="rounded-xl border border-sky-200 bg-sky-50/50 p-4"
-                            >
-                              <p className="text-sm font-bold text-navy-800">
-                                <span className="text-sky-700">{v.teacherName || "Unknown teacher"}</span> is
-                                scheduled for <strong>{v.subject}</strong> in <strong>{v.classArm}</strong> on{" "}
-                                <strong>{v.day}</strong>, period <strong>{v.period}</strong> — {problemText}.
-                              </p>
-                              <div className="mt-2 flex flex-wrap items-center gap-2">
-                                {v.candidates?.length > 0 ? (
-                                  <>
-                                    <select
-                                      value={chosen}
-                                      onChange={(e) =>
-                                        setTtSwapDraft((d) => ({ ...d, [v.entryId]: e.target.value }))
-                                      }
-                                      className="rounded-lg border border-navy-200 bg-white px-2 py-1.5 text-xs font-semibold text-navy-700 outline-none transition focus:border-brand-500"
-                                      title="Pick a teacher who teaches this subject in this arm and is free that period"
-                                    >
-                                      {v.candidates.map((c) => (
-                                        <option key={c.id} value={c.id}>
-                                          {c.name}
-                                        </option>
-                                      ))}
-                                    </select>
-                                    <button
-                                      onClick={() => swapTtTeacher(v, chosen)}
-                                      disabled={!chosen || ttConflictFixing === `swap|${v.entryId}`}
-                                      className="inline-flex items-center gap-1 rounded-md bg-sky-600 px-2.5 py-1.5 text-[11px] font-semibold text-white transition hover:bg-sky-500 disabled:opacity-60"
-                                    >
-                                      {ttConflictFixing === `swap|${v.entryId}` ? (
-                                        <Loader2 className="h-3 w-3 animate-spin" />
-                                      ) : (
-                                        <ArrowLeftRight className="h-3 w-3" />
-                                      )}
-                                      Swap in valid teacher
-                                    </button>
-                                  </>
-                                ) : (
-                                  <span className="text-xs font-medium text-sky-600">
-                                    No valid substitute is free that period — clear the slot instead.
-                                  </span>
-                                )}
-                                <button
-                                  onClick={() => fixTtConflict(v)}
-                                  disabled={ttConflictFixing === `${v.classArm}|${v.day}|${v.period}`}
-                                  className="inline-flex items-center gap-1 rounded-md border border-navy-200 bg-white px-2 py-1.5 text-[11px] font-semibold text-navy-600 transition hover:bg-navy-50 disabled:opacity-60"
-                                >
-                                  {ttConflictFixing === `${v.classArm}|${v.day}|${v.period}` ? (
-                                    <Loader2 className="h-3 w-3 animate-spin" />
-                                  ) : (
-                                    <X className="h-3 w-3" />
-                                  )}
-                                  Clear slot
-                                </button>
-                              </div>
-                            </div>
-                          );
-                        })}
-                        {/* Integrity checks — beyond collisions: an arm with an
-                            entirely unassigned day, roster teachers with no
-                            slots at all, entries left in deactivated arms. */}
-                        {(ttConflicts?.unassignedPeriods?.length ||
-                          ttConflicts?.unstaffedTeachers?.length ||
-                          ttConflicts?.orphanedEntries?.length) > 0 && (
-                          <div className="rounded-xl border border-violet-200 bg-violet-50/40 p-4">
-                            <p className="text-sm font-bold text-navy-800">
-                              <ShieldCheck className="mr-1.5 inline h-4 w-4 text-violet-600" />
-                              Integrity checks
-                            </p>
-                            <div className="mt-3 space-y-2 text-xs text-navy-600">
-                              {(ttConflicts?.unassignedPeriods || []).map((u) => (
-                                <p key={`u|${u.classArm}|${u.day}`} className="flex items-start gap-2">
-                                  <CalendarX className="mt-0.5 h-3.5 w-3.5 shrink-0 text-violet-500" />
-                                  <span>
-                                    <strong>{u.classArm}</strong> has no classes on <strong>{u.day}</strong> —
-                                    assign at least one period from the grid.
-                                  </span>
-                                </p>
-                              ))}
-                              {(ttConflicts?.unstaffedTeachers || []).map((t) => (
-                                <p key={`ut|${t.teacherId}`} className="flex items-start gap-2">
-                                  <UserX className="mt-0.5 h-3.5 w-3.5 shrink-0 text-violet-500" />
-                                  <span>
-                                    <strong>{t.teacherName || "Unknown teacher"}</strong> has no timetable
-                                    slots — schedule them or remove them from the roster.
-                                  </span>
-                                </p>
-                              ))}
-                              {(ttConflicts?.orphanedEntries || []).map((o) => (
-                                <p key={`or|${o.entryId}`} className="flex items-start gap-2">
-                                  <Link2Off className="mt-0.5 h-3.5 w-3.5 shrink-0 text-violet-500" />
-                                  <span>
-                                    <strong>{o.subject}</strong> in <strong>{o.classArm}</strong> ({o.day},
-                                    period {o.period})
-                                    {o.teacherName ? ` — ${o.teacherName}` : ""} — the arm is no longer
-                                    active. Delete or reassign the slot.
-                                  </span>
-                                </p>
-                              ))}
-                            </div>
-                          </div>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                </div>
-              )}
-
-              {/* Period times — the bell schedule behind the class-alert alarms */}
-              <div className="overflow-hidden rounded-2xl border border-navy-200/70 bg-white shadow-sm">
-                <div className="flex flex-wrap items-center justify-between gap-3 border-b border-navy-100 px-6 py-4">
-                  <div>
-                    <h2 className="flex items-center gap-2 text-lg font-bold text-navy-800">
-                      <Clock className="h-5 w-5 text-brand-600" /> Period times
-                    </h2>
-                    <p className="mt-0.5 text-sm text-navy-400">
-                      The bell schedule drives the class-alert alarms teachers receive — edit when each period
-                      starts and ends, then save.
-                    </p>
-                  </div>
-                  <button
-                    onClick={savePeriodTimes}
-                    disabled={periodTimesSaving}
-                    className="inline-flex items-center gap-2 rounded-xl bg-brand-600 px-5 py-2.5 text-sm font-semibold text-white shadow-lg shadow-brand-600/30 transition hover:bg-brand-500 disabled:opacity-60"
-                  >
-                    {periodTimesSaving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
-                    Save times
-                  </button>
-                </div>
-                <div className="flex flex-wrap items-center gap-2 border-b border-navy-100 px-6 py-3">
-                  {["ALL", ...DAYS].map((d) => {
-                    const active = bellDay === d;
-                    const custom = d !== "ALL" && Boolean(dailyDrafts[d]);
-                    return (
-                      <button
-                        key={d}
-                        onClick={() => selectBellDay(d)}
-                        className={`inline-flex items-center gap-1.5 rounded-full px-3.5 py-1.5 text-xs font-semibold transition ${
-                          active
-                            ? "bg-brand-600 text-white shadow"
-                            : "bg-navy-50 text-navy-600 hover:bg-navy-100"
-                        }`}
-                      >
-                        {d === "ALL" ? "All days" : d}
-                        {custom && (
-                          <span
-                            className={`rounded-full px-1.5 py-0.5 text-[10px] font-bold ${
-                              active ? "bg-white/20 text-white" : "bg-amber-100 text-amber-700"
-                            }`}
-                          >
-                            custom
-                          </span>
-                        )}
-                      </button>
-                    );
-                  })}
-                </div>
-                <div className="grid gap-3 p-5 sm:grid-cols-2 lg:grid-cols-4">
-                  {bellDay !== "ALL" && (
-                    <div className="col-span-full flex flex-wrap items-center gap-3 rounded-xl border border-navy-100 bg-navy-50/40 p-3">
-                      <label className="flex items-center gap-2 text-xs font-semibold text-navy-600">
-                        Periods on this day
-                        <select
-                          value={bellDraft.periodTimes.length}
-                          onChange={(e) => setBellDayPeriodCount(bellDay, Number(e.target.value))}
-                          className={`${inputCls} !px-2 !py-1 text-xs`}
-                        >
-                          {PERIODS.map((n) => (
-                            <option key={n} value={n}>
-                              {n}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-                      <span className="text-[11px] text-navy-400">
-                        A shorter day (e.g. Friday ends at period 6) simply drops the later periods.
-                      </span>
-                      <button
-                        onClick={() => resetBellDay(bellDay)}
-                        disabled={!bellDraft.overridden}
-                        className="ml-auto inline-flex items-center gap-1.5 rounded-xl border border-navy-200 bg-white px-3 py-1.5 text-xs font-semibold text-navy-600 transition hover:bg-navy-50 disabled:opacity-50"
-                      >
-                        <RotateCcw className="h-3.5 w-3.5" /> Use school default
-                      </button>
-                    </div>
-                  )}
-                  {bellDraft.periodTimes.map((pt) => (
-                    <div key={pt.period} className="rounded-xl border border-navy-100 bg-navy-50/40 p-3">
-                      <p className="text-[10px] font-bold uppercase tracking-wider text-navy-400">
-                        Period {pt.period}
-                      </p>
-                      <div className="mt-2 grid grid-cols-2 gap-2">
-                        <label className="block">
-                          <span className="mb-0.5 block text-[10px] font-medium text-navy-400">Start</span>
-                          <input
-                            type="time"
-                            value={pt.start}
-                            onChange={(e) => setPeriodTime(pt.period, "start", e.target.value)}
-                            className={`${inputCls} !px-2 !py-1.5 text-xs`}
-                          />
-                        </label>
-                        <label className="block">
-                          <span className="mb-0.5 block text-[10px] font-medium text-navy-400">End</span>
-                          <input
-                            type="time"
-                            value={pt.end}
-                            onChange={(e) => setPeriodTime(pt.period, "end", e.target.value)}
-                            className={`${inputCls} !px-2 !py-1.5 text-xs`}
-                          />
-                        </label>
-                      </div>
-                    </div>
-                  ))}
-                  {/* The school-wide mid-day break — a display/alert concept,
-                      never a timetable entry, so no teacher is ever assigned. */}
-                  <div className="rounded-xl border border-violet-200 bg-violet-50/50 p-3">
-                    <p className="text-[10px] font-bold uppercase tracking-wider text-violet-600">
-                      Break · between periods 4 &amp; 5
-                    </p>
-                    <div className="mt-2 grid grid-cols-2 gap-2">
-                      <label className="block">
-                        <span className="mb-0.5 block text-[10px] font-medium text-navy-400">Start</span>
-                        <input
-                          type="time"
-                          value={bellDraft.breakTimes.start}
-                          onChange={(e) => setBreakTime("start", e.target.value)}
-                          className={`${inputCls} !px-2 !py-1.5 text-xs`}
-                        />
-                      </label>
-                      <label className="block">
-                        <span className="mb-0.5 block text-[10px] font-medium text-navy-400">End</span>
-                        <input
-                          type="time"
-                          value={bellDraft.breakTimes.end}
-                          onChange={(e) => setBreakTime("end", e.target.value)}
-                          className={`${inputCls} !px-2 !py-1.5 text-xs`}
-                        />
-                      </label>
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              <div className="flex items-start gap-2 rounded-xl border border-brand-200 bg-brand-50 p-4 text-sm text-brand-800">
-                <CalendarDays className="mt-0.5 h-4 w-4 shrink-0" />
-                <p>
-                  <strong>Teachers see this instantly.</strong> Every assignment flows straight into the teacher
-                  portal&apos;s weekly timetable — a Mathematics teacher covering all twelve classes gets twelve
-                  separate schedules, one per class, with today&apos;s column highlighted — and, when alerts are
-                  enabled, an alarm rings as each period approaches.
-                </p>
-              </div>
-            </div>
-          )}
+{activeTab === "timetable" && (
+          <TimetableTab
+            ttArm={ttArm}
+            setTtArm={setTtArm}
+            ttConflicts={ttConflicts}
+            ttConflictsOpen={ttConflictsOpen}
+            setTtConflictsOpen={setTtConflictsOpen}
+            ttConflictsLoading={ttConflictsLoading}
+            ttConflictFixing={ttConflictFixing}
+            dayTimeline={dayTimeline}
+            dayTimelines={dayTimelines}
+            dayPeriodSets={dayPeriodSets}
+            ttByKey={ttByKey}
+            ttFilled={ttFilled}
+            openTtCell={openTtCell}
+            checkTtConflicts={checkTtConflicts}
+            fixTtConflict={fixTtConflict}
+            swapTtTeacher={swapTtTeacher}
+            ttSwapDraft={ttSwapDraft}
+            setTtSwapDraft={setTtSwapDraft}
+            bellDraft={bellDraft}
+            bellDay={bellDay}
+            dailyDrafts={dailyDrafts}
+            selectBellDay={selectBellDay}
+            setBellDayPeriodCount={setBellDayPeriodCount}
+            setPeriodTime={setPeriodTime}
+            setBreakTime={setBreakTime}
+            resetBellDay={resetBellDay}
+            savePeriodTimes={savePeriodTimes}
+            periodTimesSaving={periodTimesSaving}
+            session={session}
+          />
+        )}
 
           {/* Fee Management */}
-          {activeTab === "fees" && (
-            <div className="mt-5 animate-fade-up">
-              {/* Summary cards */}
-              <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-                <MetricCard
-                  icon={Receipt}
-                  label="Total Billed"
-                  value={naira(feeTotals?.billed)}
-                  sub="Termly fee structures × enrolment"
-                  accent="brand"
-                />
-                <MetricCard
-                  icon={Banknote}
-                  label="Collected"
-                  value={naira(feeTotals?.collected)}
-                  sub={`${naira(feeTotals?.outstanding)} outstanding`}
-                  accent="emerald"
-                />
-                <MetricCard
-                  icon={AlertTriangle}
-                  label="Defaulters"
-                  value={feeTotals?.defaulters ?? 0}
-                  sub={`${feeTotals?.paid ?? 0} students fully paid`}
-                  accent="amber"
-                />
-                <MetricCard
-                  icon={Wallet}
-                  label="Collection Rate"
-                  value={
-                    feeTotals?.billed
-                      ? `${Math.round((feeTotals.collected / feeTotals.billed) * 100)}%`
-                      : "—"
-                  }
-                  sub="Amount collected ÷ billed"
-                  accent="navy"
-                />
-              </div>
-
-              {/* Reconcile & forward — reminders that went to the STUDENT (no
-                  parent at send time) and can now be pushed to a linked parent. */}
-              {pendingReconciles.length > 0 && (
-                <div className="mt-5 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-sky-200 bg-sky-50/70 px-5 py-4 shadow-sm">
-                  <div className="flex items-center gap-3">
-                    <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-sky-600 text-white shadow-md shadow-sky-600/30">
-                      <Send className="h-5 w-5" />
-                    </span>
-                    <div className="min-w-0">
-                      <p className="text-sm font-bold text-sky-900">
-                        {pendingReconciles.reduce((a, p) => a + p.reminders.length, 0)} reminder{pendingReconciles.reduce((a, p) => a + p.reminders.length, 0) === 1 ? "" : "s"} can be forwarded to parents
-                      </p>
-                      <p className="truncate text-xs text-sky-700">
-                        These went to the student when no parent was linked — now that a parent exists, send them a copy too.
-                      </p>
-                    </div>
-                  </div>
-                  <button
-                    onClick={() => {
-                      setReconcileModal(true);
-                      setReconcileResult(null);
-                    }}
-                    className="inline-flex items-center gap-1.5 rounded-xl bg-sky-600 px-4 py-2 text-sm font-semibold text-white shadow-lg shadow-sky-600/30 transition hover:bg-sky-500"
-                  >
-                    <Send className="h-4 w-4" /> Reconcile &amp; forward
-                    <span className="rounded-full bg-white/25 px-1.5 py-0.5 text-[10px] font-bold">
-                      {pendingReconciles.length}
-                    </span>
-                  </button>
-                </div>
-              )}
-
-              {/* Payments awaiting confirmation (from the parent portal) */}
-              {pendingPayments.length > 0 && (
-                <div className="mt-5 overflow-hidden rounded-2xl border border-amber-200 bg-white shadow-sm">
-                  <div className="flex flex-wrap items-center justify-between gap-2 border-b border-amber-100 bg-amber-50/60 px-6 py-4">
-                    <div className="flex items-center gap-2">
-                      <AlertTriangle className="h-5 w-5 text-amber-600" />
-                      <h2 className="text-lg font-bold text-navy-800">Awaiting your confirmation</h2>
-                    </div>
-                    <span className="rounded-full bg-amber-600 px-3 py-1 text-xs font-bold text-white">
-                      {pendingPayments.length} pending
-                    </span>
-                  </div>
-                  <div className="overflow-x-auto">
-                    <table className="w-full text-left text-sm">
-                      <thead>
-                        <tr className="border-b border-navy-100 bg-navy-50/60 text-xs font-semibold uppercase tracking-wider text-navy-400">
-                          <th className="px-6 py-3">Student</th>
-                          <th className="px-6 py-3">Receipt</th>
-                          <th className="px-6 py-3">Method</th>
-                          <th className="px-6 py-3 text-right">Amount</th>
-                          <th className="px-6 py-3">Paid on</th>
-                          <th className="px-6 py-3 text-right">Action</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {pendingPayments.map((p) => (
-                          <tr key={p.id} className="border-b border-amber-50 transition hover:bg-amber-50/40">
-                            <td className="px-6 py-3.5">
-                              <div className="flex items-center gap-3">
-                                <div className="flex h-9 w-9 items-center justify-center rounded-full bg-amber-50 text-sm font-bold text-amber-600">
-                                  {p.studentName.split(" ").map((w) => w[0]).join("").slice(0, 2).toUpperCase()}
-                                </div>
-                                <div>
-                                  <p className="font-semibold text-navy-800">{p.studentName}</p>
-                                  <p className="text-xs text-navy-400">{p.assignedClass || "Unassigned"}</p>
-                                </div>
-                              </div>
-                            </td>
-                            <td className="px-6 py-3.5">
-                              <span className="rounded-md bg-navy-100 px-2 py-1 text-xs font-bold text-navy-600">
-                                {p.receiptNo}
-                              </span>
-                            </td>
-                            <td className="px-6 py-3.5 text-navy-500">{p.method}</td>
-                            <td className="px-6 py-3.5 text-right font-bold text-amber-700">{naira(p.amount)}</td>
-                            <td className="px-6 py-3.5 text-navy-500">
-                              {new Date(p.createdAt).toLocaleDateString()}
-                            </td>
-                            <td className="px-6 py-3.5 text-right">
-                              {isSuper ? (
-                                <button
-                                  onClick={() => confirmPayment(p.id)}
-                                  disabled={confirmingId === p.id}
-                                  className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-600 px-3.5 py-2 text-xs font-semibold text-white shadow-md shadow-emerald-600/30 transition hover:bg-emerald-500 disabled:opacity-60"
-                                >
-                                  {confirmingId === p.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <CheckCircle2 className="h-3.5 w-3.5" />}
-                                  Confirm
-                                </button>
-                              ) : (
-                                <span
-                                  title="Only the Super Admin can confirm parent-portal payments"
-                                  className="inline-flex items-center gap-1.5 rounded-lg bg-navy-100 px-3.5 py-2 text-xs font-semibold text-navy-500"
-                                >
-                                  <ShieldCheck className="h-3.5 w-3.5" />
-                                  Super Admin only
-                                </span>
-                              )}
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                  <div className="border-t border-amber-100 bg-amber-50/40 px-6 py-3 text-xs text-amber-700">
-                    These payments were initiated from the parent portal and only count toward balances
-                    once you confirm the money was received.
-                  </div>
-                </div>
-              )}
-
-              {/* Filters */}
-              <div className="mt-5 flex flex-wrap items-center gap-3">
-                <div className="flex items-center gap-2 rounded-xl border border-navy-200 bg-white px-3 py-2">
-                  <Receipt className="h-4 w-4 text-brand-600" />
-                  <select
-                    value={feeClass}
-                    onChange={(e) => setFeeClass(e.target.value)}
-                    className="bg-transparent text-sm font-medium text-navy-700 outline-none"
-                  >
-                    <option value="">All class arms</option>
-                    {(session.school?.activeArms || []).map((arm) => (
-                      <option key={arm}>{arm}</option>
-                    ))}
-                  </select>
-                </div>
-                <button
-                  onClick={() => setFeeDefaultersOnly((v) => !v)}
-                  className={`inline-flex items-center gap-1.5 rounded-xl border px-4 py-2 text-sm font-semibold transition ${
-                    feeDefaultersOnly
-                      ? "border-amber-300 bg-amber-50 text-amber-700"
-                      : "border-navy-200 bg-white text-navy-600 hover:border-amber-300"
-                  }`}
-                >
-                  <AlertTriangle className="h-4 w-4" />
-                  {feeDefaultersOnly ? "Showing defaulters" : "Defaulters only"}
-                </button>
-                <button
-                  onClick={() => {
-                    setReminderModal("all");
-                    setReminderResult(null);
-                    loadReminderTemplates();
-                  }}
-                  disabled={(feeTotals?.remindable ?? 0) === 0}
-                  title="Send a fee reminder to every parent with an outstanding balance (or unpaid fees)"
-                  className="inline-flex items-center gap-1.5 rounded-xl border border-violet-300 bg-violet-50 px-4 py-2 text-sm font-semibold text-violet-700 transition hover:border-violet-400 hover:bg-violet-100 disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  <BellRing className="h-4 w-4" />
-                  Send reminders
-                  {(feeTotals?.remindable ?? 0) > 0 && (
-                    <span className="rounded-full bg-violet-600 px-1.5 py-0.5 text-[10px] font-bold text-white">
-                      {feeTotals.remindable}
-                    </span>
-                  )}
-                </button>
-              </div>
-
-              {/* Fee structures editor */}
-              <div className="mt-5 overflow-hidden rounded-2xl border border-navy-200/70 bg-white shadow-sm">
-                <div className="border-b border-navy-100 px-6 py-4">
-                  <h2 className="text-lg font-bold text-navy-800">Termly fee structures</h2>
-                  <p className="text-sm text-navy-400">
-                    Set the termly fee per class arm. Students in each arm are billed this amount automatically.
-                  </p>
-                </div>
-                <div className="overflow-x-auto">
-                  <table className="w-full text-left text-sm">
-                    <thead>
-                      <tr className="border-b border-navy-100 bg-navy-50/60 text-xs font-semibold uppercase tracking-wider text-navy-400">
-                        <th className="px-6 py-3">Class Arm</th>
-                        <th className="px-6 py-3">Termly Fee</th>
-                        <th className="px-6 py-3 text-right">Action</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {(session.school?.activeArms || []).map((arm) => (
-                        <tr key={arm} className="border-b border-navy-50 transition hover:bg-navy-50/40">
-                          <td className="px-6 py-3.5">
-                            <span className="font-semibold text-navy-800">{arm}</span>
-                          </td>
-                          <td className="px-6 py-3.5">
-                            <div className="flex items-center gap-1">
-                              <span className="text-sm font-semibold text-navy-400">₦</span>
-                              <input
-                                type="number"
-                                min={0}
-                                value={feeDraft[arm] ?? ""}
-                                disabled={!isSuper}
-                                onChange={(e) => setFeeDraft((d) => ({ ...d, [arm]: e.target.value }))}
-                                placeholder="e.g. 185000"
-                                className="w-40 rounded-lg border border-navy-200 bg-white px-3 py-2 text-sm font-medium text-navy-800 outline-none transition focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 disabled:cursor-not-allowed disabled:bg-navy-50 disabled:text-navy-400"
-                              />
-                            </div>
-                          </td>
-                          <td className="px-6 py-3.5 text-right">
-                            {isSuper ? (
-                              <button
-                                onClick={() => saveFeeStructure(arm)}
-                                disabled={feeSaving}
-                                className="inline-flex items-center gap-1.5 rounded-lg bg-navy-800 px-3.5 py-2 text-xs font-semibold text-white transition hover:bg-navy-700 disabled:opacity-60"
-                              >
-                                {feeSaving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <CheckCircle2 className="h-3.5 w-3.5" />}
-                                Save
-                              </button>
-                            ) : (
-                              <span className="inline-flex items-center gap-1.5 rounded-lg bg-navy-100 px-3.5 py-2 text-xs font-semibold text-navy-500">
-                                <ShieldCheck className="h-3.5 w-3.5" />
-                                Super Admin only
-                              </span>
-                            )}
-                          </td>
-                        </tr>
-                      ))}
-                      {(session.school?.activeArms || []).length === 0 && (
-                        <tr>
-                          <td colSpan={3} className="px-6 py-10 text-center text-navy-400">
-                            Configure class arms in the school onboarding first.
-                          </td>
-                        </tr>
-                      )}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-
-              {/* Ledger */}
-              <div className="mt-5 overflow-hidden rounded-2xl border border-navy-200/70 bg-white shadow-sm">
-                <div className="border-b border-navy-100 px-6 py-4">
-                  <h2 className="text-lg font-bold text-navy-800">
-                    Fee ledger{feeDefaultersOnly ? " — defaulters" : ""}
-                  </h2>
-                  <p className="text-sm text-navy-400">
-                    Record partial or full payments. Balances update automatically.
-                  </p>
-                </div>
-                <div className="overflow-x-auto">
-                  <table className="w-full text-left text-sm">
-                    <thead>
-                      <tr className="border-b border-navy-100 bg-navy-50/60 text-xs font-semibold uppercase tracking-wider text-navy-400">
-                        <th className="px-6 py-3">Student</th>
-                        <th className="px-6 py-3">Class</th>
-                        <th className="px-6 py-3 text-right">Billed</th>
-                        <th className="px-6 py-3 text-right">Paid</th>
-                        <th className="px-6 py-3 text-right">Pending</th>
-                        <th className="px-6 py-3 text-right">Balance</th>
-                        <th className="px-6 py-3">Status</th>
-                        <th className="px-6 py-3 text-right">Action</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {feeLedger.map((l) => (
-                        <tr key={l.studentId} className="border-b border-navy-50 transition hover:bg-navy-50/40">
-                          <td className="px-6 py-3.5">
-                            <div className="flex items-center gap-3">
-                              <div className="flex h-9 w-9 items-center justify-center rounded-full bg-emerald-50 text-sm font-bold text-emerald-600">
-                                {l.name.split(" ").map((w) => w[0]).join("").slice(0, 2).toUpperCase()}
-                              </div>
-                              <div>
-                                <p className="font-semibold text-navy-800">{l.name}</p>
-                                <p className="text-xs text-navy-400">{l.email}</p>
-                              </div>
-                            </div>
-                          </td>
-                          <td className="px-6 py-3.5">
-                            <span className="rounded-md bg-navy-100 px-2 py-1 text-xs font-semibold text-navy-600">
-                              {l.assignedClass || "Unassigned"}
-                            </span>
-                          </td>
-                          <td className="px-6 py-3.5 text-right font-medium text-navy-700">{naira(l.amount)}</td>
-                          <td className="px-6 py-3.5 text-right font-semibold text-emerald-600">{naira(l.paid)}</td>
-                          <td className="px-6 py-3.5 text-right">
-                            {l.pending > 0 ? (
-                              <span className="font-semibold text-amber-600">{naira(l.pending)}</span>
-                            ) : (
-                              <span className="text-navy-200">—</span>
-                            )}
-                          </td>
-                          <td className="px-6 py-3.5 text-right">
-                            <span className={`font-bold ${l.balance > 0 ? "text-amber-600" : "text-navy-300"}`}>
-                              {naira(l.balance)}
-                            </span>
-                            {l.carryover > 0 && (
-                              <p className="mt-0.5 text-[10px] font-medium text-violet-600">
-                                includes {naira(l.carryover)} carried from last term
-                              </p>
-                            )}
-                          </td>
-                          <td className="px-6 py-3.5">
-                            <span
-                              className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-bold ring-1 ${
-                                l.feePaid
-                                  ? "bg-emerald-50 text-emerald-700 ring-emerald-600/20"
-                                  : "bg-rose-50 text-rose-700 ring-rose-600/20"
-                              }`}
-                            >
-                              <span className={`h-1.5 w-1.5 rounded-full ${l.feePaid ? "bg-emerald-500" : "bg-rose-500"}`} />
-                              {l.feePaid ? "Paid" : l.balance > 0 ? "Outstanding" : "Unbilled"}
-                            </span>
-                          </td>
-                          <td className="px-6 py-3.5">
-                            <div className="flex items-center justify-end gap-2">
-                              {(l.balance > 0 || (l.amount === 0 && !l.feePaid)) && (
-                                <button
-                                  onClick={() => {
-                                    setReminderModal(l.studentId);
-                                    setReminderResult(null);
-                                    loadReminderTemplates();
-                                  }}
-                                  title={`Send a fee reminder to ${l.name}'s parent`}
-                                  className="inline-flex items-center gap-1.5 rounded-lg border border-violet-300 bg-violet-50 px-3.5 py-2 text-xs font-semibold text-violet-700 transition hover:border-violet-400 hover:bg-violet-100"
-                                >
-                                  <BellRing className="h-3.5 w-3.5" />
-                                  Remind
-                                </button>
-                              )}
-                              <button
-                                onClick={() => {
-                                  setPayModal(l.studentId);
-                                  setPayForm((f) => ({ ...f, amount: l.balance > 0 ? String(l.balance) : "" }));
-                                }}
-                                className="inline-flex items-center gap-1.5 rounded-lg bg-brand-600 px-3.5 py-2 text-xs font-semibold text-white shadow-md shadow-brand-600/30 transition hover:bg-brand-500"
-                              >
-                                <Banknote className="h-3.5 w-3.5" />
-                                Record payment
-                              </button>
-                            </div>
-                          </td>
-                        </tr>
-                      ))}
-                      {feeLedger.length === 0 && (
-                        <tr>
-                          <td colSpan={8} className="px-6 py-12 text-center text-navy-400">
-                            No students found{feeDefaultersOnly ? " with outstanding balances" : ""}. Adjust your filters.
-                          </td>
-                        </tr>
-                      )}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-
-              {/* Audit trail — who did what, and when (reconciliation) */}
-              <div className="mt-5 overflow-hidden rounded-2xl border border-navy-200/70 bg-white shadow-sm">
-                <div className="border-b border-navy-100 px-6 py-4">
-                  <h2 className="flex items-center gap-2 text-lg font-bold text-navy-800">
-                    <History className="h-5 w-5 text-brand-600" />
-                    Audit trail
-                  </h2>
-                  <p className="text-sm text-navy-400">
-                    Every fee action — who did it, and when. Use this to reconcile payments, confirmations and receipts.
-                  </p>
-                </div>
-                <div className="overflow-x-auto">
-                  <table className="w-full text-left text-sm">
-                    <thead>
-                      <tr className="border-b border-navy-100 bg-navy-50/60 text-xs font-semibold uppercase tracking-wider text-navy-400">
-                        <th className="px-6 py-3">When</th>
-                        <th className="px-6 py-3">Action</th>
-                        <th className="px-6 py-3">Who</th>
-                        <th className="px-6 py-3">Student</th>
-                        <th className="px-6 py-3">Receipt</th>
-                        <th className="px-6 py-3 text-right">Amount</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {audit.map((e) => (
-                        <tr key={e.id} className="border-b border-navy-50 transition hover:bg-navy-50/40">
-                          <td className="whitespace-nowrap px-6 py-3.5 text-xs text-navy-500">
-                            {new Date(e.createdAt).toLocaleString()}
-                          </td>
-                          <td className="px-6 py-3.5">
-                            <AuditBadge action={e.action} />
-                          </td>
-                          <td className="px-6 py-3.5">
-                            <p className="font-semibold text-navy-800">{e.actorName}</p>
-                            <p className="text-xs text-navy-400">
-                              {e.actorRole === "PARENT"
-                                ? "Parent portal"
-                                : e.actorRole === "SUPER_ADMIN"
-                                  ? "School admin"
-                                  : e.actorRole === "BURSAR"
-                                    ? "Bursar"
-                                    : e.actorRole === "REGISTRAR"
-                                      ? "Registrar"
-                                      : e.actorRole || "System"}
-                            </p>
-                          </td>
-                          <td className="px-6 py-3.5">
-                            {e.studentName ? (
-                              <>
-                                <p className="font-medium text-navy-700">{e.studentName}</p>
-                                {e.classArm && <p className="text-xs text-navy-400">{e.classArm}</p>}
-                              </>
-                            ) : (
-                              <span className="text-navy-300">—</span>
-                            )}
-                          </td>
-                          <td className="px-6 py-3.5">
-                            {e.receiptNo ? (
-                              <span className="rounded-md bg-navy-100 px-2 py-1 text-xs font-bold text-navy-600">
-                                {e.receiptNo}
-                              </span>
-                            ) : (
-                              <span className="text-navy-300">—</span>
-                            )}
-                          </td>
-                          <td className="px-6 py-3.5 text-right font-bold text-navy-800">
-                            {e.amount > 0 ? naira(e.amount) : "—"}
-                          </td>
-                        </tr>
-                      ))}
-                      {audit.length === 0 && (
-                        <tr>
-                          <td colSpan={6} className="px-6 py-12 text-center text-navy-400">
-                            No fee actions logged yet. Every payment you record or confirm — and every parent
-                            payment or receipt download — will appear here.
-                          </td>
-                        </tr>
-                      )}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-
-              <div className="mt-5 flex items-start gap-2 rounded-xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-800">
-                <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0" />
-                <p>
-                  <strong>Automatic receipts.</strong> Every recorded payment gets a unique receipt number
-                  (e.g. RCT-1001). Partial payments are supported — a student is marked <strong>Paid</strong> only
-                  once their balance reaches zero.
-                </p>
-              </div>
-            </div>
-          )}
+{activeTab === "fees" && (
+          <FeesTab
+            feeTotals={feeTotals}
+            pendingReconciles={pendingReconciles}
+            pendingPayments={pendingPayments}
+            confirmingId={confirmingId}
+            feeClass={feeClass}
+            setFeeClass={setFeeClass}
+            feeDefaultersOnly={feeDefaultersOnly}
+            setFeeDefaultersOnly={setFeeDefaultersOnly}
+            feeDraft={feeDraft}
+            setFeeDraft={setFeeDraft}
+            feeLedger={feeLedger}
+            feeSaving={feeSaving}
+            audit={audit}
+            isSuper={isSuper}
+            activeArms={session.school?.activeArms}
+            session={session}
+            confirmPayment={confirmPayment}
+            saveFeeStructure={saveFeeStructure}
+            setPayModal={setPayModal}
+            setPayForm={setPayForm}
+            setReminderModal={setReminderModal}
+            setReminderResult={setReminderResult}
+            setReconcileModal={setReconcileModal}
+            setReconcileResult={setReconcileResult}
+            loadReminderTemplates={loadReminderTemplates}
+          />
+        )}
 
           {/* Report Cards */}
-          {activeTab === "reports" && (
-            <div className="mt-5 animate-fade-up">
-              {/* Class filter + search row */}
-              <div className="mb-5 flex flex-wrap items-center gap-3">
-                <div className="flex items-center gap-2 rounded-xl border border-navy-200 bg-white px-3 py-2">
-                  <FileText className="h-4 w-4 text-brand-600" />
-                  <select
-                    value={reportClass}
-                    onChange={(e) => setReportClass(e.target.value)}
-                    className="bg-transparent text-sm font-medium text-navy-700 outline-none"
-                  >
-                    <option value="">All class arms</option>
-                    {(session.school?.activeArms || []).map((arm) => (
-                      <option key={arm}>{arm}</option>
-                    ))}
-                  </select>
-                </div>
-                <div className="relative min-w-0 flex-1">
-                  <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-navy-300" />
-                  <input
-                    value={reportSearch}
-                    onChange={(e) => setReportSearch(e.target.value)}
-                    placeholder="Search any student by name, email or class…"
-                    className="w-full rounded-xl border border-navy-200 bg-white py-2.5 pl-9 pr-3 text-sm outline-none transition focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20"
-                  />
-                </div>
-              </div>
-
-              <div className="grid gap-5 lg:grid-cols-3">
-                <TopStudents
-                  students={reportStudents}
-                  onView={(id) => openReport(id)}
-                  title={"Best students" + (reportClass ? ` · ${reportClass}` : " · whole school")}
-                />
-
-                <div className="overflow-hidden rounded-2xl border border-navy-200/70 bg-white shadow-sm lg:col-span-2">
-                  <div className="border-b border-navy-100 px-6 py-4">
-                    <h2 className="text-lg font-bold text-navy-800">All student report cards</h2>
-                    <p className="text-sm text-navy-400">
-                      Read any student&apos;s report card and export it as a branded A4 PDF.
-                    </p>
-                  </div>
-                  <div className="overflow-x-auto">
-                    <table className="w-full text-left text-sm">
-                      <thead>
-                        <tr className="border-b border-navy-100 bg-navy-50/60 text-xs font-semibold uppercase tracking-wider text-navy-400">
-                          <th className="px-6 py-3">Student</th>
-                          <th className="px-6 py-3">Class</th>
-                          <th className="px-6 py-3">Subjects</th>
-                          <th className="px-6 py-3">Average</th>
-                          <th className="px-6 py-3">Grade</th>
-                          <th className="px-6 py-3">Standing</th>
-                          <th className="px-6 py-3 text-right">Report</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {filteredReports.map((s) => (
-                          <tr key={s.id} className="border-b border-navy-50 transition hover:bg-brand-50/30">
-                            <td className="px-6 py-3.5">
-                              <div className="flex items-center gap-3">
-                                <div className="flex h-9 w-9 items-center justify-center rounded-full bg-brand-50 text-sm font-bold text-brand-600">
-                                  {s.name.split(" ").map((w) => w[0]).join("").slice(0, 2).toUpperCase()}
-                                </div>
-                                <div>
-                                  <p className="font-semibold text-navy-800">{s.name}</p>
-                                  <p className="text-xs text-navy-400">{s.email}</p>
-                                </div>
-                              </div>
-                            </td>
-                            <td className="px-6 py-3.5">
-                              <span className="rounded-md bg-navy-100 px-2 py-1 text-xs font-semibold text-navy-600">
-                                {s.assignedClass || "Unassigned"}
-                              </span>
-                            </td>
-                            <td className="px-6 py-3.5 text-navy-500">{s.subjects}</td>
-                            <td className="px-6 py-3.5">
-                              <span className="font-extrabold text-navy-800">{s.average}%</span>
-                            </td>
-                            <td className="px-6 py-3.5">
-                              {s.grade ? (
-                                <span className={`inline-flex h-7 w-7 items-center justify-center rounded-lg text-sm font-bold ring-1 ${gradeBadgeClasses(s.grade)}`}>
-                                  {s.grade}
-                                </span>
-                              ) : (
-                                <span className="text-navy-300">—</span>
-                              )}
-                            </td>
-                            <td className="px-6 py-3.5 text-xs font-semibold text-navy-500">{s.standing}</td>
-                            <td className="px-6 py-3.5 text-right">
-                              <button
-                                onClick={() => openReport(s.id)}
-                                disabled={reportLoading}
-                                className="inline-flex items-center gap-1.5 rounded-lg bg-brand-600 px-3 py-2 text-xs font-semibold text-white shadow-md shadow-brand-600/30 transition hover:bg-brand-500 disabled:opacity-60"
-                              >
-                                {reportLoading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <FileText className="h-3.5 w-3.5" />}
-                                View
-                              </button>
-                            </td>
-                          </tr>
-                        ))}
-                        {filteredReports.length === 0 && (
-                          <tr>
-                            <td colSpan={7} className="px-6 py-12 text-center text-navy-400">
-                              No students found. Adjust your search or add students first.
-                            </td>
-                          </tr>
-                        )}
-                      </tbody>
-                    </table>
-                  </div>
-                </div>
-              </div>
-
-              <div className="mt-5 flex items-start gap-2 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">
-                <Trophy className="mt-0.5 h-4 w-4 shrink-0" />
-                <p>
-                  <strong>Best students are auto-ranked</strong> by overall average every time this page loads.
-                  Use the search box to look up a student by name, email or class arm, then open or print their report card.
-                </p>
-              </div>
-            </div>
-          )}
+{activeTab === "reports" && (
+          <ReportsTab
+            reportStudents={reportStudents}
+            filteredReports={filteredReports}
+            reportSearch={reportSearch}
+            setReportSearch={setReportSearch}
+            reportClass={reportClass}
+            setReportClass={setReportClass}
+            reportLoading={reportLoading}
+            openReport={openReport}
+            activeArms={session.school?.activeArms}
+          />
+        )}
 
           {/* Students */}
-          {activeTab === "students" && (
-            <div className="mt-5 overflow-hidden rounded-2xl border border-navy-200/70 bg-white shadow-sm">
-              <div className="border-b border-navy-100 px-6 py-4">
-                <h2 className="text-lg font-bold text-navy-800">Students, fees & parents</h2>
-                <p className="text-sm text-navy-400">
-                  Toggle fee status, or link a parent/guardian so they can view report cards, attendance and pay fees online.
-                </p>
-              </div>
-              <div className="overflow-x-auto">
-                <table className="w-full text-left text-sm">
-                  <thead>
-                    <tr className="border-b border-navy-100 bg-navy-50/60 text-xs font-semibold uppercase tracking-wider text-navy-400">
-                      <th className="px-6 py-3">Student</th>
-                      <th className="px-6 py-3">Email</th>
-                      <th className="px-6 py-3">Password</th>
-                      <th className="px-6 py-3">Class Arm</th>
-                      <th className="px-6 py-3">Fee Status</th>
-                      <th className="px-6 py-3">Parent / Guardian</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {filteredStudents.map((s) => (
-                      <tr key={s.id} className="border-b border-navy-50 transition hover:bg-navy-50/40">
-                        <td className="px-6 py-4">
-                          <div className="flex items-center gap-3">
-                            <div className="flex h-9 w-9 items-center justify-center rounded-full bg-emerald-50 text-sm font-bold text-emerald-600">
-                              {s.name.split(" ").map((w) => w[0]).join("").slice(0, 2).toUpperCase()}
-                            </div>
-                            <span className="font-semibold text-navy-800">{s.name}</span>
-                            <button
-                              onClick={() => openReset(s)}
-                              title={`Reset ${s.name}'s password`}
-                              className="ml-1 rounded-lg p-1.5 text-navy-300 transition hover:bg-emerald-50 hover:text-emerald-600"
-                            >
-                              <KeyRound className="h-4 w-4" />
-                            </button>
-                            {isSuper && (
-                              <>
-                                <button
-                                  onClick={() => openEdit(s)}
-                                  title={`Edit ${s.name}'s details`}
-                                  className="rounded-lg p-1.5 text-navy-300 transition hover:bg-brand-50 hover:text-brand-600"
-                                >
-                                  <UserCog className="h-4 w-4" />
-                                </button>
-                                <button
-                                  onClick={() => setDeleteTarget(s)}
-                                  title={`Remove ${s.name} (left the school)`}
-                                  className="rounded-lg p-1.5 text-navy-300 transition hover:bg-rose-50 hover:text-rose-600"
-                                >
-                                  <Trash2 className="h-4 w-4" />
-                                </button>
-                              </>
-                            )}
-                          </div>
-                        </td>
-                        <td className="px-6 py-4 text-navy-500">{s.email}</td>
-                        <td className="px-6 py-4">
-                          {s.generatedPassword ? (
-                            <code className="select-all rounded bg-navy-800 px-2 py-1 font-mono text-xs font-bold text-white">
-                              {s.generatedPassword}
-                            </code>
-                          ) : (
-                            <span className="text-xs text-navy-300">—</span>
-                          )}
-                        </td>
-                        <td className="px-6 py-4">
-                          <span className="rounded-md bg-navy-100 px-2 py-1 text-xs font-semibold text-navy-600">
-                            {s.assignedClass || "Unassigned"}
-                          </span>
-                        </td>
-                        <td className="px-6 py-4">
-                          {isSuper ? (
-                            <button onClick={() => toggleFee(s.id, s.feePaid)} title="Click to toggle fee status">
-                              <span
-                                className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-bold ring-1 ${
-                                  s.feePaid
-                                    ? "bg-emerald-50 text-emerald-700 ring-emerald-600/20"
-                                    : "bg-rose-50 text-rose-700 ring-rose-600/20"
-                                }`}
-                              >
-                                <span className={`h-1.5 w-1.5 rounded-full ${s.feePaid ? "bg-emerald-500" : "bg-rose-500"}`} />
-                                {s.feePaid ? "Paid" : "Unpaid"}
-                              </span>
-                            </button>
-                          ) : (
-                            <span
-                              className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-bold ring-1 ${
-                                s.feePaid
-                                  ? "bg-emerald-50 text-emerald-700 ring-emerald-600/20"
-                                  : "bg-rose-50 text-rose-700 ring-rose-600/20"
-                              }`}
-                            >
-                              <span className={`h-1.5 w-1.5 rounded-full ${s.feePaid ? "bg-emerald-500" : "bg-rose-500"}`} />
-                              {s.feePaid ? "Paid" : "Unpaid"}
-                            </span>
-                          )}
-                        </td>
-                        <td className="px-6 py-4">
-                          {s.parentId ? (
-                            <div className="flex items-center gap-2">
-                              <span className="inline-flex items-center gap-1.5 rounded-full bg-brand-50 px-2.5 py-1 text-xs font-bold text-brand-700 ring-1 ring-brand-600/20">
-                                <HeartHandshake className="h-3 w-3" />
-                                {parentNameById[s.parentId] || "Linked"}
-                              </span>
-                              <button
-                                onClick={() => unlinkParent(s.id)}
-                                className="text-xs font-semibold text-navy-400 transition hover:text-rose-600"
-                                title="Unlink parent"
-                              >
-                                Unlink
-                              </button>
-                            </div>
-                          ) : (
-                            <button
-                              onClick={() => setLinkModal(s.id)}
-                              className="inline-flex items-center gap-1.5 rounded-lg border border-navy-200 bg-white px-3 py-1.5 text-xs font-semibold text-navy-600 transition hover:border-brand-300 hover:text-brand-600"
-                            >
-                              <HeartHandshake className="h-3 w-3" />
-                              Link parent
-                            </button>
-                          )}
-                        </td>
-                      </tr>
-                    ))}
-                    {filteredStudents.length === 0 && (
-                      <tr>
-                        <td colSpan={5} className="px-6 py-10 text-center text-navy-400">
-                          No students found.
-                        </td>
-                      </tr>
-                    )}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          )}
+{activeTab === "students" && (
+          <StudentsTab
+            filteredStudents={filteredStudents}
+            isSuper={isSuper}
+            toggleFee={toggleFee}
+            openReset={openReset}
+            openEdit={openEdit}
+            setDeleteTarget={setDeleteTarget}
+            unlinkParent={unlinkParent}
+            setLinkModal={setLinkModal}
+            parentNameById={parentNameById}
+          />
+        )}
         </div>
       </div>
 
-          {activeTab === "settings" && (
-            <>
-              <button
-                onClick={() => {
-                  setTab("overview");
-                  history.replaceState(null, "", "/admin/dashboard");
-                }}
-                className="mt-5 inline-flex items-center gap-1.5 rounded-lg text-sm font-semibold text-navy-500 transition hover:text-brand-600"
-              >
-                <ArrowLeft className="h-4 w-4" /> Back to dashboard
-              </button>
-              <div className="mt-3 overflow-hidden rounded-2xl border border-navy-200/70 bg-white shadow-sm">
-              <div className="border-b border-navy-100 px-6 py-4">
-                <h2 className="text-lg font-bold text-navy-800">School settings</h2>
-                <p className="text-sm text-navy-400">
-                  Branding (logo, seal and brand color) appears on report cards and across every
-                  portal. Notification preferences keep the admin inbox lean.
-                </p>
-              </div>
-              <div className="grid gap-8 p-6 lg:grid-cols-2">
-                <div>
-                  <label className="block">
-                    <span className="mb-1.5 block text-sm font-medium text-navy-700">Brand color</span>
-                    <div className="flex flex-wrap items-center gap-3">
-                      {BRAND_COLORS.map((c) => (
-                        <button
-                          key={c}
-                          onClick={() => setSettingsDraft((d) => ({ ...d, brandColor: c }))}
-                          className={`h-10 w-10 rounded-xl ring-2 transition ${
-                            settingsDraft.brandColor === c
-                              ? "ring-navy-800 ring-offset-2"
-                              : "ring-transparent hover:scale-105"
-                          }`}
-                          style={{ backgroundColor: c }}
-                          aria-label={`Brand color ${c}`}
-                        />
-                      ))}
-                      <input
-                        type="color"
-                        value={settingsColorWell}
-                        onChange={(e) => setSettingsDraft((d) => ({ ...d, brandColor: e.target.value }))}
-                        className="h-10 w-14 cursor-pointer rounded-xl border border-navy-200 bg-white"
-                        aria-label="Custom brand color"
-                      />
-                      {/* Exact hex entry — every school has its own brand color,
-                          so the swatches are just a starting point. */}
-                      <div className="flex items-center gap-1 rounded-lg border border-navy-200 px-2.5 py-1.5">
-                        <span className="text-xs font-bold text-navy-400">#</span>
-                        <input
-                          value={
-                            settingsDraft.brandColor.startsWith("#")
-                              ? settingsDraft.brandColor.slice(1)
-                              : settingsDraft.brandColor
-                          }
-                          onChange={(e) => {
-                            const v = e.target.value.replace(/[^0-9a-fA-F]/g, "").slice(0, 6);
-                            setSettingsDraft((d) => ({ ...d, brandColor: v ? `#${v}` : "" }));
-                          }}
-                          onBlur={() => {
-                            // Normalize to a valid 6-digit hex, else fall back.
-                            if (!/^#[0-9a-fA-F]{6}$/.test(settingsDraft.brandColor)) {
-                              setSettingsDraft((d) => ({ ...d, brandColor: "#2563EB" }));
-                            }
-                          }}
-                          placeholder="2563EB"
-                          aria-label="Custom brand color (hex)"
-                          className="w-20 bg-transparent font-mono text-sm font-semibold text-navy-800 outline-none placeholder:font-sans placeholder:text-xs placeholder:font-medium placeholder:text-navy-300"
-                        />
-                      </div>
-                    </div>
-                  </label>
-
-                  <div className="mt-5">
-                    <span className="mb-1.5 block text-sm font-medium text-navy-700">School logo</span>
-                    <input
-                      ref={logoInputRef}
-                      type="file"
-                      accept="image/png,image/jpeg,image/svg+xml,image/webp"
-                      onChange={(e) => {
-                        handleImageFile(e.target.files?.[0], "logoUrl", setLogoError);
-                        e.target.value = ""; // allow re-picking the same file
-                      }}
-                      className="hidden"
-                    />
-                    {settingsDraft.logoUrl ? (
-                      <div className="flex flex-wrap items-center gap-3 rounded-xl border border-navy-200 p-3">
-                        <img
-                          src={settingsDraft.logoUrl}
-                          alt="School logo preview"
-                          className="h-14 w-14 rounded-lg border border-navy-100 bg-white object-contain"
-                        />
-                        <div className="min-w-0 flex-1">
-                          <p className="text-sm font-semibold text-navy-800">Logo uploaded</p>
-                          <p className="text-xs text-navy-400">Shown on report cards and in your portal.</p>
-                        </div>
-                        <div className="flex flex-wrap gap-2">
-                          <button
-                            type="button"
-                            onClick={() => logoInputRef.current?.click()}
-                            className="inline-flex items-center gap-1.5 rounded-lg border border-navy-200 bg-white px-3 py-2 text-xs font-semibold text-navy-700 transition hover:border-brand-400 hover:text-brand-600"
-                          >
-                            <Upload className="h-3.5 w-3.5" /> Replace
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => setSettingsDraft((d) => ({ ...d, logoUrl: "" }))}
-                            className="inline-flex items-center gap-1.5 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-semibold text-rose-700 transition hover:bg-rose-100"
-                          >
-                            <X className="h-3.5 w-3.5" /> Remove
-                          </button>
-                        </div>
-                      </div>
-                    ) : (
-                      <button
-                        type="button"
-                        onClick={() => logoInputRef.current?.click()}
-                        className="flex w-full flex-col items-center gap-2 rounded-xl border-2 border-dashed border-navy-200 bg-navy-50/50 px-4 py-6 text-center transition hover:border-brand-400 hover:bg-brand-50/40"
-                      >
-                        <ImagePlus className="h-6 w-6 text-navy-300" />
-                        <span className="text-sm font-semibold text-navy-700">Upload your school&apos;s logo</span>
-                        <span className="text-xs text-navy-400">
-                          PNG, JPG, SVG or WebP · under 1 MB — no hosted URL needed.
-                        </span>
-                      </button>
-                    )}
-                    {logoError && <p className="mt-2 text-xs font-medium text-rose-600">{logoError}</p>}
-                  </div>
-
-                  <div className="mt-5">
-                    <span className="mb-1.5 block text-sm font-medium text-navy-700">School seal / signature</span>
-                    <input
-                      ref={sealInputRef}
-                      type="file"
-                      accept="image/png,image/jpeg,image/svg+xml,image/webp"
-                      onChange={(e) => {
-                        handleImageFile(e.target.files?.[0], "sealUrl", setSealError);
-                        e.target.value = ""; // allow re-picking the same file
-                      }}
-                      className="hidden"
-                    />
-                    {settingsDraft.sealUrl ? (
-                      <div className="flex flex-wrap items-center gap-3 rounded-xl border border-navy-200 p-3">
-                        <img
-                          src={settingsDraft.sealUrl}
-                          alt="School seal preview"
-                          className="h-14 w-14 rounded-full border border-navy-100 bg-white object-contain"
-                        />
-                        <div className="min-w-0 flex-1">
-                          <p className="text-sm font-semibold text-navy-800">Seal uploaded</p>
-                          <p className="text-xs text-navy-400">Printed on report cards next to the logo.</p>
-                        </div>
-                        <div className="flex flex-wrap gap-2">
-                          <button
-                            type="button"
-                            onClick={() => sealInputRef.current?.click()}
-                            className="inline-flex items-center gap-1.5 rounded-lg border border-navy-200 bg-white px-3 py-2 text-xs font-semibold text-navy-700 transition hover:border-brand-400 hover:text-brand-600"
-                          >
-                            <Upload className="h-3.5 w-3.5" /> Replace
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => setSettingsDraft((d) => ({ ...d, sealUrl: "" }))}
-                            className="inline-flex items-center gap-1.5 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-semibold text-rose-700 transition hover:bg-rose-100"
-                          >
-                            <X className="h-3.5 w-3.5" /> Remove
-                          </button>
-                        </div>
-                      </div>
-                    ) : (
-                      <button
-                        type="button"
-                        onClick={() => sealInputRef.current?.click()}
-                        className="flex w-full flex-col items-center gap-2 rounded-xl border-2 border-dashed border-navy-200 bg-navy-50/50 px-4 py-6 text-center transition hover:border-brand-400 hover:bg-brand-50/40"
-                      >
-                        <BadgeCheck className="h-6 w-6 text-navy-300" />
-                        <span className="text-sm font-semibold text-navy-700">Upload your school seal or signature</span>
-                        <span className="text-xs text-navy-400">
-                          PNG, JPG, SVG or WebP · under 1 MB — printed on report cards.
-                        </span>
-                      </button>
-                    )}
-                    {sealError && <p className="mt-2 text-xs font-medium text-rose-600">{sealError}</p>}
-                  </div>
-
-                  <div className="mt-6">
-                    <span className="mb-1.5 block text-sm font-medium text-navy-700">Notification history</span>
-                    <p className="mb-2 text-xs text-navy-400">
-                      Auto-archive notifications older than this many days — the inbox stays lean,
-                      and the history stays viewable from the bell&apos;s Archived tab. Parent and
-                      student reminders are never affected.
-                    </p>
-                    <div className="flex items-center gap-3">
-                      <input
-                        type="number"
-                        min={1}
-                        max={3650}
-                        value={settingsDraft.notificationRetentionDays}
-                        onChange={(e) =>
-                          setSettingsDraft((d) => ({
-                            ...d,
-                            notificationRetentionDays: Number(e.target.value) || 1,
-                          }))
-                        }
-                        aria-label="Notification retention in days"
-                        className="w-24 rounded-lg border border-navy-200 bg-white px-3 py-2 text-sm font-semibold text-navy-800 outline-none transition focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20"
-                      />
-                      <span className="text-sm text-navy-500">days</span>
-                    </div>
-                  </div>
-
-                  <div className="mt-6">
-                    <label className="flex cursor-pointer items-start gap-3">
-                      <input
-                        type="checkbox"
-                        checked={settingsDraft.reconcileDeletedReminders}
-                        onChange={(e) =>
-                          setSettingsDraft((d) => ({
-                            ...d,
-                            reconcileDeletedReminders: e.target.checked,
-                          }))
-                        }
-                        className="mt-0.5 h-4 w-4 shrink-0 rounded border-navy-300 accent-brand-600"
-                      />
-                      <span className="min-w-0">
-                        <span className="block text-sm font-medium text-navy-700">
-                          Keep deleted reminders in Reconcile &amp; forward
-                        </span>
-                        <span className="mt-0.5 block text-xs text-navy-400">
-                          When off, a reminder you delete from the inbox is also removed from the
-                          Reconcile &amp; forward list. Turn it on to keep deleted reminders eligible
-                          for forwarding if the student&apos;s parent is linked later.
-                        </span>
-                      </span>
-                    </label>
-                  </div>
-
-                  {settingsError && (
-                    <p className="mt-4 rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-medium text-rose-700">
-                      {settingsError}
-                    </p>
-                  )}
-
-                  <button
-                    onClick={saveSettings}
-                    disabled={settingsSaving}
-                    className="mt-6 inline-flex items-center gap-2 rounded-xl bg-brand-600 px-5 py-2.5 text-sm font-semibold text-white shadow-lg shadow-brand-600/30 transition hover:bg-brand-500 disabled:opacity-60"
-                  >
-                    {settingsSaving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
-                    Save settings
-                  </button>
-                  {settingsSaved && (
-                    <p className="mt-3 inline-flex items-center gap-1.5 text-sm font-semibold text-emerald-600">
-                      <CheckCircle2 className="h-4 w-4" /> Saved — applied across every portal now.
-                    </p>
-                  )}
-                </div>
-
-                {/* Live preview */}
-                <div className="h-fit overflow-hidden rounded-xl border border-navy-200">
-                  <div className="bg-navy-50 px-4 py-2 text-xs font-semibold uppercase tracking-wider text-navy-400">
-                    Live preview
-                  </div>
-                  <div className="p-5" style={{ backgroundColor: settingsDraft.brandColor }}>
-                    <div className="flex items-center justify-between rounded-lg bg-white p-4 shadow-lg">
-                      <div className="flex items-center gap-3">
-                        <div
-                          className="flex h-10 w-10 items-center justify-center overflow-hidden rounded-lg text-white"
-                          style={{ backgroundColor: settingsDraft.brandColor }}
-                        >
-                          {settingsDraft.logoUrl ? (
-                            <img
-                              src={settingsDraft.logoUrl}
-                              alt=""
-                              className="h-full w-full bg-white object-contain"
-                            />
-                          ) : (
-                            <School className="h-5 w-5" />
-                          )}
-                        </div>
-                        <div className="min-w-0">
-                          <p className="truncate text-sm font-bold text-navy-800">{session.school?.name}</p>
-                          <p className="text-xs text-navy-400">
-                            {session.school?.currentSession} · {session.school?.currentTerm}
-                          </p>
-                        </div>
-                      </div>
-                      <div className="flex shrink-0 items-center gap-2">
-                        {settingsDraft.sealUrl ? (
-                          <img
-                            src={settingsDraft.sealUrl}
-                            alt="School seal preview"
-                            className="h-10 w-10 rounded-full border-2 border-white bg-white object-contain shadow-sm"
-                          />
-                        ) : null}
-                        <span
-                          className="rounded-md px-2 py-1 text-xs font-bold text-white"
-                          style={{ backgroundColor: settingsDraft.brandColor }}
-                        >
-                          REPORT CARD
-                        </span>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </div>
-            </>
-          )}
+{activeTab === "settings" && (
+          <SettingsTab
+            settingsDraft={settingsDraft}
+            setSettingsDraft={setSettingsDraft}
+            settingsSaving={settingsSaving}
+            settingsError={settingsError}
+            settingsSaved={settingsSaved}
+            logoError={logoError}
+            sealError={sealError}
+            logoInputRef={logoInputRef}
+            sealInputRef={sealInputRef}
+            settingsColorWell={settingsColorWell}
+            session={session}
+            setTab={setTab}
+            saveSettings={saveSettings}
+            handleImageFile={handleImageFile}
+          />
+        )}
 
       {/* Report card viewer modal */}
       <ReportCardModal

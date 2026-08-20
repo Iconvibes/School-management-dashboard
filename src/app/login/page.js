@@ -101,7 +101,7 @@ export default function LoginPage() {
     fetch("/api/schools?limit=8")
       .then((r) => r.json())
       .then((data) => setResults(data.schools || []))
-      .catch(() => {});
+      .catch((e) => console.warn("[schools-search] failed:", e?.message));
   }, []);
 
   // Only show the demo school / demo account boxes when the seeded demo
@@ -111,7 +111,7 @@ export default function LoginPage() {
     fetch("/api/auth/demo-status")
       .then((r) => r.json())
       .then((d) => setDemoAvailable(!!d.enabled))
-      .catch(() => {});
+      .catch((e) => console.warn("[demo-status] failed:", e?.message));
   }, []);
 
   // Fresh account-status check whenever the credentials step opens — covers a
@@ -129,7 +129,7 @@ export default function LoginPage() {
         const match = (d.schools || [])[0];
         setSchoolStatus(match && match.status !== "active" ? match.status : "");
       })
-      .catch(() => {});
+      .catch((e) => console.warn("[school-status] failed:", e?.message));
     return () => {
       cancelled = true;
     };

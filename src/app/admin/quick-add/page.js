@@ -68,7 +68,7 @@ export default function QuickAddPage() {
         setSession(d);
         setClassArm(d.school?.activeArms?.[0] || "");
       })
-      .catch(() => {});
+      .catch((e) => { console.warn("[session] load failed:", e?.message); window.location.href = "/login"; });
   }, [router]);
 
   const names = useMemo(() => parseNames(namesText), [namesText]);

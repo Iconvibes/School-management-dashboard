@@ -243,7 +243,7 @@ export default function StudentDashboard() {
 
         <div className="mx-auto max-w-7xl px-5 py-8">
           {/* View tabs — My Report Card (default) / My Timetable (hash-linked) */}
-          <div className="mb-6 inline-flex rounded-xl bg-navy-100 p-1">
+          <div className="mb-6 inline-flex rounded-xl bg-navy-100 p-1 lg:hidden">
             <button
               onClick={() => {
                 setView("report");

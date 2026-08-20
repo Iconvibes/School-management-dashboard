@@ -58,6 +58,9 @@ export default function ParentDashboard() {
   // Fee reminders from the school (children with outstanding balances)
   const [reminders, setReminders] = useState([]);
   const [toast, setToast] = useState("");
+  const [attendanceDetail, setAttendanceDetail] = useState(null);
+  const [attendanceLoading, setAttendanceLoading] = useState(false);
+  const [showAttendanceDetail, setShowAttendanceDetail] = useState(false);
 
   // Refetch the children + fee ledger + reminders. Returns the body so
   // callers can inspect it (e.g. pick the first child on first load).
@@ -132,6 +135,23 @@ export default function ParentDashboard() {
       setTimeout(() => setToast(""), 3000);
     } finally {
       setReportLoading(false);
+    }
+  }
+
+  async function loadAttendance(studentId) {
+    setAttendanceLoading(true);
+    setAttendanceDetail(null);
+    try {
+      const res = await fetch(`/api/parent/attendance?studentId=${studentId}`);
+      const body = await res.json();
+      if (!res.ok) throw new Error(body.error || "Could not load attendance");
+      setAttendanceDetail(body);
+      setShowAttendanceDetail(true);
+    } catch (err) {
+      setToast(err.message);
+      setTimeout(() => setToast(""), 3000);
+    } finally {
+      setAttendanceLoading(false);
     }
   }
 
@@ -546,8 +566,121 @@ export default function ParentDashboard() {
                           ? `${selected.attendance.absent} days absent — please check in with the school`
                           : "Good attendance this term"}
                       </p>
+                      <button
+                        onClick={() => loadAttendance(selected.id)}
+                        disabled={attendanceLoading}
+                        className="mt-4 inline-flex w-full items-center justify-center gap-2 rounded-xl border border-navy-200 bg-white py-2.5 text-sm font-semibold text-navy-700 transition hover:border-brand-300 hover:text-brand-600 disabled:opacity-60"
+                      >
+                        <CalendarCheck className="h-4 w-4" />
+                        {attendanceLoading ? "Loading..." : "View daily attendance"}
+                      </button>
                     </div>
                   </div>
+
+
+                  {/* Payment history */}
+                  {selected.payments && selected.payments.length > 0 && (
+                    <div className="mt-6 rounded-2xl border border-navy-200/70 bg-white shadow-sm">
+                      <div className="border-b border-navy-100 px-6 py-4">
+                        <div className="flex items-center gap-2">
+                          <ReceiptText className="h-5 w-5 text-brand-600" />
+                          <h2 className="font-bold text-navy-800">Payment history</h2>
+                        </div>
+                        <p className="mt-0.5 text-sm text-navy-400">
+                          All payments for {selected.name} this term
+                        </p>
+                      </div>
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-left text-sm">
+                          <thead>
+                            <tr className="border-b border-navy-100 bg-navy-50/60 text-xs font-semibold uppercase tracking-wider text-navy-400">
+                              <th className="px-6 py-3">Date</th>
+                              <th className="px-6 py-3">Receipt</th>
+                              <th className="px-6 py-3">Method</th>
+                              <th className="px-6 py-3 text-right">Amount</th>
+                              <th className="px-6 py-3">Status</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {selected.payments.map((p) => (
+                              <tr key={p.id} className="border-b border-navy-50 transition hover:bg-navy-50/40">
+                                <td className="px-6 py-3.5 text-navy-600">
+                                  {new Date(p.createdAt).toLocaleDateString()}
+                                </td>
+                                <td className="px-6 py-3.5">
+                                  <span className="rounded-md bg-navy-100 px-2 py-1 text-xs font-bold text-navy-600">
+                                    {p.receiptNo}
+                                  </span>
+                                </td>
+                                <td className="px-6 py-3.5 text-navy-500">{p.method}</td>
+                                <td className="px-6 py-3.5 text-right font-bold text-navy-800">{naira(p.amount)}</td>
+                                <td className="px-6 py-3.5">
+                                  {p.status === "PENDING" ? (
+                                    <span className="inline-flex items-center gap-1.5 rounded-full bg-amber-50 px-2.5 py-1 text-xs font-bold text-amber-700 ring-1 ring-amber-600/20">
+                                      Pending
+                                    </span>
+                                  ) : (
+                                    <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-50 px-2.5 py-1 text-xs font-bold text-emerald-700 ring-1 ring-emerald-600/20">
+                                      Confirmed
+                                    </span>
+                                  )}
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Attendance detail */}
+                  {showAttendanceDetail && attendanceDetail && (
+                    <div className="mt-6 rounded-2xl border border-navy-200/70 bg-white shadow-sm">
+                      <div className="border-b border-navy-100 px-6 py-4">
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-2">
+                            <CalendarCheck className="h-5 w-5 text-amber-600" />
+                            <h2 className="font-bold text-navy-800">Daily attendance</h2>
+                          </div>
+                          <button
+                            onClick={() => setShowAttendanceDetail(false)}
+                            className="text-sm font-semibold text-navy-400 transition hover:text-navy-600"
+                          >
+                            Close
+                          </button>
+                        </div>
+                        <p className="mt-0.5 text-sm text-navy-400">
+                          {attendanceDetail.summary.present} present / {attendanceDetail.summary.absent} absent / {attendanceDetail.summary.total} days
+                        </p>
+                      </div>
+                      <div className="p-6">
+                        {attendanceDetail.records.length === 0 ? (
+                          <p className="text-center text-sm text-navy-400">No attendance records yet this term.</p>
+                        ) : (
+                          <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5">
+                            {attendanceDetail.records.map((r) => (
+                              <div
+                                key={r.date}
+                                className={`flex items-center gap-2 rounded-xl border px-3 py-2.5 text-sm ${
+                                  r.present
+                                    ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+                                    : "border-rose-200 bg-rose-50 text-rose-700"
+                                }`}
+                              >
+                                <span className={`h-2 w-2 rounded-full ${r.present ? "bg-emerald-500" : "bg-rose-500"}`} />
+                                <span className="font-medium">
+                                  {new Date(r.date + "T00:00:00").toLocaleDateString("en-GB", { day: "numeric", month: "short" })}
+                                </span>
+                                <span className="ml-auto text-xs font-bold">
+                                  {r.present ? "P" : "A"}
+                                </span>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
 
                   {/* Subjects */}
                   {reportPayload && reportPayload.student?.id === selected.id && (

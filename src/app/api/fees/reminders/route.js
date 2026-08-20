@@ -2,6 +2,8 @@ import { jsonError } from "@/lib/auth";
 import { store } from "@/lib/store";
 import { isDenied, requirePermission } from "@/lib/policy";
 import { reminderMessageSchema, firstValidationMessage } from "@/lib/validation";
+import { sendEmail } from "@/lib/mailer";
+import { feeReminderParent, feeReminderStudent } from "@/lib/email-templates";
 import { buildFeeReminder } from "@/lib/notifications";
 
 /**
@@ -164,6 +166,19 @@ export async function POST(request) {
       skipped.push({ studentId: entry.studentId, reason: "Notification failed" });
       continue;
     }
+
+    // Send real email if SMTP is configured (fire-and-forget, never blocks)
+    sendEmail({
+      to: recipient.email,
+      ...((toStudent ? feeReminderStudent : feeReminderParent)({
+        studentName: student.name,
+        className: student.assignedClass,
+        balance: entry.balance,
+        schoolName: school?.name,
+        message: toStudent ? (messageStudent || message) : message,
+        brandColor: school?.brandColor,
+      })),
+    }).catch(() => {});
 
     try {
       await store.logFeeAudit({

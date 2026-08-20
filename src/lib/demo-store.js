@@ -2277,6 +2277,28 @@ export async function getStudentAttendanceSummary(schoolId, studentId) {
   return { total: records.length, present, absent: records.length - present };
 }
 
+/**
+ * Daily attendance records for a student this term — the parent portal's
+ * detailed attendance view. Returns newest-first: [{ date, present }].
+ */
+export async function getStudentAttendanceRecords(schoolId, studentId) {
+  const school = schools.find((s) => s.id === schoolId);
+  const records = attendance.filter(
+    (a) =>
+      a.schoolId === schoolId &&
+      a.session === (school?.currentSession || "2025/2026") &&
+      a.term === (school?.currentTerm || "First Term") &&
+      a.records.some((r) => r.studentId === studentId)
+  );
+  return records
+    .map((a) => {
+      const rec = a.records.find((r) => r.studentId === studentId);
+      return { date: a.date, present: !!rec?.present };
+    })
+    .sort((a, b) => b.date.localeCompare(a.date));
+}
+
+
 // ---- Timetable ---------------------------------------------------------------
 
 /**
@@ -2408,7 +2430,7 @@ export async function getConflictScan(schoolId) {
  * resolved conflict objects, `conflictKeys` their stable identities for the
  * next diff, and `newConflictKeys` the ones that were new at scan time.
  */
-export async function saveConflictScan(schoolId, record) {
+export async function saveConflictScan(schoolId, record = {}) {
   let scan = conflictScans.find((c) => c.schoolId === schoolId);
   if (!scan) {
     scan = { id: nid("csc"), schoolId, createdAt: nowIso() };

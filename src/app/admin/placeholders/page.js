@@ -67,7 +67,7 @@ export default function PlaceholdersPage() {
         }
         setSession(d);
       })
-      .catch(() => {});
+      .catch((e) => { console.warn("[session] load failed:", e?.message); window.location.href = "/login"; });
   }, [router]);
 
   async function handleFile(file) {

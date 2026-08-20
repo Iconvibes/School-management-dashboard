@@ -1255,6 +1255,28 @@ export async function getStudentAttendanceSummary(schoolId, studentId) {
   return { total: docs.length, present, absent: docs.length - present };
 }
 
+/**
+ * Daily attendance records for a student this term — the parent portal's
+ * detailed attendance view. Returns newest-first: [{ date, present }].
+ */
+export async function getStudentAttendanceRecords(schoolId, studentId) {
+  await ready();
+  const school = await School.findById(schoolId);
+  const docs = await Attendance.find({
+    schoolId,
+    session: school?.currentSession || "2025/2026",
+    term: school?.currentTerm || "First Term",
+    "records.studentId": studentId,
+  });
+  return docs
+    .map((a) => {
+      const rec = a.records.find((r) => r.studentId.toString() === studentId);
+      return { date: a.date, present: !!rec?.present };
+    })
+    .sort((a, b) => b.date.localeCompare(a.date));
+}
+
+
 // ---- Timetable ---------------------------------------------------------------
 
 export async function getTimetable({ schoolId, classArm, day }) {

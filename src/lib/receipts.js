@@ -162,3 +162,30 @@ export function receiptsFromLedger(entry, billed = 0) {
   });
   return withBalance.reverse(); // newest first for the dashboard
 }
+
+
+/**
+ * Pick ALL payments (pending + confirmed) for a child from a fee-ledger
+ * entry, newest first. Unlike receiptsFromLedger (confirmed only), this
+ * includes PENDING payments so the parent can see the full payment history
+ * including submissions still awaiting school confirmation.
+ *
+ * @param {Object} entry  a fee-ledger row ({ payments: [...] })
+ */
+export function paymentsFromLedger(entry) {
+  const payments = entry?.payments || [];
+  const recNo = (p) => Number(String(p.receiptNo || "").replace(/\D/g, "")) || 0;
+  return [...payments]
+    .sort(
+      (a, b) => new Date(b.createdAt) - new Date(a.createdAt) || recNo(b) - recNo(a)
+    )
+    .map((p) => ({
+      id: p.id,
+      receiptNo: p.receiptNo,
+      amount: p.amount,
+      method: p.method,
+      note: p.note,
+      status: p.status || "CONFIRMED",
+      createdAt: p.createdAt,
+    }));
+}

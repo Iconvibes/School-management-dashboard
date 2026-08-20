@@ -1,6 +1,8 @@
 import { jsonError } from "@/lib/auth";
 import { store } from "@/lib/store";
 import { isDenied, requireAuth, requireOwnChild } from "@/lib/policy";
+import { sendEmail } from "@/lib/mailer";
+import { paymentNotification } from "@/lib/email-templates";
 import { buildPaymentNotification } from "@/lib/notifications";
 import { feePaymentSchema, firstValidationMessage } from "@/lib/validation";
 
@@ -92,6 +94,23 @@ export async function POST(request) {
       ...note,
       to: admins.map((a) => a.email),
     });
+
+    // Send real email to each admin if SMTP is configured (fire-and-forget)
+    for (const admin of admins) {
+      sendEmail({
+        to: admin.email,
+        ...paymentNotification({
+          studentName: child.name,
+          className: child.assignedClass,
+          parentName: parent?.name || "A parent",
+          amount: amt,
+          receiptNo: payment.receiptNo,
+          method: payment.method,
+          schoolName: school?.name,
+          brandColor: school?.brandColor,
+        }),
+      }).catch(() => {});
+    }
   } catch {
     // A notification failure must never fail a successful payment.
   }

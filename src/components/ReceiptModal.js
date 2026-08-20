@@ -100,7 +100,7 @@ export default function ReceiptModal({
             amount: payment.amount,
             method: payment.method,
           }),
-        }).catch(() => {});
+        }).catch((e) => console.warn("[receipt-analytics] failed:", e?.message));
       }
       setExporting(false);
     }

@@ -1,69 +1,72 @@
-/**
- * Transactional email — the safety-confirmation channel for account-level
- * actions (freezing, reactivating or restoring a school).
- *
- * Config (env):
- *   SMTP_HOST   — required to actually send (nodemailer transport)
- *   SMTP_PORT   — default 587 (465 implies implicit TLS)
- *   SMTP_USER   — optional login username
- *   SMTP_PASS   — optional login password
- *   MAIL_FROM   — sender address, default "Edutrack <no-reply@edutrack.app>"
- *
- * Without SMTP_HOST the mailer is a graceful no-op: it logs a notice and
- * returns { sent: false, transport: "disabled" } so demo/dev environments and
- * the route handlers never crash. Callers treat email as best-effort — the
- * action itself never depends on it.
- */
-
 import nodemailer from "nodemailer";
 
-const MAIL_FROM = process.env.MAIL_FROM || "Edutrack <no-reply@edutrack.app>";
+/**
+ * Email transport — initialised lazily on first send. When SMTP env vars are
+ * absent the module is a no-op (sendEmail returns null silently), so the app
+ * works identically without email configured.
+ *
+ * Required env vars (all optional — the app runs fine without them):
+ *   SMTP_HOST     — SMTP server hostname (e.g. smtp.gmail.com)
+ *   SMTP_PORT     — port (default 465 for TLS, 587 for STARTTLS)
+ *   SMTP_USER     — username / email address
+ *   SMTP_PASS     — password or app password
+ *   SMTP_FROM     — "From" address shown on outgoing emails
+ *   SMTP_SECURE   — "true" for TLS on port 465, "false" for STARTTLS on 587
+ */
 
-let cachedTransport = null;
+let _transporter = null;
 
-/** Lazily build the SMTP transport (only when SMTP_HOST is configured). */
-function transport() {
-  if (cachedTransport !== null) return cachedTransport;
+function getTransporter() {
+  if (_transporter) return _transporter;
+
   const host = process.env.SMTP_HOST;
-  if (!host) {
-    cachedTransport = null; // stay "unconfigured" — never retry per call
-    return null;
-  }
-  const port = Number(process.env.SMTP_PORT) || 587;
-  cachedTransport = nodemailer.createTransport({
+  if (!host) return null; // No SMTP configured — silently skip
+
+  _transporter = nodemailer.createTransport({
     host,
-    port,
-    secure: port === 465,
-    ...(process.env.SMTP_USER
-      ? { auth: { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS || "" } }
-      : {}),
+    port: Number(process.env.SMTP_PORT) || (process.env.SMTP_SECURE === "true" ? 465 : 587),
+    secure: process.env.SMTP_SECURE === "true",
+    auth: process.env.SMTP_USER
+      ? { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS }
+      : undefined,
   });
-  return cachedTransport;
+
+  return _transporter;
 }
 
 /**
- * Send a plain-text email. Resolves with a result object — it never throws,
- * so callers can fire-and-forget in a try/catch without crashing the request.
+ * Send an email. Returns the nodemailer info object on success, or null when
+ * SMTP is not configured (the caller should treat null as "skipped").
  *
- * @param {{ to: string, subject: string, text: string }} mail
- * @returns {Promise<{ sent: boolean, transport: "smtp"|"disabled", error?: string }>}
+ * @param {Object} opts
+ * @param {string} opts.to      — recipient email address
+ * @param {string} opts.subject — email subject line
+ * @param {string} opts.text    — plain-text body (required)
+ * @param {string} opts.html    — HTML body (optional, falls back to text)
+ * @returns {Promise<object|null>}
  */
-export async function sendMail({ to, subject, text }) {
-  const t = transport();
-  if (!t) {
-    console.warn(`[mailer] SMTP not configured — skipping "${subject}" → ${to}`);
-    return { sent: false, transport: "disabled" };
-  }
+export async function sendEmail({ to, subject, text, html }) {
+  const transporter = getTransporter();
+  if (!transporter) return null;
+
   try {
-    await t.sendMail({ from: MAIL_FROM, to, subject, text });
-    return { sent: true, transport: "smtp" };
+    const info = await transporter.sendMail({
+      from: process.env.SMTP_FROM || process.env.SMTP_USER || "EduTrack <no-reply@edutrack.app>",
+      to,
+      subject,
+      text,
+      html: html || text,
+    });
+    return info;
   } catch (err) {
-    console.error("[mailer] send failed:", err?.message || err);
-    return { sent: false, transport: "smtp", error: err?.message };
+    console.warn("[mailer] send failed:", err?.message);
+    return null;
   }
 }
 
-/** Test seam — inject a fake transport (or `null` to simulate unconfigured). */
-export function __setMailerTransport(t) {
-  cachedTransport = t;
+/**
+ * Check whether email delivery is configured.
+ */
+export function isEmailConfigured() {
+  return Boolean(process.env.SMTP_HOST);
 }
