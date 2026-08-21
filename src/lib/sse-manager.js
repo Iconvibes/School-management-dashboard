@@ -136,7 +136,13 @@ export function sendKeepalive() {
   }
 }
 
-// Auto-keepalive every 30 seconds
-if (typeof setInterval !== "undefined") {
-  setInterval(sendKeepalive, 30_000);
+// Auto-keepalive every 30 seconds — started explicitly to avoid keeping
+// the Node process alive during test runs (the timer prevents exit).
+let _keepaliveStarted = false;
+export function startKeepalive() {
+  if (_keepaliveStarted) return;
+  _keepaliveStarted = true;
+  if (typeof setInterval !== "undefined") {
+    setInterval(sendKeepalive, 30_000);
+  }
 }

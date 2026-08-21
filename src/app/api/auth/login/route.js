@@ -171,41 +171,59 @@ export async function POST(request) {
     );
   }
 
-  let ok = await bcrypt.compare(password, user.password);
-  // Parents sign in with their email plus ANY linked child's full name (e.g.
-  // "Adam Tope Johnson" → "adamtopejohnson") — one parent, several children,
-  // all reachable from the same session. The stored hash matches the most
-  // recently linked child; this fallback accepts the rest.
-  if (!ok && user.role === "PARENT") {
-    const children = await store.getChildren(user.id);
-    ok = matchesChildName(password, children);
+  // ── Password verification + school-status check ────────────────────
+  // When QUEUE_REDIS_URL is set, offload bcrypt to a BullMQ worker so a
+  // 100k-login burst is absorbed as a controlled stream (200/sec, 50
+  // concurrent) instead of saturating the event loop. Falls back to inline
+  // bcrypt when the queue is unavailable, times out, or errors.
+  // Lazy import: bullmq pulls in native addons that can slow module loading
+  const { getLoginQueue } = await import("@/lib/login-queue");
+  const queue = getLoginQueue();
+  let ok;
+  if (queue) {
+    try {
+      const job = await queue.add(
+        "verify",
+        { userId: user.id, password, role: user.role, schoolId },
+        { timeout: 10_000 }
+      );
+      const result = await job.waitUntilFinished(queue.events, 10_000);
+      if (!result.ok) {
+        return deny(result.status || 401, result.error);
+      }
+      ok = true;
+    } catch (queueErr) {
+      // Queue timeout or Redis outage — fall through to inline bcrypt
+      console.warn("[login-queue] queue unavailable, falling back to inline:", queueErr?.message);
+      ok = null; // sentinel: will run inline path below
+    }
   }
-  // Teachers sign in with their name plus the SCHOOL NAME as the password
-  // (slugged — case/spacing-insensitive) — the bootstrap credential, and a
-  // school rename never locks anyone out. Legacy email logins keep working
-  // through the stored hash above. Once the teacher has set their OWN
-  // password (passwordSet), the school-name fallback turns OFF — only their
-  // password works, so the public school name can't get back in.
-  if (!ok && user.role === "TEACHER" && !user.passwordSet) {
-    const schoolRec = await store.getSchoolById(user.schoolId);
-    ok = matchesSchoolName(password, schoolRec?.name);
+
+  // Inline bcrypt path (default, or fallback when queue is unavailable)
+  if (ok === null || ok === undefined) {
+    ok = await bcrypt.compare(password, user.password);
+    // Parents sign in with their email plus ANY linked child's full name
+    if (!ok && user.role === "PARENT") {
+      const children = await store.getChildren(user.id);
+      ok = matchesChildName(password, children);
+    }
+    // Teachers: school-name bootstrap credential
+    if (!ok && user.role === "TEACHER" && !user.passwordSet) {
+      const schoolRec = await store.getSchoolById(user.schoolId);
+      ok = matchesSchoolName(password, schoolRec?.name);
+    }
   }
+
   if (!ok) {
-    // Same warm, account-agnostic message as the unknown-user path — a wrong
-    // password must be indistinguishable from a missing account.
     return deny(
       401,
       "Sorry, those details didn't match what we have on file. Please double-check your email or name and password, then try again."
     );
   }
 
-  // Frozen or deleted school: block everyone except the founding SUPER_ADMIN,
-  // who must be able to get back in to reactivate (frozen) or restore
-  // (deleted, within the 30-day grace period). An EXPIRED deleted school is
-  // purged right here — the lazy check that guarantees the wipe happens even
-  // if the background sweeper hasn't run yet. All of this runs AFTER the
-  // password so a wrong password still gets the generic error — account
-  // status is never leaked to credential guessing.
+  // Frozen or deleted school: block everyone except the founding SUPER_ADMIN.
+  // The queue worker also checks this, but we re-check here for the inline
+  // path and as a safety net.
   const schoolRec = await store.getSchoolById(user.schoolId);
   if (schoolRec?.status === "frozen" && user.role !== "SUPER_ADMIN") {
     return deny(
@@ -218,7 +236,6 @@ export async function POST(request) {
       !schoolRec.deletedAt ||
       Date.parse(schoolRec.deletedAt) + store.SCHOOL_DELETION_GRACE_MS <= Date.now();
     if (graceOver) {
-      // Best-effort — the wipe must never be blocked by a store hiccup.
       await store.purgeSchool(user.schoolId).catch(() => {});
       return deny(
         403,

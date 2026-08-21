@@ -27,11 +27,16 @@ export async function connectDB() {
     cached.promise = mongoose
       .connect(MONGODB_URI, {
         bufferCommands: false,
-        // 10k-concurrent-user tuning. The default pool is 100; ops can raise
-        // or lower it per Mongo tier via MONGODB_POOL_SIZE without code
-        // changes. Fail-fast timeouts beat a request queueing on a dead
-        // replica for minutes.
-        maxPoolSize: Number(process.env.MONGODB_POOL_SIZE) || 100,
+        // 100k-concurrent-user tuning. At 100k users with 20-30 instances,
+        // the pool budget is: instances × maxPoolSize = total Mongo connections.
+        // 20 × 200 = 4,000 max (MongoDB Atlas M50+ supports 5,000+).
+        // minPoolSize keeps warm connections ready (avoids cold-connect
+        // latency on traffic bursts). maxIdleTimeMS releases stale connections.
+        // waitQueueTimeoutMS fails fast when the pool is saturated.
+        maxPoolSize: Number(process.env.MONGODB_POOL_SIZE) || 200,
+        minPoolSize: 10,
+        maxIdleTimeMS: 30000,
+        waitQueueTimeoutMS: 5000,
         serverSelectionTimeoutMS: 5000,
         connectTimeoutMS: 10000,
         // In production, index builds are an explicit deploy step

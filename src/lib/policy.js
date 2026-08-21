@@ -15,7 +15,7 @@
 
 import { getSession, jsonError } from "@/lib/auth";
 import { store } from "@/lib/store";
-import { cacheDel, cacheDelMany, cacheGet, cacheSet } from "@/lib/cache";
+import { cacheDel, cacheDelMany, cacheGetOrSet } from "@/lib/cache";
 import {
   can,
   mayEditUser,
@@ -56,15 +56,33 @@ const authSnapshotKey = (userId) => `auth:${userId}`;
  * Returns the lean snapshot (no PII — findAuthSnapshot already selects only
  * role/schoolId/arms/tokenVersion and the school status is re-read by the
  * store call itself), or null when the account is gone.
+ *
+ * Uses cacheGetOrSet for request coalescing: when 1000 requests for the same
+ * user hit simultaneously (e.g. after a cache TTL expiry), only ONE Mongo
+ * query fires — the other 999 await its result. Combined with the ±15%
+ * jittered TTL in cacheSet, this prevents thundering-herd stampedes at 100k
+ * concurrent users.
  */
 async function loadAuthSnapshot(userId, tokenVersion) {
   const key = authSnapshotKey(userId);
-  const cached = await cacheGet(key);
-  if (cached && (cached.tokenVersion || 0) === (tokenVersion || 0)) {
-    return cached;
+
+  // cacheGetOrSet coalesces concurrent fetches for the same key into one DB
+  // call. The fetcher only runs on cache miss — on hit, the cached value is
+  // returned immediately.
+  const user = await cacheGetOrSet(
+    key,
+    () => store.findAuthSnapshot(userId),
+    AUTH_SNAPSHOT_TTL_SECONDS
+  );
+
+  // TokenVersion safety net: if the cached snapshot was populated by a request
+  // with a different tokenVersion (e.g. a password change raced with a cache
+  // write), invalidate and re-fetch directly (no coalescing — this is rare).
+  if (user && (user.tokenVersion || 0) !== (tokenVersion || 0)) {
+    await cacheDel(key);
+    return store.findAuthSnapshot(userId);
   }
-  const user = await store.findAuthSnapshot(userId);
-  if (user) await cacheSet(key, user, AUTH_SNAPSHOT_TTL_SECONDS);
+
   return user;
 }
 

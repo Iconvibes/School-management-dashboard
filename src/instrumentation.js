@@ -61,11 +61,18 @@ export async function register() {
     // they're needed.
     const { startConflictScheduler } = await import("@/lib/conflict-scheduler");
     const { startDeletionSweeper } = await import("@/lib/deletion-sweeper");
+    const { startLoginWorker } = await import("@/lib/login-queue");
+    const { startKeepalive } = await import("@/lib/sse-manager");
     const { store } = await import("@/lib/store");
+    startKeepalive();
     if (g.__conflictScheduler) g.__conflictScheduler.stop();
     g.__conflictScheduler = startConflictScheduler({ store });
     if (g.__deletionSweeper) g.__deletionSweeper.stop();
     g.__deletionSweeper = startDeletionSweeper({ store });
+    // Login queue worker: offloads bcrypt verification to BullMQ when
+    // QUEUE_REDIS_URL is set. No-op when unset (inline bcrypt path).
+    if (g.__loginWorker) g.__loginWorker.close();
+    g.__loginWorker = startLoginWorker(store);
   }
 
   // Graceful shutdown (self-hosted `next start`): an orchestrator's SIGTERM

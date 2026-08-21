@@ -23,6 +23,20 @@ import {
 import { STAFF_ROLES } from "@/lib/permissions";
 import { findUserById } from "@/modules/users/store";
 
+// ── SSE push (lazy-loaded to avoid sse-manager's setInterval in tests) ──
+let _broadcastToSchool;
+async function pushSse(schoolId, event) {
+  if (!_broadcastToSchool) {
+    try {
+      const mod = await import("@/lib/sse-manager");
+      _broadcastToSchool = mod.broadcastToSchool;
+    } catch {
+      _broadcastToSchool = () => {}; // no-op if sse-manager unavailable
+    }
+  }
+  try { _broadcastToSchool(schoolId, event); } catch {}
+}
+
 // ── Helpers ─────────────────────────────────────────────────────────
 
 /** A notification is read for a given admin if their id is in readBy, OR the
@@ -58,7 +72,11 @@ export async function createNotification({ schoolId, kind, to, subject, preview,
   };
   notifications.push(notification);
   persist();
-  return clone(notification);
+  // Push to connected SSE clients for real-time notification delivery.
+  // No-op when no clients are connected or sse-manager is unavailable.
+  const cloned = clone(notification);
+  pushSse(schoolId, { type: "notification", data: cloned });
+  return cloned;
 }
 
 /**

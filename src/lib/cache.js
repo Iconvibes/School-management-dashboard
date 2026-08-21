@@ -52,7 +52,10 @@ async function redisGet(key) {
 
 async function redisSet(key, value, ttlSeconds) {
   if (!redis?.isReady) return;
-  await redis.set(key, JSON.stringify(value), { EX: ttlSeconds });
+  // Jitter the TTL ±15% so cache expirations spread across a window
+  // instead of clustering (thundering-herd prevention).
+  const jittered = Math.round(ttlSeconds * (0.85 + Math.random() * 0.3));
+  await redis.set(key, JSON.stringify(value), { EX: jittered });
 }
 
 async function redisDel(key) {
@@ -63,6 +66,41 @@ async function redisDel(key) {
 async function redisDelMany(keys) {
   if (!redis?.isReady || !keys.length) return;
   await redis.del(keys);
+}
+
+// ── Request coalescing (thundering-herd protection) ──────────────
+// When N requests miss the same cache key simultaneously, only ONE calls the
+// fetcher; the others await the same in-flight Promise. This prevents a
+// stampede of identical DB reads when a TTL expires for many users at once.
+const inflight = new Map(); // key -> Promise<value>
+
+/**
+ * Get a cached value, or call fetchFn to populate it. Concurrent callers
+ * for the same key share a single fetch — only one DB query fires.
+ *
+ * @param {string}   key          cache key
+ * @param {Function} fetchFn      async () => value (called only on miss)
+ * @param {number}   ttlSeconds   cache lifetime in seconds
+ * @returns {Promise<*>} the value (from cache or fetcher), or null
+ */
+export async function cacheGetOrSet(key, fetchFn, ttlSeconds) {
+  // Fast path: cached value exists.
+  const cached = await cacheGet(key);
+  if (cached !== null) return cached;
+
+  // If another request is already fetching this key, piggyback on it.
+  if (inflight.has(key)) return inflight.get(key);
+
+  const promise = fetchFn()
+    .then(async (value) => {
+      if (value != null) await cacheSet(key, value, ttlSeconds);
+      return value;
+    })
+    .catch(() => null)  // fetcher failure -> miss, not exception
+    .finally(() => inflight.delete(key));
+
+  inflight.set(key, promise);
+  return promise;
 }
 
 /**
@@ -96,13 +134,18 @@ export async function cacheGet(key) {
  * @param {number} ttlSeconds lifetime; 0 = expire immediately
  */
 export async function cacheSet(key, value, ttlSeconds) {
+  // Jitter the TTL ±15% so cache expirations spread across a window
+  // instead of clustering at a single instant (thundering-herd prevention).
+  // At 100k users with a 60s base TTL, expirations spread across a ~12s
+  // window instead of all firing at once.
+  const jittered = Math.round(ttlSeconds * (0.85 + Math.random() * 0.3));
   if (USE_MEMORY) {
     const fresh = JSON.parse(JSON.stringify(value)); // isolate from callers
-    mem.set(key, { expires: Date.now() + ttlSeconds * 1000, value: fresh });
+    mem.set(key, { expires: Date.now() + jittered * 1000, value: fresh });
     return;
   }
   try {
-    await redisSet(key, value, ttlSeconds);
+    await redisSet(key, value, jittered);
   } catch {
     // Redis hiccup -> best-effort miss; the next read goes to the store.
   }
