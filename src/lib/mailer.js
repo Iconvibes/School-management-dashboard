@@ -15,8 +15,18 @@ import nodemailer from "nodemailer";
  */
 
 let _transporter = null;
+let _testTransport = null;
+
+/**
+ * Inject a mock transport for testing. Pass null to reset to real SMTP.
+ * @param {object|null} transport — mock object with a sendMail method, or null
+ */
+export function __setMailerTransport(transport) {
+  _testTransport = transport;
+}
 
 function getTransporter() {
+  if (_testTransport) return _testTransport;
   if (_transporter) return _transporter;
 
   const host = process.env.SMTP_HOST;
@@ -62,6 +72,22 @@ export async function sendEmail({ to, subject, text, html }) {
     console.warn("[mailer] send failed:", err?.message);
     return null;
   }
+}
+
+/**
+ * Test-friendly send wrapper. Returns a structured result instead of
+ * the raw nodemailer info object.
+ *
+ * @param {Object} opts
+ * @param {string} opts.to      — recipient email address
+ * @param {string} opts.subject — email subject line
+ * @param {string} opts.text    — plain-text body
+ * @returns {Promise<{sent: boolean, transport: string}>}
+ */
+export async function sendMail({ to, subject, text }) {
+  const result = await sendEmail({ to, subject, text });
+  if (result === null) return { sent: false, transport: "disabled" };
+  return { sent: true, transport: "smtp" };
 }
 
 /**

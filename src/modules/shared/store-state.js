@@ -10,7 +10,8 @@ import os from "node:os";
 import path from "node:path";
 import { blindEmailIndex, blindPhoneIndex, decryptField, encryptField } from "@/lib/field-crypto";
 
-let seq = 100;
+export let seq = 100;
+export function setSeq(v) { seq = v; }
 export const nid = (prefix) => `${prefix}_${++seq}`;
 
 // ── In-memory data arrays ──────────────────────────────────────────
@@ -38,6 +39,8 @@ export const alumniRecords = [];
 export const pushSubscriptions = [];
 export const messages = [];
 export const notificationPreferences = [];
+export const erasureRequests = [];
+export const dataAccessLog = [];
 
 export let receiptSeq = 1000;
 export const incrementReceiptSeq = () => ++receiptSeq;
@@ -78,4 +81,5 @@ export const ALL_ARRAYS = [
   timetable, classAlertPrefs, conflictScans, termArchives, feeCarryovers,
   reminderBatches, schemesOfWork, classResources, alumniRecords,
   pushSubscriptions, messages, notificationPreferences,
+  erasureRequests, dataAccessLog,
 ];

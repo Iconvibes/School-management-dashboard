@@ -85,6 +85,7 @@ import TeacherPerformance from "@/components/admin/TeacherPerformance";
 import AlumniTab from "@/components/admin/AlumniTab";
 import EngagementTab from "@/components/admin/EngagementTab";
 import BranchesTab from "@/components/admin/BranchesTab";
+import ComplianceTab from "@/components/admin/ComplianceTab";
 import { AdminProvider } from "@/components/admin/context/AdminContext";
 import { armAlreadyExists } from "@/lib/arms";
 import { downloadBlob, toCSV, withBOM } from "@/lib/csv";
@@ -358,7 +359,7 @@ export default function AdminDashboard() {
   useEffect(() => {
     const applyHash = () => {
       const hash = window.location.hash.replace("#", "");
-      if (["classes", "teachers", "roles", "logins", "students", "fees", "reports", "timetable", "archives", "settings", "scheme", "risk", "performance", "alumni", "engagement", "branches"].includes(hash)) setTab(hash);
+      if (["classes", "teachers", "roles", "logins", "students", "fees", "reports", "timetable", "archives", "settings", "scheme", "risk", "performance", "alumni", "engagement", "branches", "compliance"].includes(hash)) setTab(hash);
     };
     applyHash();
     window.addEventListener("hashchange", applyHash);
@@ -1690,6 +1691,7 @@ export default function AdminDashboard() {
     ...(isSuper ? [{ key: "alumni", label: "Alumni" }] : []),
     ...(isSuper ? [{ key: "engagement", label: "Parent Engagement" }] : []),
     ...(isSuper ? [{ key: "branches", label: "Branches" }] : []),
+    ...(isSuper ? [{ key: "compliance", label: "Compliance" }] : []),
   ];
   // A role-specific hash (e.g. /admin/dashboard#fees as a BURSAR) must not
   // land on a tab they can't see — fall back to the first visible tab.
@@ -2241,6 +2243,10 @@ export default function AdminDashboard() {
 
         {activeTab === "branches" && (
           <BranchesTab session={session} />
+        )}
+
+        {activeTab === "compliance" && (
+          <ComplianceTab session={session} />
         )}
 
       {/* Report card viewer modal */}

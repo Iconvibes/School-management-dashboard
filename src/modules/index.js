@@ -143,3 +143,16 @@ export {
   deleteAlumni,
   getAlumniStats,
 } from "./alumni/store";
+
+// Compliance (GDPR: erasure requests, data access audit, consent)
+export {
+  createErasureRequest,
+  getErasureRequest,
+  listErasureRequests,
+  reviewErasureRequest,
+  executeErasureRequest,
+  logDataAccess,
+  listDataAccessLog,
+  recordConsent,
+  withdrawConsent,
+} from "./compliance/store";

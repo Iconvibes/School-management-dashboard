@@ -89,8 +89,8 @@ export default function SiteFooter() {
             © {new Date().getFullYear()} Edutrack. Built for modern schools.
           </p>
           <div className="flex items-center gap-5 text-sm text-navy-400">
-            <Link href="/trust" className="transition hover:text-white">Privacy</Link>
-            <Link href="/trust" className="transition hover:text-white">Security</Link>
+            <Link href="/privacy" className="transition hover:text-white">Privacy Policy</Link>
+            <Link href="/trust" className="transition hover:text-white">Trust & Security</Link>
             <Link href="/contact" className="transition hover:text-white">Support</Link>
           </div>
         </div>

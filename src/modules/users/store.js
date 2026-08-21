@@ -219,7 +219,10 @@ export async function deleteUser(id) {
 
 // ── Role Audit ──────────────────────────────────────────────────────
 
-export async function logRoleAudit({ schoolId, actorId = "", actorName, actorRole = "", targetId = "", targetName = "", fromRole = "", toRole }) {
+export async function logRoleAudit({
+  schoolId, actorId = "", actorName, actorRole = "",
+  targetId = "", targetName = "", fromRole = "", toRole,
+}) {
   const entry = { id: nid("rla"), schoolId, actorId, actorName: actorName || "Unknown", actorRole, targetId, targetName: targetName || "Unknown", fromRole, toRole, createdAt: nowIso() };
   roleAudit.push(entry); persist(); return clone(entry);
 }

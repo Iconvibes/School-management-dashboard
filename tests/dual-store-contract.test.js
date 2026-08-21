@@ -30,7 +30,7 @@ function functionMap(mod) {
     if (typeof val === "function") {
       // fn.length = declared parameter count
       // fn.toString().match(...) extracts declared param names
-      const src = val.toString();
+      const src = val.toString().replace(/\r\n/g, "\n");
       const paramMatch = src.match(/\(([^)]*)\)/);
       const params = paramMatch
         ? paramMatch[1].split(",").map((p) => p.trim().split("=")[0].trim()).filter(Boolean)

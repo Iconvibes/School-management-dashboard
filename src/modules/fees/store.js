@@ -90,7 +90,11 @@ export async function confirmFeePayment({ schoolId, paymentId }) {
   return clone(payment);
 }
 
-export async function logFeeAudit({ schoolId, action, actorId, actorName, actorRole, studentId, studentName, classArm, receiptNo, amount, method, note }) {
+export async function logFeeAudit({
+  schoolId, action, actorId, actorName, actorRole,
+  studentId, studentName, classArm, receiptNo,
+  amount, method, note,
+}) {
   const entry = { id: nid("faud"), schoolId, action, actorId, actorName, actorRole, studentId, studentName, classArm, receiptNo, amount, method, note, createdAt: nowIso() };
   feeAudit.push(entry);
   persist();
@@ -98,5 +102,13 @@ export async function logFeeAudit({ schoolId, action, actorId, actorName, actorR
 }
 
 export async function listFeeAudit(schoolId, { limit = 100 } = {}) {
-  return feeAudit.filter((a) => a.schoolId === schoolId).sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt)).slice(0, limit).map(clone);
+  return feeAudit
+    .filter((e) => e.schoolId === schoolId)
+    .sort(
+      (a, b) =>
+        new Date(b.createdAt) - new Date(a.createdAt) ||
+        Number(b.id.replace(/\D/g, "")) - Number(a.id.replace(/\D/g, ""))
+    )
+    .slice(0, limit)
+    .map(clone);
 }

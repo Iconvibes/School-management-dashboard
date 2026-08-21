@@ -25,6 +25,8 @@ import {
   X,
 } from "lucide-react";
 import Sidebar from "@/components/Sidebar";
+import ExportMyDataButton from "@/components/ExportMyDataButton";
+import RequestErasureButton from "@/components/RequestErasureButton";
 import ReportCardModal from "@/components/ReportCardModal";
 import PrintableTimetable from "@/components/PrintableTimetable";
 import { gradeBadgeClasses, standingFromAverage, standingRemark, ordinal } from "@/lib/grading";
@@ -525,14 +527,18 @@ export default function StudentDashboard() {
                     ? `${summary.subjects} subjects · Avg ${summary.average}%`
                     : "Results will appear here once your teachers record them"}
                 </p>
-                <button
-                  onClick={() => { setPwModal(true); setPwDone(false); setPwError(""); setPwForm({ current: "", newPw: "", confirm: "" }); }}
-                  className="mt-3 inline-flex items-center gap-1.5 rounded-lg bg-white/10 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-white/20"
-                >
-                  <Lock className="h-3.5 w-3.5" />
-                  Change password
-                </button>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <button
+                    onClick={() => { setPwModal(true); setPwDone(false); setPwError(""); setPwForm({ current: "", newPw: "", confirm: "" }); }}
+                    className="inline-flex items-center gap-1.5 rounded-lg bg-white/10 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-white/20"
+                  >
+                    <Lock className="h-3.5 w-3.5" />
+                    Change password
+                  </button>
+                  <ExportMyDataButton />
+                </div>
               </div>
+              <RequestErasureButton className="!bg-white/10 hover:!bg-white/20" />
             </div>
           </div>
 

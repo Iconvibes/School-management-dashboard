@@ -47,6 +47,17 @@ export async function POST(request) {
     password,
   });
 
+  // GDPR: Record consent — the school administrator consents to data
+  // processing by registering the school and enrolling students/staff.
+  if (typeof store.recordConsent === "function") {
+    await store.recordConsent({
+      schoolId: school.id,
+      userId: user.id,
+      consentType: "REGISTRATION",
+      detail: `School registered by ${adminName}. Data processing consent obtained at registration.`,
+    });
+  }
+
   // Never leak the password hash back to the client
   const { password: _pw, ...safeUser } = user;
 

@@ -34,7 +34,6 @@ import {
   nowIso,
   persist,
   publicUser,
-  blindEmailIndex,
 } from "@/modules/shared/store-state";
 
 // Re-export getFeeLedger from fees module (used in rolloverTerm)
@@ -405,59 +404,98 @@ export async function setSchoolStatus(schoolId, status) {
 }
 
 export async function getDashboardStats(schoolId) {
+  const schoolUsers = users.filter((u) => u.schoolId === schoolId);
+  const students = schoolUsers.filter((u) => u.role === "STUDENT");
+  const teachers = schoolUsers.filter((u) => u.role === "TEACHER");
+  const paidTeachers = teachers.filter((t) => t.payrollStatus === "PAID");
+  const feePaid = students.filter((s) => s.feePaid);
+  const schoolScores = scores.filter((s) => s.schoolId === schoolId);
+
+  const byArm = {};
+  students.forEach((s) => {
+    byArm[s.assignedClass] = (byArm[s.assignedClass] || 0) + 1;
+  });
+
+  // Fee amounts — scoped to the school's CURRENT session+term so the
+  // overview reflects "this term" (after a rollover, the old term's payments
+  // and structures are out of scope). Only CONFIRMED payments count.
   const school = schools.find((s) => s.id === schoolId);
-  if (!school) return null;
-
-  const schoolStudents = users.filter((u) => u.schoolId === schoolId && u.role === "STUDENT");
-  const schoolTeachers = users.filter((u) => u.schoolId === schoolId && u.role === "TEACHER");
-  const schoolParents = users.filter((u) => u.schoolId === schoolId && u.role === "PARENT");
-
-  const today = new Date().toISOString().split("T")[0];
-  const todayAttendance = attendance.filter(
-    (a) => a.schoolId === schoolId && a.date === today
+  const currentSession = school?.currentSession || "2025/2026";
+  const currentTerm = school?.currentTerm || "First Term";
+  const schoolPayments = feePayments.filter(
+    (p) =>
+      p.schoolId === schoolId &&
+      p.session === currentSession &&
+      p.term === currentTerm
   );
-  const presentToday = todayAttendance.reduce(
-    (sum, a) => sum + a.records.filter((r) => r.present).length, 0
-  );
+  const totalBilled = feeStructures
+    .filter(
+      (f) =>
+        f.schoolId === schoolId &&
+        f.session === currentSession &&
+        f.term === currentTerm
+    )
+    .reduce((acc, f) => acc + f.amount * (byArm[f.classArm] || 0), 0);
+  const totalCollected = schoolPayments
+    .filter((p) => p.status !== "PENDING")
+    .reduce((acc, p) => acc + p.amount, 0);
+  const pendingPayments = schoolPayments.filter((p) => p.status === "PENDING");
 
-  // Fee stats for current term
-  const currentSession = school.currentSession || "2025/2026";
-  const currentTerm = school.currentTerm || "First Term";
-  const termPayments = feePayments.filter(
-    (p) => p.schoolId === schoolId && p.session === currentSession && p.term === currentTerm && p.status !== "PENDING"
-  );
-  const totalCollected = termPayments.reduce((sum, p) => sum + p.amount, 0);
+  // Fee collection timeline — confirmed collections per calendar day for the
+  // CURRENT term, ascending, capped to the last 30 days.
+  const cutoff30 = Date.now() - 30 * 24 * 60 * 60 * 1000;
+  const byDay = {};
+  schoolPayments
+    .filter((p) => p.status !== "PENDING" && Date.parse(p.createdAt) >= cutoff30)
+    .forEach((p) => {
+      const day = String(p.createdAt).slice(0, 10);
+      byDay[day] = (byDay[day] || 0) + p.amount;
+    });
+  const collectionTimeline = Object.keys(byDay)
+    .sort()
+    .map((date) => ({ date, amount: byDay[date] }));
 
-  // Recent notifications
-  const recentNotifications = notifications
-    .filter((n) => n.schoolId === schoolId)
-    .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
-    .slice(0, 5);
-
-  // Conflict scan
-  const conflictScan = conflictScans.find((c) => c.schoolId === schoolId);
+  // Attendance trend — present/absent counts per SCHOOL DAY for the current
+  // term, ascending, last 7 days.
+  const attByDay = {};
+  attendance
+    .filter(
+      (a) =>
+        a.schoolId === schoolId &&
+        a.session === currentSession &&
+        a.term === currentTerm
+    )
+    .forEach((a) => {
+      const d = a.date;
+      if (!attByDay[d]) attByDay[d] = { present: 0, absent: 0 };
+      a.records.forEach((r) => {
+        if (r.present) attByDay[d].present += 1;
+        else attByDay[d].absent += 1;
+      });
+    });
+  const attendanceTrend = Object.keys(attByDay)
+    .sort()
+    .slice(-7)
+    .map((date) => ({ date, ...attByDay[date] }));
 
   return {
-    totalStudents: schoolStudents.length,
-    totalTeachers: schoolTeachers.length,
-    totalParents: schoolParents.length,
-    attendanceToday: {
-      present: presentToday,
-      total: todayAttendance.reduce((sum, a) => sum + a.records.length, 0),
-      rate: todayAttendance.reduce((sum, a) => sum + a.records.length, 0) > 0
-        ? Math.round((presentToday / todayAttendance.reduce((sum, a) => sum + a.records.length, 0)) * 100)
-        : 0,
+    totalStudents: students.length,
+    activeTeachers: teachers.length,
+    payrollPaid: paidTeachers.length,
+    payrollPending: teachers.length - paidTeachers.length,
+    feeCollected: feePaid.length,
+    feeRate: students.length ? Math.round((feePaid.length / students.length) * 100) : 0,
+    feeCollectedAmount: totalCollected,
+    feeOutstandingAmount: Math.max(0, totalBilled - totalCollected),
+    feeBilledAmount: totalBilled,
+    pendingPayments: {
+      count: pendingPayments.length,
+      amount: pendingPayments.reduce((acc, p) => acc + p.amount, 0),
     },
-    feeCollection: {
-      total: totalCollected,
-      collected: totalCollected,
-      outstanding: 0,
-    },
-    recentNotifications,
-    conflictScan: conflictScan ? {
-      lastRunAt: conflictScan.lastRunAt,
-      conflictCount: (conflictScan.conflicts?.teacher?.length || 0) + (conflictScan.conflicts?.arm?.length || 0),
-    } : null,
+    classDistribution: byArm,
+    totalScoreRecords: schoolScores.length,
+    collectionTimeline,
+    attendanceTrend,
   };
 }
 

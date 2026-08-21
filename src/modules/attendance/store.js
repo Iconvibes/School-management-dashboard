@@ -2,7 +2,7 @@
  * Attendance module — demo store implementation.
  * Functions: getAttendance, saveAttendance, getStudentAttendanceSummary, getStudentAttendanceRecords
  */
-import { attendance as attendanceArray, schools, clone, nowIso, persist } from "@/modules/shared/store-state";
+import { attendance as attendanceArray, schools, nid, clone, nowIso, persist } from "@/modules/shared/store-state";
 
 export async function getAttendance(schoolId, classArm, date) {
   const records = attendanceArray.filter((a) => a.schoolId === schoolId && a.classArm === classArm && a.date === date);
@@ -10,11 +10,29 @@ export async function getAttendance(schoolId, classArm, date) {
 }
 
 export async function saveAttendance(schoolId, classArm, date, records) {
-  const existing = attendanceArray.findIndex((a) => a.schoolId === schoolId && a.classArm === classArm && a.date === date);
-  const record = { schoolId, classArm, date, records, createdAt: nowIso() };
-  if (existing >= 0) attendanceArray[existing] = record; else attendanceArray.push(record);
+  const school = schools.find((s) => s.id === schoolId);
+  let rec = attendanceArray.find(
+    (a) => a.schoolId === schoolId && a.classArm === classArm && a.date === date
+  );
+  if (!rec) {
+    rec = {
+      id: nid("att"),
+      schoolId,
+      classArm,
+      date,
+      session: school?.currentSession || "2025/2026",
+      term: school?.currentTerm || "First Term",
+      records: [],
+      createdAt: nowIso(),
+    };
+    attendanceArray.push(rec);
+  }
+  rec.records = records.map((r) => ({
+    studentId: r.studentId,
+    present: !!r.present,
+  }));
   persist();
-  return clone(record);
+  return clone(rec);
 }
 
 export async function getStudentAttendanceSummary(schoolId, studentId) {
