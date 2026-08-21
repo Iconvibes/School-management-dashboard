@@ -8,10 +8,22 @@ Every school gets a fully isolated tenant: students, teachers, scores and payrol
 
 - **Automated Report Cards** — A4-printable PDF report cards (jsPDF + html2canvas) with school branding and signature blocks.
 - **Multi-Class Arms Engine** — model any stream (SS1 Science, SS1 Arts, JSS…), each with its own grading matrix.
-- **Teacher Payroll Tracking** — one-click Paid / Pending toggles from the admin portal.
 - **Instant Grading Matrix** — enter CA (out of 40) and Exam (out of 60); totals and letter grades compute live.
+- **Attendance Tracking** — daily class registers with one-tap marking; attendance summaries flow onto every report card.
+- **Fee Management** — structures per class arm, termly billing, partial payments with live balances, auto-receipts, defaulter lists, and online Pay Now for parents.
+- **Teacher Payroll Tracking** — one-click Paid / Pending toggles from the admin portal.
+- **Parent Portal** — parents track report cards, attendance and fee balances for all their linked children, with one-click Pay Now and receipts.
+- **Messaging** — in-app direct messages between parents, students, and staff with read receipts and conversation threads.
+- **Push Notifications** — web push subscriptions for fee reminders, report card alerts, and class announcements.
+- **Timetable Builder** — weekly schedule editor with conflict detection, bell-schedule editor, and printable teacher timetables.
+- **Scheme of Work** — teachers create and share termly schemes of work per subject and class arm.
+- **Alumni Tracking** — track graduates, university placements, and career outcomes.
+- **Teacher Performance** — analytics dashboards for teacher engagement and effectiveness.
+- **Multi-Branch Support** — school chains can manage multiple campuses from one tenant.
+- **GDPR & Privacy Compliance** — data export (DSAR), erasure requests with admin approval workflow, data access audit log, and consent tracking. Full privacy policy page at `/privacy`.
 - **Role-Based Portals** — dedicated dashboards for Super Admin/Bursar/Registrar (shared console), Teacher, Student and Parent.
 - **Multi-Tenant Isolation** — every query is scoped by `schoolId` and verified server-side.
+- **Installable PWA** — install on Android phones and Windows PCs like a native app.
 
 ## 🚀 Getting Started
 
@@ -36,6 +48,7 @@ becomes the first school's admin. In dev/test the demo seed is on by default:
 | Super Admin  | `admin@edutrack.app`   | `admin123`  |
 | Teacher      | `a.okafor@edutrack.app`| `teacher123`|
 | Student      | `k.adebayo@edutrack.app`| `student123`|
+| Parent       | linked via admin dashboard | student's name as password |
 
 Set `SEED_DEMO_SCHOOL=0` to disable the demo seed even in dev; `SEED_DEMO_SCHOOL=1` to
 force it even in production.
@@ -91,19 +104,68 @@ by `src/proxy.js` automatically.
 
 ```
 src/
-  app/                 # Pages (App Router) + API routes
+  app/                     # Pages (App Router) + API routes
     api/
-      auth/            # register, login, logout, me
-      school/          # tenant settings & onboarding
-      users/           # student/teacher management, payroll & fee toggles
-      scores/          # batch grading + student report data
-      admin/stats/     # dashboard metrics
-    admin/dashboard/   # Super Admin portal
-    teacher/dashboard/ # Grading matrix
-    student/dashboard/ # Report card + PDF export
-  components/          # Logo, Sidebar, MetricCard, Modal, ReportCard
-  lib/                 # db, auth (JWT), grading, store (Mongo ⇄ demo)
-  models/              # School, User, Score (Mongoose)
+      auth/                # register, login, logout, me
+      admin/               # stats, erasure requests, data access log, digests
+      school/              # tenant settings, status, onboarding, reminder templates
+      users/               # student/teacher/staff management, roles, payroll
+      scores/              # batch grading + student report data
+      fees/                # structures, payments, ledger, reminders, reconcile
+      attendance/          # daily registers + summaries
+      messages/            # in-app direct messaging
+      notifications/       # notification CRUD + read state
+      push/                # web push subscriptions
+      timetable/           # schedule CRUD + health/conflict scan
+      reports/             # report card generation
+      resources/           # class resources
+      scheme/              # scheme of work
+      alumni/              # alumni management
+      me/                  # GDPR data export + erasure request (per-user)
+    admin/dashboard/       # Super Admin / Bursar / Registrar portal
+    teacher/dashboard/     # Grading matrix + attendance
+    student/dashboard/     # Report card + timetable + fee status
+    parent/dashboard/      # Children's reports, fees, messaging
+    privacy/               # GDPR privacy policy page
+    onboarding/            # 6-step first-run wizard (arms, session, teachers, fees, branding)
+    login/ register/       # Auth pages with role selector
+
+  models/                  # 27 Mongoose schemas
+    School, User, Score, Attendance, FeeStructure, FeePayment,
+    FeeCarryover, FeeAudit, TimetableEntry, TermArchive, ConflictScan,
+    Notification, NotificationPreference, Message, PushSubscription,
+    DigestPref, Digest, ReminderBatch, RoleAudit, SchemeOfWork,
+    ClassResource, ClassAlertPref, Alumni, Branch, Lead,
+    ErasureRequest, DataAccessLog
+
+  modules/                 # Domain modules (shared in-memory arrays for demo store)
+    school/ users/ scores/ fees/ attendance/ communications/
+    timetable/ grading/ resources/ alumni/ compliance/
+
+  components/
+    admin/                 # 19 admin tab components
+      OverviewTab, TeachersTab, StudentsTab, FeesTab, ReportsTab,
+      TimetableTab, ClassesTab, RolesTab, LoginsTab, ArchivesTab,
+      SettingsTab, SchemeOfWorkTab, RiskAlerts, TeacherPerformance,
+      AlumniTab, EngagementTab, BranchesTab, ComplianceTab
+    ExportMyDataButton.js  # GDPR data export (DSAR)
+    RequestErasureButton.js # GDPR right to erasure
+    ReportCardModal, PrintableTimetable, MessagingPanel, ...
+
+  lib/                     # Core libraries
+    store.js               # Unified data-access layer (demo ⇄ Mongo)
+    demo-store.js          # In-memory store (thin facade over modules/)
+    mongo-store.js         # Mongoose-backed store
+    db.js                  # MongoDB connection + instrumentation
+    auth.js / token.js     # JWT signing, verification, session management
+    policy.js              # requireAuth, requirePermission, scope guards
+    permissions.js         # Role → action matrix, can()
+    portal-guard.js        # Role → portal mapping, ROLE_HOME
+    field-crypto.js        # AES-256-GCM PII encryption + blind indexes
+    mailer.js              # SMTP email delivery (optional)
+    grading.js             # Grading scales, position ranking, remarks
+    timetable.js           # Period/break/bell schedule helpers
+    validation.js          # Zod schemas for API input validation
 ```
 
 ## 🔐 Security & Authorization
@@ -263,6 +325,16 @@ page that re-checks its own role client-side:
 - The proxy and portal-guard are covered by `tests/portal-guard.test.js`;
   session revalidation by `tests/policy.test.js`; the matrix by
   `tests/permissions.test.js`; role changes by `tests/roles.test.js`.
+
+## 🔒 GDPR & Privacy Compliance
+
+EduTrack implements GDPR Articles 5, 6, 15, 17, 30 and NDPR compliance:
+
+- **Data Export (DSAR)** — any authenticated user can download all their personal data as a structured JSON file via "Export My Data" (`GET /api/me/export`). Students get scores, attendance, and fees; parents get their children's data; teachers get timetable and schemes of work.
+- **Right to Erasure** — users submit deletion requests via `POST /api/me/erasure-request`. Requests go through a PENDING → APPROVED → EXECUTED lifecycle with admin review. Execution cascade-deletes the user's scores, attendance, fee payments, carryovers, and timetable entries.
+- **Data Access Audit Log** — every data access event is recorded (who, what, when) in `DataAccessLog` for GDPR Article 30 compliance. The admin can view and filter the log via the Compliance tab.
+- **Consent Tracking** — consent is recorded at school registration and can be withdrawn. All consent events are logged in the audit trail.
+- **Privacy Policy** — a comprehensive 14-section privacy policy page at `/privacy` covering data collection, legal bases, retention, security, children's data, cookies, and user rights.
 
 ## 💾 Backup & Disaster Recovery
 
