@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { warn } from "@/lib/log";
 import {
   UserPlus,
   Users,
@@ -16,7 +17,7 @@ import {
   Download,
   ClipboardList,
 } from "lucide-react";
-import Logo from "@/components/Logo";
+import AdminLayout from "@/components/admin/AdminLayout";
 import { parseNames } from "@/lib/quick-add";
 import { downloadBlob, toCSV, withBOM } from "@/lib/csv";
 import { can } from "@/lib/permissions";
@@ -68,7 +69,7 @@ export default function QuickAddPage() {
         setSession(d);
         setClassArm(d.school?.activeArms?.[0] || "");
       })
-      .catch((e) => { console.warn("[session] load failed:", e?.message); window.location.href = "/login"; });
+      .catch((e) => { warn("session", "load failed:", e?.message); window.location.href = "/login"; });
   }, [router]);
 
   const names = useMemo(() => parseNames(namesText), [namesText]);
@@ -106,26 +107,7 @@ export default function QuickAddPage() {
   const arms = session?.school?.activeArms || [];
 
   return (
-    <main className="flex min-h-screen flex-1 flex-col bg-navy-50">
-      {/* Header */}
-      <header className="sticky top-0 z-30 border-b border-navy-200/70 bg-white/80 backdrop-blur-lg">
-        <div className="mx-auto flex h-16 max-w-3xl items-center justify-between px-5">
-          <Logo />
-          <div className="flex items-center gap-3">
-            <span className="hidden items-center gap-1.5 rounded-full bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-700 ring-1 ring-emerald-600/20 sm:flex">
-              <ShieldCheck className="h-3.5 w-3.5" /> Super Admin
-            </span>
-            <Link
-              href="/admin/dashboard"
-              className="text-sm font-medium text-navy-500 transition hover:text-brand-600"
-            >
-              Back to dashboard →
-            </Link>
-          </div>
-        </div>
-      </header>
-
-      <div className="mx-auto w-full max-w-3xl flex-1 px-5 py-10">
+    <AdminLayout activeTab="quick-add">
         {error && (
           <div className="mb-6 flex items-start gap-2 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-medium text-rose-700">
             <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
@@ -388,7 +370,6 @@ export default function QuickAddPage() {
             </div>
           </div>
         )}
-      </div>
-    </main>
+    </AdminLayout>
   );
 }

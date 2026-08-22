@@ -28,6 +28,7 @@
  *   }
  */
 import { Queue, Worker } from "bullmq";
+import * as log from "@/lib/log";
 
 const QUEUE_NAME = "login-verify";
 const QUEUE_REDIS_URL = process.env.QUEUE_REDIS_URL;
@@ -90,7 +91,7 @@ export function startLoginWorker(store) {
   );
 
   _worker.on("failed", (job, err) => {
-    console.warn(`[login-queue] job ${job?.id} failed:`, err?.message);
+    log.warn("login-queue", `job ${job?.id} failed:`, err?.message);
   });
 
   return _worker;

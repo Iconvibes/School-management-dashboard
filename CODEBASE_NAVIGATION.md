@@ -3,7 +3,7 @@
 This guide is written for **you** — so you can find, understand, and safely edit anything in this codebase yourself. It maps every folder, explains the patterns the app uses, and gives you a "how do I change X?" cookbook for the most common edits.
 
 > **Golden rules before you edit anything:**
-> 1. **Pure JavaScript only** — no TypeScript. Files are `.js` / `.jsx`.
+> 1. **Primarily JavaScript** — files are `.js` / `.jsx`. TypeScript is available (`tsconfig.json`) and new library modules in `src/lib/` should be written as `.ts` with full type annotations (see `grading.ts`, `ranking.ts` for the pattern).
 > 2. **The two stores must stay identical.** The app has TWO data layers (`demo-store.js` and `mongo-store.js`) with the *exact same function names and signatures*. If you change a function in one, change it in the other — or you'll get confusing "works in demo but not with a real database" bugs.
 > 3. **Roles are UPPERCASE** — `SUPER_ADMIN`, `TEACHER`, `STUDENT`, `PARENT`. The API normalizes input but always stores/compares uppercase.
 > 4. **Every query is scoped by `schoolId`** — multi-tenant isolation is the product's #1 promise. Never write a query that ignores it. In Mongo mode this is now ENFORCED: `src/lib/tenant-scope.js` (applied globally from `src/lib/db.js`) makes any unscoped query on a tenant model throw; by-_id / site-wide reads must call `bypassTenantScope(query)`.
@@ -57,7 +57,7 @@ src/
 │   ├── globals.css           # Tailwind v4 + custom animations/keyframes
 │   ├── page.js               # Marketing homepage (hero, modules, install section)
 │   ├── api/                  # ALL backend endpoints (see API map)
-│   ├── admin/dashboard/      # Super Admin portal (5 tabs)
+│   ├── admin/dashboard/      # Super Admin portal (~998 lines, thin layout shell)
 │   ├── teacher/dashboard/    # Grading matrix + attendance + report cards
 │   ├── student/dashboard/    # "My Report Card" + PDF export
 │   ├── parent/dashboard/     # "My Children" + pay fees
@@ -118,7 +118,7 @@ Every API route does `import { store } from "@/lib/store"` and calls functions o
 - The JWT payload contains: `userId`, `schoolId`, `role`, `name`, `email`.
 - **`jsonError()` is the standard error helper** — every route returns `jsonError("message", 400)` etc.
 
-### `grading.js` — business rules (edit these to change grading)
+### `grading.ts` — business rules (edit these to change grading)
 | What | Where |
 |---|---|
 | CA max (40) / Exam max (60) | `MAX_CA`, `MAX_EXAM` |
@@ -225,7 +225,7 @@ Demo (example record — first seeded score is `scr_214`, for Kunle `usr_109`):
   createdAt: "2026-08-05T…Z",
 }
 ```
-Mongo: `totalScore` + `grade` are **auto-computed in a pre-validate hook** — you only ever supply `caScore`/`examScore`. Unique per `{ studentId, subject, classArm }`. The grade bands live in `src/lib/grading.js` (`computeGrade`).
+Mongo: `totalScore` + `grade` are **auto-computed in a pre-validate hook** — you only ever supply `caScore`/`examScore`. Unique per `{ studentId, subject, classArm }`. The grade bands live in `src/lib/grading.ts` (`computeGrade`).
 
 ### `FeePayment`
 
@@ -330,12 +330,15 @@ Every route: (1) reads the session, (2) rejects unauthenticated with 401, (3) ch
 - `onboarding/page.js` → pick class arms, session, term, brand color → PATCH `/api/school` → redirect to `/admin/dashboard`.
 - The dashboard's class-arm dropdowns all read `session.school.activeArms` — **configure arms here first**, or teachers/admins have nothing to select.
 
-### Admin dashboard — `src/app/admin/dashboard/page.js` (big client component, being split into per-tab components)
-One big client component with a `tab` state — **the tabs are `overview`, `teachers`, `students`, `fees`, `reports`** (URL hash also drives them, e.g. `#fees`).
+### Admin dashboard — `src/app/admin/dashboard/page.js` (thin layout shell, ~998 lines)
+A thin layout shell: state declarations → data-fetch effects → `useAdminActions()` call → role gates → JSX. All 30+ action functions extracted to `useAdminActions.js` (1,302 lines).
 - Fetches: `/api/auth/me`, `/api/admin/stats`, `/api/users`, `/api/fees`, `/api/reports`.
-- Contains the add-teacher/add-student/parent modals, payroll toggles, fee structures, fee ledger with the pending-payments panel, report-card generation list.
-- **Note:** `createUser(role)` uppercases the role before POSTing — keep that if you touch it.
-- **Extraction in progress:** the Overview tab now lives in `src/components/admin/OverviewTab.js` — a presentational component receiving `stats`, `feeDelta`, `maxArm`, `session`, the permission flags (`isSuper`/`canRoster`/`canFees`/`canReports`), `router`, and callbacks (`onNavigate`, `onOpenModal`, `onOpenRollover`, `onFreeze`, `onDelete`). The dashboard keeps ALL state; the component only renders. Future tabs should follow the same `src/components/admin/<Tab>.js` pattern.
+- 19 tabs with URL hash routing (`#fees`, `#timetable`, etc.).
+- **State lives in page.js; actions live in `src/components/admin/useAdminActions.js`.** Tab components consume state via `useAdminShell()` context.
+- **12 modals** extracted to `src/components/admin/modals/`, each wrapped in `<ErrorBoundary>`.
+- **Each tab has a distinct gradient theme** (blue for Timetable, emerald for Fees, purple for Reports, etc.).
+- **Sidebar highlights the active tab** with a blue indicator + glowing dot.
+- **Standalone admin pages** (`/admin/import`, `/admin/quick-add`, `/admin/placeholders`) use `AdminLayout.js` for persistent sidebar + topbar.
 
 ### Teacher dashboard — `src/app/teacher/dashboard/page.js`
 Tabs (via state + hash): **Grading Matrix** (batch score entry), **Attendance** (daily register), **Report Cards** (ranked students + generate PDF).
@@ -533,10 +536,10 @@ The app is a **Progressive Web App** — installable on Android (Chrome) and Win
 ## 🛠️ "How do I change…" Cookbook
 
 **Change the grading scale** (e.g. A = 75+)
-→ Edit `computeGrade()` in `src/lib/grading.js`. That's the single source of truth — everything (UI, report cards, standings) uses it.
+→ Edit `computeGrade()` in `src/lib/grading.ts`. That's the single source of truth — everything (UI, report cards, standings) uses it.
 
 **Add a new subject to the dropdowns**
-→ Edit `DEFAULT_SUBJECTS` in `src/lib/grading.js`, or set `EDUTRACK_SUBJECTS=Maths,English,...` in `.env.local` (comma-separated).
+→ Edit `DEFAULT_SUBJECTS` in `src/lib/grading.ts`, or set `EDUTRACK_SUBJECTS=Maths,English,...` in `.env.local` (comma-separated).
 
 **Add a field to students** (e.g. "Date of birth")
 → 1) `src/models/User.js` (Mongo schema), 2) `src/lib/demo-store.js` seed + `createUser`, 3) `src/lib/mongo-store.js` `createUser`/queries, 4) the create/edit modal in `admin/dashboard/page.js`, 5) anywhere the field is displayed.

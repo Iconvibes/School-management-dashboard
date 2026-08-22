@@ -14,38 +14,23 @@ import {
 } from "lucide-react";
 import MetricCard from "@/components/MetricCard";
 import { naira, AuditBadge } from "./utils";
+import { useAdminShell } from "./context/AdminContext";
 
 /**
  * Fee Management tab — extracted from admin dashboard page.js.
- * Presentational: all data and handlers arrive through props.
+ * Consumes shared state from AdminContext instead of receiving props.
  */
-export default function FeesTab({
-  feeTotals,
-  pendingReconciles,
-  pendingPayments,
-  confirmingId,
-  feeClass,
-  setFeeClass,
-  feeDefaultersOnly,
-  setFeeDefaultersOnly,
-  feeDraft,
-  setFeeDraft,
-  feeLedger,
-  feeSaving,
-  audit,
-  isSuper,
-  activeArms,
-  session,
-  confirmPayment,
-  saveFeeStructure,
-  setPayModal,
-  setPayForm,
-  setReminderModal,
-  setReminderResult,
-  setReconcileModal,
-  setReconcileResult,
-  loadReminderTemplates,
-}) {
+export default function FeesTab() {
+  const {
+    feeTotals, pendingReconciles, pendingPayments, confirmingId,
+    feeClass, setFeeClass, feeDefaultersOnly, setFeeDefaultersOnly,
+    feeDraft, setFeeDraft, feeLedger, feeSaving, audit,
+    isSuper, session,
+    confirmPayment, saveFeeStructure,
+    setPayModal, setPayForm,
+    setReminderModal, setReminderResult, loadReminderTemplates,
+    setReconcileModal, setReconcileResult,
+  } = useAdminShell();
   return (
     <div className="mt-5 animate-fade-up">
                 {/* Summary cards */}

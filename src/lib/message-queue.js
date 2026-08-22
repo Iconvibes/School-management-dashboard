@@ -10,6 +10,7 @@
 
 import { sendEmail, isEmailConfigured } from "@/lib/mailer";
 import { store } from "@/lib/store";
+import * as log from "@/lib/log";
 
 // ── Channel transports ──────────────────────────────────────────────
 
@@ -48,7 +49,7 @@ transports.email = {
       const info = await sendEmail({ to: recipients, subject, text: body });
       return { success: Boolean(info), externalId: info?.messageId };
     } catch (err) {
-      console.warn("[message-queue/email]", err?.message);
+      log.warn("message-queue", "email send failed:", err?.message);
       return { success: false, reason: err?.message };
     }
   },

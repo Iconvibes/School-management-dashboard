@@ -3,6 +3,7 @@
 import { useRef, useState } from "react";
 import { Loader2, Printer, X } from "lucide-react";
 import Receipt from "@/components/Receipt";
+import { warn, error } from "@/lib/log";
 import useFitScale from "@/components/useFitScale";
 import { buildReceipt, naira } from "@/lib/receipts";
 
@@ -87,7 +88,7 @@ export default function ReceiptModal({
         fileName || (student?.name || "student").toLowerCase().replace(/[^a-z]+/g, "-");
       pdf.save(`${base}-receipt-${payment?.receiptNo || "RCT"}.pdf`);
     } catch (err) {
-      console.error(err);
+      error("receipt", "PDF generation failed:", err);
     } finally {
       if (generated && student?.id && payment?.receiptNo) {
         // Audit the download (fire-and-forget — never blocks or fails the PDF).
@@ -100,7 +101,7 @@ export default function ReceiptModal({
             amount: payment.amount,
             method: payment.method,
           }),
-        }).catch((e) => console.warn("[receipt-analytics] failed:", e?.message));
+        }).catch((e) => warn("receipt-analytics", "failed:", e?.message));
       }
       setExporting(false);
     }

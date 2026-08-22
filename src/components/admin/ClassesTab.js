@@ -188,7 +188,7 @@ export default function ClassesTab() {
                         </button>
                       </div>
                     </div>
-                    <div className="mt-3 grid grid-cols-3 gap-2 text-center">
+                    <div className="mt-3 grid grid-cols-1 sm:grid-cols-3 gap-2 text-center">
                       <div className="rounded-lg bg-navy-50 py-2">
                         <p className="text-sm font-bold text-navy-800">{students}</p>
                         <p className="text-[10px] uppercase tracking-wide text-navy-400">Students</p>

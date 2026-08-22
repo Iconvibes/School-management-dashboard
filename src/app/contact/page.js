@@ -63,7 +63,7 @@ export default function ContactPage() {
       {/* Hero */}
       <section className="relative overflow-hidden">
         <Parallax speed={0.2} className="pointer-events-none absolute inset-0">
-          <div className="absolute -top-32 left-1/2 h-[400px] w-[680px] -translate-x-1/2 rounded-full bg-brand-600/20 blur-[140px]" />
+          <div className="absolute -top-32 left-1/2 h-100 w-170 -translate-x-1/2 rounded-full bg-brand-600/20 blur-[140px]" />
         </Parallax>
         <div className="relative mx-auto max-w-4xl px-5 pb-14 pt-20 text-center lg:pt-28">
           <Reveal>
@@ -74,7 +74,7 @@ export default function ContactPage() {
           <Reveal delay={80}>
             <h1 className="mt-6 text-4xl font-extrabold tracking-tight text-white sm:text-6xl">
               Book a demo,{" "}
-              <span className="animate-gradient-text bg-gradient-to-r from-brand-400 to-violet-400 bg-clip-text text-transparent">
+              <span className="animate-gradient-text bg-linear-to-r from-brand-400 to-violet-400 bg-clip-text text-transparent">
                 ask a question
               </span>
             </h1>

@@ -16,6 +16,7 @@ import {
   FileText,
   Eye,
 } from "lucide-react";
+import { warn } from "@/lib/log";
 
 const STATUS_META = {
   PENDING: {
@@ -94,7 +95,7 @@ export default function ComplianceTab({ session }) {
         setAuditLog(data.entries || []);
       }
     } catch (err) {
-      console.warn("Failed to load compliance data:", err);
+      warn("compliance", "failed to load data:", err);
     }
     setLoading(false);
   }
@@ -307,7 +308,7 @@ export default function ComplianceTab({ session }) {
               </p>
             </div>
           ) : (
-            <div className="overflow-hidden rounded-xl border border-navy-200 bg-white">
+            <div className="overflow-x-auto rounded-xl border border-navy-200 bg-white">
               <table className="w-full text-left text-sm">
                 <thead>
                   <tr className="border-b border-navy-100 bg-navy-50">

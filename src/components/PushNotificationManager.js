@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback } from "react";
 import { Bell, BellOff, BellRing } from "lucide-react";
+import { warn } from "@/lib/log";
 
 /**
  * Push notification manager for PWA.
@@ -74,7 +75,7 @@ export default function PushNotificationManager({ schoolId, userId }) {
 
       setSubscribed(true);
     } catch (err) {
-      console.warn("[Push] Subscription failed:", err);
+      warn("push", "subscription failed:", err);
     }
   }
 

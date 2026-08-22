@@ -2,20 +2,23 @@
 
 import { KeyRound, Pencil, Trash2, UserCog } from "lucide-react";
 import { PayrollBadge } from "./utils";
+import { useAdminShell } from "./context/AdminContext";
 
 /**
  * Teachers & Payroll tab — extracted from admin dashboard page.js.
- * Presentational: all data and handlers arrive through props.
+ * Consumes shared state from AdminContext instead of receiving props.
  */
-export default function TeachersTab({
-  filteredTeachers,
-  isSuper,
-  togglePayroll,
-  openReset,
-  openScope,
-  openEdit,
-  setDeleteTarget,
-}) {
+export default function TeachersTab() {
+  const {
+    filteredTeachers,
+    isSuper,
+    togglePayroll,
+    openReset,
+    openScope,
+    openEdit,
+    setDeleteTarget,
+  } = useAdminShell();
+
   return (
     <div className="mt-5 overflow-hidden rounded-2xl border border-navy-200/70 bg-white shadow-sm">
       <div className="border-b border-navy-100 px-6 py-4">

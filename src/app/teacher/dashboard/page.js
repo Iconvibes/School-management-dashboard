@@ -26,13 +26,14 @@ import {
   X,
   Printer,
   KeyRound,
+  BookOpen,
 } from "lucide-react";
 import Sidebar from "@/components/Sidebar";
 import TopStudents from "@/components/TopStudents";
 import ReportCardModal from "@/components/ReportCardModal";
 import PrintableTimetable from "@/components/PrintableTimetable";
 import Modal from "@/components/Modal";
-import { computeGrade, gradeBadgeClasses, getSubjects, MAX_CA, MAX_EXAM } from "@/lib/grading";
+import { computeCA, computeGrade, gradeBadgeClasses, getSubjects, MAX_CA, MAX_EXAM } from "@/lib/grading";
 import { DAYS, getDayTimeline, MAX_PERIOD, PERIODS, schoolDayOf } from "@/lib/timetable";
 import { bounceTeacherSelection } from "@/lib/teacher-scope";
 import { bounceToLogin } from "@/lib/auth-client";
@@ -45,6 +46,7 @@ import MatrixView from "@/components/teacher/MatrixView";
 import { useTabFetch } from "@/hooks/useTabFetch";
 import SchemeView from "@/components/teacher/SchemeView";
 import ResourcesTab from "@/components/teacher/ResourcesTab";
+import ErrorBoundary from "@/components/ErrorBoundary";
 
 
 export default function TeacherDashboard() {
@@ -685,6 +687,7 @@ export default function TeacherDashboard() {
 
           {/* ATTENDANCE VIEW */}
 {view === "attendance" && (
+<ErrorBoundary label="Attendance">
           <AttendanceView
             classArm={classArm}
             setClassArm={setClassArm}
@@ -700,10 +703,12 @@ export default function TeacherDashboard() {
             saveAttendance={saveAttendance}
             setAttStatus={setAttStatus}
           />
+</ErrorBoundary>
         )}
 
           {/* MY TIMETABLE VIEW */}
 {view === "timetable" && (
+<ErrorBoundary label="My Timetable">
           <TimetableView
             ttEntries={ttEntries}
             ttLoaded={ttLoaded}
@@ -717,10 +722,12 @@ export default function TeacherDashboard() {
             isToday={isToday}
             classAlerts={classAlerts}
           />
+</ErrorBoundary>
         )}
 
           {/* REPORT CARDS VIEW */}
 {view === "reports" && (
+<ErrorBoundary label="Report Cards">
           <ReportsView
             reportStudents={reportStudents}
             filteredReports={filteredReports}
@@ -730,20 +737,26 @@ export default function TeacherDashboard() {
             openReport={openReport}
             classArm={classArm}
           />
+</ErrorBoundary>
         )}
 
           {/* SCHEME OF WORK VIEW */}
 {view === "scheme" && (
+<ErrorBoundary label="Scheme of Work">
           <SchemeView classArm={classArm} subject={subject} />
+</ErrorBoundary>
         )}
 
           {/* RESOURCES VIEW */}
 {view === "resources" && (
+<ErrorBoundary label="Resources">
           <ResourcesTab classArm={classArm} subject={subject} session={session} />
+</ErrorBoundary>
         )}
 
           {/* GRADING MATRIX VIEW */}
 {view === "matrix" && (
+<ErrorBoundary label="Grading Matrix">
           <MatrixView
             classArm={classArm}
             setClassArm={setClassArm}
@@ -764,6 +777,7 @@ export default function TeacherDashboard() {
             saveAll={saveAll}
             setAddModal={setAddModal}
           />
+</ErrorBoundary>
         )}
         </div>
       </div>

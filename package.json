@@ -14,7 +14,8 @@
     "ensure-indexes": "node --import ./tests/register-aliases.js scripts/ensure-indexes.mjs",
     "load-test": "node scripts/load-test.mjs",
     "defense-docs": "node scripts/make-defense-docs.mjs",
-    "audit-html": "node scripts/make-audit-html.mjs"
+    "audit-html": "node scripts/make-audit-html.mjs",
+    "test:e2e": "npx playwright test"
   },
   "dependencies": {
     "bcrypt": "^6.0.0",
@@ -32,11 +33,16 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
+    "@playwright/test": "^1.62.1",
     "@tailwindcss/postcss": "^4",
+    "@types/node": "^26.2.0",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.4",
     "eslint": "^9",
     "eslint-config-next": "16.3.0",
     "pptxgenjs": "^4.0.1",
-    "tailwindcss": "^4"
+    "tailwindcss": "^4",
+    "typescript": "^6.0.3"
   },
   "allowScripts": {
     "core-js@3.49.0": true,

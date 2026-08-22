@@ -6,18 +6,23 @@ import {
   Save, ShieldCheck, UserX, X,
 } from "lucide-react";
 import { DAYS, MAX_PERIOD, PERIODS } from "@/lib/timetable";
+import { useAdminShell } from "./context/AdminContext";
 
 const inputCls =
   "w-full rounded-xl border border-navy-200 bg-white px-4 py-2.5 text-sm text-navy-800 outline-none transition focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20";
 
-export default function TimetableTab({
-  ttArm, setTtArm, ttConflicts, ttConflictsOpen, setTtConflictsOpen,
-  ttConflictsLoading, ttConflictFixing, dayTimeline, dayTimelines, dayPeriodSets,
-  ttByKey, ttFilled, openTtCell, checkTtConflicts, fixTtConflict, swapTtTeacher,
-  ttSwapDraft, setTtSwapDraft, bellDraft, bellDay, dailyDrafts, selectBellDay, setBellDayPeriodCount,
-  setPeriodTime, setBreakTime, resetBellDay, savePeriodTimes, periodTimesSaving,
-  session,
-}) {
+/**
+ * Timetable tab — consumed from AdminContext instead of receiving 26 props.
+ */
+export default function TimetableTab() {
+  const {
+    ttArm, setTtArm, ttConflicts, ttConflictsOpen, setTtConflictsOpen,
+    ttConflictsLoading, ttConflictFixing, dayTimeline, dayTimelines, dayPeriodSets,
+    ttByKey, ttFilled, openTtCell, checkTtConflicts, fixTtConflict, swapTtTeacher,
+    ttSwapDraft, setTtSwapDraft, bellDraft, bellDay, dailyDrafts, selectBellDay,
+    setBellDayPeriodCount, setPeriodTime, setBreakTime, resetBellDay,
+    savePeriodTimes, periodTimesSaving, session,
+  } = useAdminShell();
   return (
             <div className="mt-5 space-y-5 animate-fade-up">
               <div className="overflow-hidden rounded-2xl border border-navy-200/70 bg-white shadow-sm">

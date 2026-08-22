@@ -22,6 +22,7 @@ Every school gets a fully isolated tenant: students, teachers, scores and payrol
 - **Multi-Branch Support** — school chains can manage multiple campuses from one tenant.
 - **GDPR & Privacy Compliance** — data export (DSAR), erasure requests with admin approval workflow, data access audit log, and consent tracking. Full privacy policy page at `/privacy`.
 - **Role-Based Portals** — dedicated dashboards for Super Admin/Bursar/Registrar (shared console), Teacher, Student and Parent.
+- **Error Boundaries** — each dashboard tab and modal is individually wrapped in React ErrorBoundary components, so a crash in one section shows a friendly fallback without white-screening the entire portal.
 - **Multi-Tenant Isolation** — every query is scoped by `schoolId` and verified server-side.
 - **Installable PWA** — install on Android phones and Windows PCs like a native app.
 
@@ -122,7 +123,7 @@ src/
       scheme/              # scheme of work
       alumni/              # alumni management
       me/                  # GDPR data export + erasure request (per-user)
-    admin/dashboard/       # Super Admin / Bursar / Registrar portal
+    admin/dashboard/       # Super Admin / Bursar / Registrar portal (~998 lines, thin layout shell)
     teacher/dashboard/     # Grading matrix + attendance
     student/dashboard/     # Report card + timetable + fee status
     parent/dashboard/      # Children's reports, fees, messaging
@@ -143,8 +144,16 @@ src/
     timetable/ grading/ resources/ alumni/ compliance/
 
   components/
-    admin/                 # 19 admin tab components
-      OverviewTab, TeachersTab, StudentsTab, FeesTab, ReportsTab,
+    ErrorBoundary.js        # React error boundary (class component)
+    admin/                 # Admin dashboard components
+      AdminLayout.js        # Shared layout for standalone admin pages (import, quick-add, placeholders)
+      AdminShell.js         # Admin shell with sidebar + topbar
+      OverviewTab.js        # Dashboard overview (charts, metrics, quick actions)
+      useAdminActions.js    # Custom hook — all 30+ action functions (CRUD, fee, timetable, bell schedule)
+      tabConfig.js          # Tab visibility + ordering logic
+      ScheduleHealthCard.js # Timetable integrity scan card
+      modals/               # 12 extracted modals (AddUser, FeePayment, TermRollover, etc.)
+      TeachersTab, StudentsTab, FeesTab, ReportsTab,
       TimetableTab, ClassesTab, RolesTab, LoginsTab, ArchivesTab,
       SettingsTab, SchemeOfWorkTab, RiskAlerts, TeacherPerformance,
       AlumniTab, EngagementTab, BranchesTab, ComplianceTab
@@ -163,9 +172,12 @@ src/
     portal-guard.js        # Role → portal mapping, ROLE_HOME
     field-crypto.js        # AES-256-GCM PII encryption + blind indexes
     mailer.js              # SMTP email delivery (optional)
-    grading.js             # Grading scales, position ranking, remarks
+    grading.ts             # Grading scales, position ranking, remarks (TypeScript)
+    ranking.ts             # Class ranking + arm aggregation (TypeScript)
+    konig.js               # König's edge-coloring timetable generator
     timetable.js           # Period/break/bell schedule helpers
     validation.js          # Zod schemas for API input validation
+    log.js                 # Structured logger (isDev-gated console replacement)
 ```
 
 ## 🔐 Security & Authorization

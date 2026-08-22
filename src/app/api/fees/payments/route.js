@@ -3,6 +3,33 @@ import { store } from "@/lib/store";
 import { isDenied, requirePermission } from "@/lib/policy";
 import { feePaymentSchema, confirmPaymentSchema, firstValidationMessage } from "@/lib/validation";
 
+/**
+ * GET /api/fees/payments?studentId=... — payment history for a student.
+ * PARENT can only see their own child's payments.
+ */
+export async function GET(request) {
+  const session = await requirePermission(["SUPER_ADMIN", "BURSAR", "PARENT"]);
+  if (isDenied(session)) return session;
+
+  const { searchParams } = new URL(request.url);
+  const studentId = searchParams.get("studentId");
+  if (!studentId) {
+    return jsonError("studentId query parameter is required");
+  }
+
+  // Tenancy: PARENT may only view their own children's payments
+  if (session.role === "PARENT") {
+    const children = await store.getChildren(session.userId);
+    if (!children.some((c) => c.id === studentId)) {
+      return jsonError("Not your child", 403);
+    }
+  }
+
+  const ledger = await store.getFeeLedger(session.schoolId, { studentIds: [studentId] });
+  const entry = ledger.find((l) => l.studentId === studentId);
+  return Response.json({ payments: entry?.payments || [] });
+}
+
 /** POST /api/fees/payments — record a payment { studentId, amount, method, note } */
 export async function POST(request) {
   const session = await requirePermission(["SUPER_ADMIN", "BURSAR"], "fees.record");

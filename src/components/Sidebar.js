@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { useRouter, usePathname } from "next/navigation";
 import {
   LayoutDashboard,
   ClipboardList,
@@ -28,8 +28,10 @@ import Logo from "@/components/Logo";
 import NotificationsBell from "@/components/NotificationsBell";
 import { can } from "@/lib/permissions";
 
-export default function Sidebar({ role, open, onClose }) {
+export default function Sidebar({ role, open, onClose, activeTab, activePath }) {
   const router = useRouter();
+  const pathname = usePathname();
+  const currentPath = activePath || pathname || "";
 
   // The admin-console navigation is permission-driven — ROLE_PERMISSIONS is
   // the single source of truth, so the menu can never drift from what the
@@ -56,27 +58,9 @@ export default function Sidebar({ role, open, onClose }) {
           { href: "/student/dashboard#resources", label: "Class Resources", icon: FileText },
         ]
       : [
+          // ---- Daily essentials ----
           ...(can(role, "stats.view")
             ? [{ href: "/admin/dashboard", label: "Overview", icon: LayoutDashboard }]
-            : []),
-          ...(can(role, "students.manage")
-            ? [
-                { href: "/admin/import", label: "Bulk Import", icon: Upload },
-                { href: "/admin/quick-add", label: "Quick Add", icon: UserPlus },
-                { href: "/admin/placeholders", label: "From Class Sizes", icon: ClipboardList },
-              ]
-            : []),
-          ...(can(role, "school.edit")
-            ? [{ href: "/admin/dashboard#classes", label: "Classes & Arms", icon: Layers }]
-            : []),
-          ...(can(role, "users.manage")
-            ? [{ href: "/admin/dashboard#teachers", label: "Teachers & Payroll", icon: Users }]
-            : []),
-          ...(can(role, "roles.manage")
-            ? [{ href: "/admin/dashboard#roles", label: "Roles & Access", icon: ShieldCheck }]
-            : []),
-          ...(can(role, "timetable.manage")
-            ? [{ href: "/admin/dashboard#timetable", label: "Timetable", icon: CalendarDays }]
             : []),
           ...(can(role, "students.manage")
             ? [{ href: "/admin/dashboard#students", label: "Students & Fees", icon: BookOpen }]
@@ -84,19 +68,46 @@ export default function Sidebar({ role, open, onClose }) {
           ...(can(role, "fees.view")
             ? [{ href: "/admin/dashboard#fees", label: "Fee Management", icon: Wallet }]
             : []),
+          ...(can(role, "users.manage")
+            ? [{ href: "/admin/dashboard#teachers", label: "Teachers & Payroll", icon: Users }]
+            : []),
+          ...(can(role, "timetable.manage")
+            ? [{ href: "/admin/dashboard#timetable", label: "Timetable", icon: CalendarDays }]
+            : []),
           ...(can(role, "reports.view")
             ? [{ href: "/admin/dashboard#reports", label: "Report Cards", icon: ClipboardList }]
             : []),
+          // ---- Structure & setup ----
+          ...(can(role, "school.edit")
+            ? [{ href: "/admin/dashboard#classes", label: "Classes & Arms", icon: Layers }]
+            : []),
+          ...(can(role, "roles.manage")
+            ? [{ href: "/admin/dashboard#roles", label: "Roles & Access", icon: ShieldCheck }]
+            : []),
+          // ---- Onboarding tools ----
+          ...(can(role, "students.manage")
+            ? [
+                { href: "/admin/import", label: "Bulk Import", icon: Upload },
+                { href: "/admin/quick-add", label: "Quick Add", icon: UserPlus },
+                { href: "/admin/placeholders", label: "From Class Sizes", icon: ClipboardList },
+              ]
+            : []),
+          // ---- Periodic & analytics ----
           ...(can(role, "reports.view")
             ? [{ href: "/admin/dashboard#archives", label: "Previous Terms", icon: History }]
             : []),
           ...(can(role, "school.edit")
             ? [
                 { href: "/admin/dashboard#scheme", label: "Scheme of Work", icon: BookOpen },
-                { href: "/admin/dashboard#risk", label: "Risk Alerts", icon: AlertTriangle },
                 { href: "/admin/dashboard#performance", label: "Teacher Performance", icon: TrendingUp },
-                { href: "/admin/dashboard#alumni", label: "Alumni", icon: GraduationCap },
+                { href: "/admin/dashboard#risk", label: "Risk Alerts", icon: AlertTriangle },
+              ]
+            : []),
+          // ---- Low frequency ----
+          ...(can(role, "school.edit")
+            ? [
                 { href: "/admin/dashboard#engagement", label: "Parent Engagement", icon: HeartHandshake },
+                { href: "/admin/dashboard#alumni", label: "Alumni", icon: GraduationCap },
                 { href: "/admin/dashboard#branches", label: "Branches", icon: Building2 },
               ]
             : []),
@@ -135,25 +146,47 @@ export default function Sidebar({ role, open, onClose }) {
           <p className="px-3 pb-2 text-[11px] font-semibold uppercase tracking-widest text-navy-400">
             Menu
           </p>
-          {items.map((item) => (
-            <Link
-              key={item.label}
-              href={item.href}
-              onClick={(e) => {
-                const hash = item.href.split("#")[1];
-                if (hash) {
-                  e.preventDefault();
-                  window.location.hash = hash;
-                  window.dispatchEvent(new Event("hashchange"));
-                }
-                onClose();
-              }}
-              className="flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium text-navy-200 transition hover:bg-white/10 hover:text-white"
-            >
-              <item.icon className="h-4.5 w-4.5 text-navy-300" />
-              {item.label}
-            </Link>
-          ))}
+          {items.map((item) => {
+              const itemHash = item.href.split("#")[1] || "";
+              const itemBasePath = item.href.split("#")[0];
+              // Hash-based match for dashboard tabs, pathname match for standalone pages
+              const isActive = itemHash
+                ? activeTab === itemHash
+                : itemBasePath === "/admin/dashboard"
+                  ? (activeTab === "overview" || !activeTab)
+                  : itemBasePath === currentPath;
+              return (
+                <Link
+                  key={item.label}
+                  href={item.href}
+                  onClick={(e) => {
+                    if (itemHash) {
+                      e.preventDefault();
+                      window.location.hash = itemHash;
+                      window.dispatchEvent(new Event("hashchange"));
+                    } else if (itemBasePath === "/admin/dashboard") {
+                      // Overview link — clear the hash so applyHash resets to overview tab
+                      e.preventDefault();
+                      window.location.hash = "";
+                      history.replaceState(null, "", "/admin/dashboard");
+                      window.dispatchEvent(new Event("hashchange"));
+                    }
+                    onClose();
+                  }}
+                  className={`group flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition ${
+                    isActive
+                      ? "bg-brand-600/20 text-white shadow-sm shadow-brand-600/10"
+                      : "text-navy-200 hover:bg-white/10 hover:text-white"
+                  }`}
+                >
+                  <item.icon className={`h-4.5 w-4.5 ${isActive ? "text-brand-400" : "text-navy-300 group-hover:text-navy-200"}`} />
+                  {item.label}
+                  {isActive && (
+                    <span className="ml-auto h-1.5 w-1.5 rounded-full bg-brand-400 shadow-sm shadow-brand-400/50" />
+                  )}
+                </Link>
+              );
+            })}
         </nav>
 
         <div className="space-y-1 border-t border-white/10 p-3">

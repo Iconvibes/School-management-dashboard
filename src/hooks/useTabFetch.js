@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from "react";
+import { warn } from "@/lib/log";
 
 /**
  * Tab-gated data fetching with automatic abort, loading state, and error
@@ -72,7 +73,7 @@ export function useTabFetch(
       })
       .catch((err) => {
         if (!mountedRef.current || err.name === "AbortError") return;
-        console.warn("[useTabFetch] " + (url || "") + " failed:", err?.message);
+        warn("useTabFetch", (url || "") + " failed:", err?.message);
         setError(err);
         setLoading(false);
       });

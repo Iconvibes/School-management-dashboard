@@ -1,22 +1,25 @@
 "use client";
 
 import { HeartHandshake, KeyRound, Trash2, UserCog } from "lucide-react";
+import { useAdminShell } from "./context/AdminContext";
 
 /**
  * Students & Fees tab — extracted from admin dashboard page.js.
- * Presentational: all data and handlers arrive through props.
+ * Consumes shared state from AdminContext instead of receiving props.
  */
-export default function StudentsTab({
-  filteredStudents,
-  isSuper,
-  toggleFee,
-  openReset,
-  openEdit,
-  setDeleteTarget,
-  unlinkParent,
-  setLinkModal,
-  parentNameById,
-}) {
+export default function StudentsTab() {
+  const {
+    filteredStudents,
+    isSuper,
+    toggleFee,
+    openReset,
+    openEdit,
+    setDeleteTarget,
+    unlinkParent,
+    setLinkModal,
+    parentNameById,
+  } = useAdminShell();
+
   return (
     <div className="mt-5 overflow-hidden rounded-2xl border border-navy-200/70 bg-white shadow-sm">
       <div className="border-b border-navy-100 px-6 py-4">

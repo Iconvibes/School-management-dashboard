@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { store } from "@/lib/store";
 import { verifyWebhookSignature } from "@/lib/paystack";
 import { broadcastToSchool } from "@/lib/sse-manager";
+import * as log from "@/lib/log";
 
 /**
  * POST /api/webhooks/paystack — Handle Paystack payment webhooks.
@@ -48,7 +49,7 @@ export async function POST(req) {
   const parentId = metadata.parent_id;
 
   if (!schoolId || !studentId) {
-    console.warn("[paystack-webhook] Missing school_id or student_id in metadata:", reference);
+    log.warn("paystack-webhook", "Missing school_id or student_id in metadata:", reference);
     return NextResponse.json({ ok: true, warning: "Missing metadata" });
   }
 
@@ -118,7 +119,7 @@ export async function POST(req) {
 
     return NextResponse.json({ ok: true, paymentId: payment?.id });
   } catch (err) {
-    console.error("[paystack-webhook] Processing error:", err);
+    log.error("paystack-webhook", "Processing error:", err);
     return NextResponse.json({ error: "Processing failed" }, { status: 500 });
   }
 }

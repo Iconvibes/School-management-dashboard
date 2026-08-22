@@ -54,7 +54,7 @@ export default function EngagementTab({ session }) {
       </div>
 
       {/* Summary cards */}
-      <div className="grid grid-cols-2 gap-4 sm:grid-cols-5">
+      <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-5">
         <div className="rounded-2xl border border-navy-200/70 bg-white p-5 shadow-sm text-center">
           <p className="text-2xl font-bold text-navy-800">{summary.total}</p>
           <p className="text-xs text-navy-400">Total Parents</p>

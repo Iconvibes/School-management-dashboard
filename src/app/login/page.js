@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
+import { warn } from "@/lib/log";
 import {
   ArrowLeft,
   ArrowRight,
@@ -101,7 +102,7 @@ export default function LoginPage() {
     fetch("/api/schools?limit=8")
       .then((r) => r.json())
       .then((data) => setResults(data.schools || []))
-      .catch((e) => console.warn("[schools-search] failed:", e?.message));
+      .catch((e) => warn("schools-search", "failed:", e?.message));
   }, []);
 
   // Only show the demo school / demo account boxes when the seeded demo
@@ -111,7 +112,7 @@ export default function LoginPage() {
     fetch("/api/auth/demo-status")
       .then((r) => r.json())
       .then((d) => setDemoAvailable(!!d.enabled))
-      .catch((e) => console.warn("[demo-status] failed:", e?.message));
+      .catch((e) => warn("demo-status", "failed:", e?.message));
   }, []);
 
   // Fresh account-status check whenever the credentials step opens — covers a
@@ -129,7 +130,7 @@ export default function LoginPage() {
         const match = (d.schools || [])[0];
         setSchoolStatus(match && match.status !== "active" ? match.status : "");
       })
-      .catch((e) => console.warn("[school-status] failed:", e?.message));
+      .catch((e) => warn("school-status", "failed:", e?.message));
     return () => {
       cancelled = true;
     };
@@ -530,13 +531,7 @@ export default function LoginPage() {
             )}
 
           </div>
-
-          <p className="mt-6 text-center text-sm text-navy-500">
-            New school?{" "}
-            <Link href="/register" className="font-semibold text-brand-600 hover:text-brand-500">
-              Register your school
-            </Link>
-          </p>
+          
         </div>
       </div>
     </main>

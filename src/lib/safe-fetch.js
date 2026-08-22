@@ -1,3 +1,5 @@
+import * as log from "@/lib/log";
+
 /**
  * safeFetch — a thin wrapper around fetch that parses JSON and surfaces
  * errors instead of swallowing them silently. Returns { data, error } so
@@ -36,12 +38,12 @@ export async function safeFetchJson(url, opts, label) {
     const res = await fetch(url, opts);
     if (!res.ok) {
       const text = await res.text().catch(() => "");
-      console.warn(`[${label || url}] HTTP ${res.status}:`, text);
+      log.warn(label || url, `HTTP ${res.status}:`, text);
       return null;
     }
     return await res.json();
   } catch (err) {
-    console.warn(`[${label || url}] fetch failed:`, err?.message);
+    log.warn(label || url, "fetch failed:", err?.message);
     return null;
   }
 }

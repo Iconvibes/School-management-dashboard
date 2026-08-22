@@ -30,6 +30,7 @@ import MessagingPanel from "@/components/MessagingPanel";
 import AttendanceCalendar from "@/components/parent/AttendanceCalendar";
 import GradeTrends from "@/components/parent/GradeTrends";
 import PaymentHistory from "@/components/parent/PaymentHistory";
+import ErrorBoundary from "@/components/ErrorBoundary";
 import ReportPaymentModal from "@/components/parent/ReportPaymentModal";
 import Modal from "@/components/Modal";
 import { gradeBadgeClasses, ordinal } from "@/lib/grading";
@@ -701,6 +702,47 @@ export default function ParentDashboard() {
               )}
             </>
           )}
+
+          {/* Messaging */}
+          <div className="mt-8">
+            <ErrorBoundary label="Messaging">
+              <MessagingPanel session={session} />
+            </ErrorBoundary>
+          </div>
+
+          {/* GDPR: Data export */}
+          <div className="mt-6 flex items-center justify-between rounded-xl border border-navy-200/70 bg-white px-5 py-3.5 shadow-sm">
+            <div>
+              <p className="text-sm font-semibold text-navy-800">Your data rights</p>
+              <p className="text-xs text-navy-400">
+                Download a copy of your personal data (GDPR Art. 15).{' '}
+                <a href="/privacy" className="underline transition hover:text-brand-600">Privacy Policy</a>
+              </p>
+            </div>
+            <ExportMyDataButton className="!bg-navy-100 !text-navy-700 hover:!bg-navy-200" />
+          </div>
+
+          {/* GDPR: Erasure request */}
+          <div className="mt-3 flex items-center justify-between rounded-xl border border-navy-200/70 bg-white px-5 py-3.5 shadow-sm">
+            <div>
+              <p className="text-sm font-semibold text-navy-800">Right to erasure</p>
+              <p className="text-xs text-navy-400">
+                Request permanent deletion of your data (GDPR Art. 17).
+              </p>
+            </div>
+            <RequestErasureButton className="!bg-navy-100 !text-navy-700 hover:!bg-navy-200" />
+          </div>
+
+          {/* Parent dashboard enhancements */}
+          {selected && (
+            <ErrorBoundary label="Analytics">
+              <div className="mt-8 grid gap-6 lg:grid-cols-2">
+                <AttendanceCalendar studentId={selected.id} studentName={selected.name} />
+                <GradeTrends studentId={selected.id} studentName={selected.name} />
+                <PaymentHistory studentId={selected.id} studentName={selected.name} />
+              </div>
+            </ErrorBoundary>
+          )}
         </div>
       </div>
 
@@ -732,42 +774,7 @@ export default function ParentDashboard() {
         fileName={receiptChild?.name?.toLowerCase().replace(/[^a-z]+/g, "-")}
       />
 
-      {/* Messaging */}
-      <div className="mt-8">
-        <MessagingPanel session={session} />
-      </div>
 
-      {/* GDPR: Data export */}
-      <div className="mt-6 flex items-center justify-between rounded-xl border border-navy-200/70 bg-white px-5 py-3.5 shadow-sm">
-        <div>
-          <p className="text-sm font-semibold text-navy-800">Your data rights</p>
-          <p className="text-xs text-navy-400">
-            Download a copy of your personal data (GDPR Art. 15).{' '}
-            <a href="/privacy" className="underline transition hover:text-brand-600">Privacy Policy</a>
-          </p>
-        </div>
-        <ExportMyDataButton className="!bg-navy-100 !text-navy-700 hover:!bg-navy-200" />
-      </div>
-
-      {/* GDPR: Erasure request */}
-      <div className="mt-3 flex items-center justify-between rounded-xl border border-navy-200/70 bg-white px-5 py-3.5 shadow-sm">
-        <div>
-          <p className="text-sm font-semibold text-navy-800">Right to erasure</p>
-          <p className="text-xs text-navy-400">
-            Request permanent deletion of your data (GDPR Art. 17).
-          </p>
-        </div>
-        <RequestErasureButton className="!bg-navy-100 !text-navy-700 hover:!bg-navy-200" />
-      </div>
-
-      {/* Parent dashboard enhancements */}
-      {selected && (
-        <div className="mt-8 grid gap-6 lg:grid-cols-2">
-          <AttendanceCalendar studentId={selected.id} studentName={selected.name} />
-          <GradeTrends studentId={selected.id} studentName={selected.name} />
-          <PaymentHistory studentId={selected.id} studentName={selected.name} />
-        </div>
-      )}
       {/* Report Payment modal */}
       <ReportPaymentModal
         open={payOpen}

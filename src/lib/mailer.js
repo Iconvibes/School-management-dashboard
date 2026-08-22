@@ -1,4 +1,5 @@
 import nodemailer from "nodemailer";
+import * as log from "@/lib/log";
 
 /**
  * Email transport — initialised lazily on first send. When SMTP env vars are
@@ -69,7 +70,7 @@ export async function sendEmail({ to, subject, text, html }) {
     });
     return info;
   } catch (err) {
-    console.warn("[mailer] send failed:", err?.message);
+    log.warn("mailer", "send failed:", err?.message);
     return null;
   }
 }

@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { ArrowLeftRight, Check, History, KeyRound, ShieldCheck, UserCog } from "lucide-react";
 import { MANAGED_ROLES, ROLE_LABELS } from "@/lib/roles";
+import { warn } from "@/lib/log";
 import { summarizeRolePermissions } from "@/lib/permissions";
 import { useAdminShell } from "./context/AdminContext";
 import { useTabFetch } from "@/hooks/useTabFetch";
@@ -34,7 +35,7 @@ export default function RolesTab({ openReset }) {
       )
     )
       .then((groups) => setStaffList(groups.flat()))
-      .catch((e) => console.warn("[staff-list] load failed:", e?.message));
+      .catch((e) => warn("staff-list", "load failed:", e?.message));
   }, []);
 
   function requestRoleChange(user, to) {
@@ -239,7 +240,7 @@ export default function RolesTab({ openReset }) {
               </tr>
             </thead>
             <tbody>
-              {roleAudit.map((e) => (
+              {(roleAudit || []).map((e) => (
                 <tr key={e.id} className="border-b border-navy-50 transition hover:bg-navy-50/40">
                   <td className="whitespace-nowrap px-6 py-3.5 text-xs text-navy-500">
                     {new Date(e.createdAt).toLocaleString()}
@@ -262,7 +263,7 @@ export default function RolesTab({ openReset }) {
                   </td>
                 </tr>
               ))}
-              {roleAudit.length === 0 && (
+              {(roleAudit || []).length === 0 && (
                 <tr>
                   <td colSpan={3} className="px-6 py-10 text-center text-navy-400">
                     No role changes yet — the first promotion or demotion will appear here.

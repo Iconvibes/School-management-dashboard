@@ -8,6 +8,7 @@ import {
   encryptField,
 } from "@/lib/field-crypto";
 import { DAYS, DEFAULT_PERIOD_TIMES } from "@/lib/timetable";
+import { colorDay } from "@/lib/konig";
 
 /**
  * In-memory store used when MONGODB_URI is not set (demo mode).
@@ -840,96 +841,6 @@ function seed() {
     }
     return plan;
   });
-
-  // ---- Period assignment: König's bipartite edge-coloring --------------
-  //
-  // The schedule is a bipartite graph: teachers on one side, arms on the
-  // other, one edge per slot (a teacher never has two slots in the same arm
-  // on the same day). Edge-coloring = assigning each edge a period so no
-  // two edges sharing a vertex share a period — exactly the no-double-
-  // booking rule. With max degree Δ ≤ 8 (8 periods), a coloring always
-  // exists. The greedy "lowest free period" can fail; König's algorithm
-  // walks an alternating path and swaps colors, which is provably
-  // successful. Deterministic: slots are processed in a fixed order.
-  function colorDay(edges) {
-    // edges: [{ teacher, arm }] — returns { "teacher|arm": period }
-    //
-    // `incident` is the SINGLE source of truth: "vertex|period" -> edge key.
-    // mex() reads it directly (8 periods, so O(8) per lookup), which keeps
-    // the ≤1-edge-per-color invariant trivially consistent — no parallel
-    // color sets to drift. Two subtleties that naive implementations miss:
-    //
-    //  1. When an alternating path passes through a vertex TWICE (an
-    //     alternating cycle), recoloring must not delete the other edge's
-    //     entry: a path edge's OLD color equals its neighbour's NEW color at
-    //     the shared vertex, so deletes are guarded with `=== key`.
-    //  2. The path walk can enter an alternating cycle; a visited set clips
-    //     it. The clipped path still recolors validly (the re-entered vertex
-    //     has two path edges swapped in opposite directions, netting to zero).
-    const colorOf = {}; // "teacher|arm" -> period
-    const incident = {}; // "vertex|period" -> "teacher|arm"
-    const vertexHas = (vertex, period) => !!incident[`${vertex}|${period}`];
-    const mex = (vertex) => {
-      let c = 1;
-      while (vertexHas(vertex, c)) c++;
-      return c;
-    };
-    const otherVertex = (key, vertex) => {
-      const [a, b] = key.split("|");
-      return a === vertex ? b : a;
-    };
-    const recolor = (key, from, to) => {
-      const [b, a] = key.split("|"); // key is "teacher|arm"
-      if (incident[`${b}|${from}`] === key) delete incident[`${b}|${from}`];
-      if (incident[`${a}|${from}`] === key) delete incident[`${a}|${from}`];
-      incident[`${b}|${to}`] = key;
-      incident[`${a}|${to}`] = key;
-      colorOf[key] = to;
-    };
-    const walk = (start, firstColor, c1, c2) => {
-      // Maximal alternating path from `start` with colors firstColor, then
-      // c1/c2 alternating; clipped at any vertex already on the path.
-      const path = [];
-      const visited = new Set([start]);
-      let cur = start;
-      let need = firstColor;
-      while (vertexHas(cur, need)) {
-        const pk = incident[`${cur}|${need}`];
-        path.push(pk);
-        cur = otherVertex(pk, cur);
-        need = need === c1 ? c2 : c1;
-        if (visited.has(cur)) break;
-        visited.add(cur);
-      }
-      return path;
-    };
-
-    for (const e of edges) {
-      const u = e.teacher;
-      const v = e.arm;
-      const alpha = mex(u);
-      const beta = mex(v);
-      const key = `${u}|${v}`;
-      if (alpha === beta) {
-        colorOf[key] = alpha;
-      } else if (alpha < beta) {
-        // Path from the ARM v starting with alpha (v holds an alpha edge:
-        // alpha < beta = mex(v)). Recolor, then place (u,v) at alpha.
-        const path = walk(v, alpha, alpha, beta);
-        path.forEach((pk) => recolor(pk, colorOf[pk], colorOf[pk] === alpha ? beta : alpha));
-        colorOf[key] = alpha;
-      } else {
-        // Symmetric: path from the TEACHER u starting with beta (u holds a
-        // beta edge: beta < alpha = mex(u)). Place (u,v) at beta.
-        const path = walk(u, beta, beta, alpha);
-        path.forEach((pk) => recolor(pk, colorOf[pk], colorOf[pk] === beta ? alpha : beta));
-        colorOf[key] = beta;
-      }
-      incident[`${u}|${colorOf[key]}`] = key;
-      incident[`${v}|${colorOf[key]}`] = key;
-    }
-    return colorOf;
-  }
 
   // Build the day's edge list (one edge per slot), color it, then push the
   // slots with their assigned periods.

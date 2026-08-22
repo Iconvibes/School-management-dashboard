@@ -7,17 +7,66 @@
  * The store supplies raw data; these functions stay pure. Callers build the
  * standard score map from a score list:
  *
- *   const scoreMap = {};
+ *   const scoreMap: Record<string, ScoreEntry[]> = {};
  *   allScores.forEach((s) => {
  *     if (!scoreMap[s.studentId]) scoreMap[s.studentId] = [];
  *     scoreMap[s.studentId].push(s);
  *   });
  */
 
-import { computeGrade, standingFromAverage } from "./grading.js";
+import { computeGrade, standingFromAverage } from "./grading";
+
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
+
+/** Raw user row from the store (only the fields ranking needs). */
+export interface StudentRow {
+  id: string;
+  name: string;
+  email: string;
+  assignedClass?: string;
+  feePaid?: number;
+  [key: string]: unknown; // allow extra store fields without breaking
+}
+
+/** A single score entry for one subject. */
+export interface ScoreEntry {
+  studentId: string;
+  totalScore: number;
+  [key: string]: unknown;
+}
+
+/** The fully-ranked row returned by rankStudents. */
+export interface RankedStudent {
+  id: string;
+  name: string;
+  email: string;
+  assignedClass: string;
+  feePaid?: number;
+  subjects: number;
+  average: number;
+  grade: string | null;
+  standing: string;
+  position: number;
+  outOf: number;
+}
+
+/** Position result for a single student within a class. */
+export interface ClassPosition {
+  position: number | null;
+  outOf: number;
+}
+
+/** Per-arm ranking map: arm → studentId → position info. */
+export type ArmRankings = Record<string, Record<string, ClassPosition>>;
+
+// ---------------------------------------------------------------------------
+// Functions
+// ---------------------------------------------------------------------------
 
 /** 2-decimal average, the way report cards display it. */
-export function roundAverage(avg) {
+export function roundAverage(avg: number): number {
   return Math.round(avg * 100) / 100;
 }
 
@@ -26,13 +75,12 @@ export function roundAverage(avg) {
  * fields. Rows are rebuilt from an explicit allow-list (never spread the raw
  * user row — the store's listUsers may include the password hash).
  *
- * @param {Array} students  user rows ({ id, name, email, assignedClass, feePaid })
- * @param {Object} scoreMap studentId -> [score, ...]
- * @returns {Array} rows with { id, name, email, assignedClass, feePaid,
- *   subjects, average, grade, standing, position, outOf } sorted by average
- *   descending; ties keep their input order (stable sort).
+ * Ties keep their input order (stable sort via Array.sort).
  */
-export function rankStudents(students, scoreMap = {}) {
+export function rankStudents(
+  students: StudentRow[],
+  scoreMap: Record<string, ScoreEntry[]> = {}
+): RankedStudent[] {
   return students
     .map((u) => {
       const sc = scoreMap[u.id] || [];
@@ -61,7 +109,11 @@ export function rankStudents(students, scoreMap = {}) {
  * A single student's position within their class. Returns
  * { position, outOf } — position is null when the student isn't in the list.
  */
-export function rankClassPosition(studentId, classmates, scoreMap = {}) {
+export function rankClassPosition(
+  studentId: string,
+  classmates: StudentRow[],
+  scoreMap: Record<string, ScoreEntry[]> = {}
+): ClassPosition {
   const ranked = rankStudents(classmates, scoreMap);
   const idx = ranked.findIndex((r) => r.id === studentId);
   if (idx === -1) return { position: null, outOf: ranked.length };
@@ -75,14 +127,17 @@ export function rankClassPosition(studentId, classmates, scoreMap = {}) {
  * The parent portal used to re-rank the whole school per child (an N+1 loop);
  * this lets it resolve every child's position from one map.
  */
-export function buildArmRankings(students, scoreMap = {}) {
-  const byArm = {};
+export function buildArmRankings(
+  students: StudentRow[],
+  scoreMap: Record<string, ScoreEntry[]> = {}
+): ArmRankings {
+  const byArm: Record<string, StudentRow[]> = {};
   for (const s of students) {
     const arm = s.assignedClass || "";
     if (!byArm[arm]) byArm[arm] = [];
     byArm[arm].push(s);
   }
-  const out = {};
+  const out: ArmRankings = {};
   for (const [arm, list] of Object.entries(byArm)) {
     out[arm] = {};
     rankStudents(list, scoreMap).forEach((r) => {

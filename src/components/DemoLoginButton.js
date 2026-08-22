@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Loader2, PlayCircle } from "lucide-react";
+import { warn } from "@/lib/log";
 import { ROLE_HOME } from "@/lib/portal-guard";
 
 /**
@@ -24,7 +25,7 @@ export default function DemoLoginButton({ className = "" }) {
     fetch("/api/auth/demo-status")
       .then((r) => r.json())
       .then((d) => setAvailable(!!d.enabled))
-      .catch((e) => console.warn("[demo-status] failed:", e?.message));
+      .catch((e) => warn("demo-status", "failed:", e?.message));
   }, []);
 
   if (!available || failed) return null;

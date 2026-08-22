@@ -28,6 +28,7 @@ import Sidebar from "@/components/Sidebar";
 import ExportMyDataButton from "@/components/ExportMyDataButton";
 import RequestErasureButton from "@/components/RequestErasureButton";
 import ReportCardModal from "@/components/ReportCardModal";
+import ErrorBoundary from "@/components/ErrorBoundary";
 import PrintableTimetable from "@/components/PrintableTimetable";
 import { gradeBadgeClasses, standingFromAverage, standingRemark, ordinal } from "@/lib/grading";
 import { DAYS, getDayTimeline, getPeriodTimes, MAX_PERIOD, PERIODS, schoolDayOf } from "@/lib/timetable";
@@ -275,6 +276,7 @@ export default function StudentDashboard() {
 
           {view === "timetable" && (
             <div className="animate-fade-up">
+<ErrorBoundary label="My Timetable">
               <div className="overflow-hidden rounded-2xl border border-navy-200/70 bg-white shadow-sm">
                 <div className="flex flex-wrap items-start justify-between gap-4 border-b border-navy-100 px-6 py-4">
                   <div>
@@ -447,12 +449,12 @@ export default function StudentDashboard() {
                     : "Loading your schedule…"}
                 </span>
               </div>
+              </ErrorBoundary>
             </div>
           )}
 
           {view === "report" && (
-            <>
-          {/* Fee reminders — shown when the school reminded the student directly
+          <ErrorBoundary label="Report Card">          {/* Fee reminders — shown when the school reminded the student directly
               (no linked parent on file, so the parent portal couldn't carry it). */}
           {reminders.length > 0 && (
             <div className="mb-6 rounded-2xl border border-violet-200 bg-violet-50 p-5">
@@ -683,16 +685,17 @@ export default function StudentDashboard() {
               <div className="rounded-2xl border border-dashed border-navy-200 bg-white p-10 text-center text-navy-400 sm:col-span-2 lg:col-span-3">
                 No scores have been recorded yet for this term. Your teachers will add them soon.
               </div>
-            )}
-          </div>
-            </>
+            )}            </div>
+          </ErrorBoundary>
           )}
 
           {view === "resources" && (
-            <ResourcesView
-              classArm={session.user.assignedClass}
-              subject=""
-            />
+            <ErrorBoundary label="Resources">
+              <ResourcesView
+                classArm={session.user.assignedClass}
+                subject=""
+              />
+            </ErrorBoundary>
           )}
         </div>
       </div>

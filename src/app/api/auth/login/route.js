@@ -6,6 +6,7 @@ import { store } from "@/lib/store";
 import { setAuthCookie, jsonError } from "@/lib/auth";
 import { checkRateLimit, isLockedOut } from "@/lib/rate-limit";
 import { loginSchema, firstValidationMessage } from "@/lib/validation";
+import * as log from "@/lib/log";
 import { verifyTurnstile } from "@/lib/turnstile";
 import { resolvePostLoginRedirect } from "@/lib/portal-guard";
 import { matchesChildName, matchesSchoolName } from "@/lib/passwords";
@@ -194,7 +195,7 @@ export async function POST(request) {
       ok = true;
     } catch (queueErr) {
       // Queue timeout or Redis outage — fall through to inline bcrypt
-      console.warn("[login-queue] queue unavailable, falling back to inline:", queueErr?.message);
+      log.warn("login-queue", "queue unavailable, falling back to inline:", queueErr?.message);
       ok = null; // sentinel: will run inline path below
     }
   }

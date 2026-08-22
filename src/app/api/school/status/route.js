@@ -4,6 +4,7 @@ import { store } from "@/lib/store";
 import { invalidateSchoolAuthSnapshots, isDenied, requirePermission } from "@/lib/policy";
 import { sendEmail } from "@/lib/mailer";
 import { schoolStatusSchema, firstValidationMessage } from "@/lib/validation";
+import * as log from "@/lib/log";
 
 /**
  * School account status — POST /api/school/status with one of:
@@ -85,7 +86,7 @@ export async function POST(request) {
     });
   } catch (err) {
     // The confirmation must never take the status change down with it.
-    console.error("[school-status] alert failed:", err?.message || err);
+    log.error("school-status", "alert failed:", err?.message || err);
   }
 
   return NextResponse.json({ success: true, school });

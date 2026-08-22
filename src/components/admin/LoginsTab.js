@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Download, Eye, EyeOff, KeyRound, Printer, Search, Users } from "lucide-react";
 import { ROLE_BADGES, naira } from "./utils";
+import { warn } from "@/lib/log";
 import { ROLE_LABELS } from "@/lib/roles";
 import { useAdminShell } from "./context/AdminContext";
 import { useTabFetch } from "@/hooks/useTabFetch";
@@ -44,7 +45,7 @@ export default function LoginsTab({ openReset }) {
       )
     )
       .then((groups) => setLoginUsers(groups.flat()))
-      .catch((e) => console.warn("[login-users] load failed:", e?.message));
+      .catch((e) => warn("login-users", "load failed:", e?.message));
   }, []);
 
   // Students load on demand

@@ -19,6 +19,7 @@
  */
 
 import { store } from "@/lib/store";
+import * as log from "@/lib/log";
 
 /** How often the sweeper checks for newly-expired tenants. */
 export const SWEEPER_TICK_MS = 60 * 60 * 1000; // hourly
@@ -27,7 +28,7 @@ export function startDeletionSweeper({ store: st = store, tickMs = SWEEPER_TICK_
   const run = () => {
     st.purgeExpiredDeletedSchools().catch((err) => {
       // A failed sweep must never take the loop down — log and retry next tick.
-      console.error("[deletion-sweeper] purge failed:", err?.message || err);
+      log.error("deletion-sweeper", "purge failed:", err?.message || err);
     });
   };
 

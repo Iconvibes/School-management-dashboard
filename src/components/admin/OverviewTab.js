@@ -16,6 +16,7 @@ import {
   Wallet,
 } from "lucide-react";
 import { AreaChart, DonutChart, DayBars } from "@/components/OverviewCharts";
+import { useAdminShell } from "./context/AdminContext";
 
 const naira = (n) =>
   new Intl.NumberFormat("en-NG", {
@@ -42,41 +43,15 @@ const fmtDay = (iso) => {
 /**
  * The Overview tab of the admin dashboard — fee collection charts, class
  * distribution, attendance trend, quick actions, term rollover and the danger
- * zone. Everything the tab renders comes in through props; the parent keeps
- * ownership of all state and side effects (this component is presentational).
- *
- * @param {Object} props
- * @param {Object} props.stats            getDashboardStats payload
- * @param {number|null} props.feeDelta    collection change % (last 7 vs prior 7 days)
- * @param {number} props.maxArm           largest class-arm size (bar scaling)
- * @param {Object} props.session          current session (user + school)
- * @param {boolean} props.isSuper         can manage users (danger zone, rollover)
- * @param {boolean} props.canRoster       can manage students (roster actions)
- * @param {boolean} props.canFees         can view fees (fee actions)
- * @param {boolean} props.canReports      can view report cards
- * @param {Object} props.router           next/navigation router (page jumps)
- * @param {(tab: string) => void} props.onNavigate   switch the active tab
- * @param {("teacher"|"student") => void} props.onOpenModal
- * @param {() => void} props.onOpenRollover
- * @param {(mode: string) => void} props.onFreeze    open freeze/reactivate/restore
- * @param {() => void} props.onDelete                start the delete flow
+ * zone. Consumes all shared state from AdminContext.
  */
-export default function OverviewTab({
-  stats,
-  feeDelta,
-  maxArm,
-  session,
-  isSuper,
-  canRoster,
-  canFees,
-  canReports,
-  router,
-  onNavigate,
-  onOpenModal,
-  onOpenRollover,
-  onFreeze,
-  onDelete,
-}) {
+export default function OverviewTab() {
+  const {
+    stats, feeDelta, maxArm, session,
+    isSuper, canRoster, canFees, canReports,
+    router, setTab, setModal, setFreezeModal, setExitStep,
+    openRollover,
+  } = useAdminShell();
   if (!stats) return null;
 
   return (
@@ -235,22 +210,22 @@ export default function OverviewTab({
                   ]
                 : []),
               ...(canRoster
-                ? [{ label: "Manage students & fees", action: () => onNavigate("students") }]
+                ? [{ label: "Manage students & fees", action: () => setTab("students") }]
                 : []),
               ...(canFees
-                ? [{ label: "Manage fees & ledger", action: () => onNavigate("fees") }]
+                ? [{ label: "Manage fees & ledger", action: () => setTab("fees") }]
                 : []),
               ...(canReports
-                ? [{ label: "View report cards", action: () => onNavigate("reports") }]
+                ? [{ label: "View report cards", action: () => setTab("reports") }]
                 : []),
               ...(isSuper
                 ? [
-                    { label: "Manage teachers & payroll", action: () => onNavigate("teachers") },
-                    { label: "Add a teacher", action: () => onOpenModal("teacher") },
+                    { label: "Manage teachers & payroll", action: () => setTab("teachers") },
+                    { label: "Add a teacher", action: () => setModal("teacher") },
                   ]
                 : []),
               ...(canRoster
-                ? [{ label: "Add a student", action: () => onOpenModal("student") }]
+                ? [{ label: "Add a student", action: () => setModal("student") }]
                 : []),
             ].map((a) => (
               <button
@@ -286,7 +261,7 @@ export default function OverviewTab({
                 </div>
               </div>
               <button
-                onClick={onOpenRollover}
+                onClick={openRollover}
                 className="inline-flex shrink-0 items-center gap-2 rounded-xl bg-navy-800 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-navy-700"
               >
                 <CalendarDays className="h-4 w-4" />
@@ -342,7 +317,7 @@ export default function OverviewTab({
             </div>
             <button
               onClick={() =>
-                onFreeze(
+                setFreezeModal(
                   session.school?.status === "frozen"
                     ? "reactivate"
                     : session.school?.status === "deleted"
@@ -383,7 +358,7 @@ export default function OverviewTab({
                 </div>
               </div>
               <button
-                onClick={onDelete}
+                onClick={() => setExitStep("confirm")}
                 className="inline-flex shrink-0 items-center gap-2 rounded-xl bg-rose-600 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-rose-500"
               >
                 <Trash2 className="h-4 w-4" />

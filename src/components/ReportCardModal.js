@@ -3,6 +3,7 @@
 import { useRef, useState } from "react";
 import { Loader2, Printer, X } from "lucide-react";
 import ReportCard from "@/components/ReportCard";
+import { error } from "@/lib/log";
 import useFitScale from "@/components/useFitScale";
 
 /**
@@ -73,7 +74,7 @@ export default function ReportCardModal({
       const sessionSlug = (school?.currentSession || "").replace(/\//g, "-");
       pdf.save(`${base}-report-card-${sessionSlug}.pdf`);
     } catch (err) {
-      console.error(err);
+      error("report-card", "PDF generation failed:", err);
     } finally {
       setExporting(false);
     }

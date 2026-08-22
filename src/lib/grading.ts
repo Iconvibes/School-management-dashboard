@@ -1,10 +1,15 @@
-export const MAX_CA = 40;
-export const MAX_CA_PER_COMPONENT = 10;
-export const CA_COMPONENTS = 4;
-export const MAX_EXAM = 60;
+export const MAX_CA: number = 40;
+export const MAX_CA_PER_COMPONENT: number = 10;
+export const CA_COMPONENTS: number = 4;
+export const MAX_EXAM: number = 60;
 
 /** Compute total CA from 4 components */
-export function computeCA(ca1, ca2, ca3, ca4) {
+export function computeCA(
+  ca1: number | string | null | undefined,
+  ca2: number | string | null | undefined,
+  ca3: number | string | null | undefined,
+  ca4: number | string | null | undefined
+): number {
   return Math.min(MAX_CA, Math.max(0,
     (Number(ca1) || 0) +
     (Number(ca2) || 0) +
@@ -13,7 +18,7 @@ export function computeCA(ca1, ca2, ca3, ca4) {
   ));
 }
 
-export const DEFAULT_SUBJECTS = [
+export const DEFAULT_SUBJECTS: readonly string[] = [
   "Mathematics",
   "English Language",
   "Physics",
@@ -30,24 +35,24 @@ export const DEFAULT_SUBJECTS = [
   "Accounting",
   "Commerce",
   "French",
-];
+] as const;
 
-export const TERMS = [
+export const TERMS: readonly string[] = [
   "First Term",
   "Second Term",
   "Third Term",
-];
+] as const;
 
-export function getSubjects() {
+export function getSubjects(): string[] {
   if (process.env.EDUTRACK_SUBJECTS) {
     return process.env.EDUTRACK_SUBJECTS.split(",")
       .map((s) => s.trim())
       .filter(Boolean);
   }
-  return DEFAULT_SUBJECTS;
+  return [...DEFAULT_SUBJECTS];
 }
 
-export function computeGrade(total) {
+export function computeGrade(total: number): string {
   if (total >= 70) return "A";
   if (total >= 60) return "B";
   if (total >= 50) return "C";
@@ -55,13 +60,13 @@ export function computeGrade(total) {
   return "F";
 }
 
-export function clampScore(value, max) {
+export function clampScore(value: number | string, max: number): number {
   const n = Math.min(max, Math.max(0, Number(value) || 0));
   return Math.round(n);
 }
 
 /** Tailwind-friendly color classes per grade letter (UI use). */
-export function gradeBadgeClasses(grade) {
+export function gradeBadgeClasses(grade: string): string {
   switch (grade) {
     case "A":
       return "bg-emerald-100 text-emerald-700 ring-emerald-600/20";
@@ -76,7 +81,13 @@ export function gradeBadgeClasses(grade) {
   }
 }
 
-export function standingFromAverage(avg) {
+export interface Standing {
+  label: string;
+  color: string;
+  classes: string;
+}
+
+export function standingFromAverage(avg: number): Standing {
   if (avg >= 70)
     return { label: "Distinction", color: "#059669", classes: "bg-emerald-100 text-emerald-700 ring-emerald-600/20" };
   if (avg >= 60)
@@ -88,7 +99,7 @@ export function standingFromAverage(avg) {
   return { label: "Needs Support", color: "#e11d48", classes: "bg-rose-100 text-rose-700 ring-rose-600/20" };
 }
 
-export function standingRemark(label) {
+export function standingRemark(label: string): string {
   switch (label) {
     case "Distinction":
       return "Outstanding performance — keep it up!";
@@ -104,7 +115,7 @@ export function standingRemark(label) {
 }
 
 /** Per-subject remark shown on the report card, based on the letter grade. */
-export function subjectRemark(grade) {
+export function subjectRemark(grade: string): string {
   switch (grade) {
     case "A":
       return "Excellent grasp of the subject.";
@@ -120,7 +131,7 @@ export function subjectRemark(grade) {
 }
 
 /** 1 -> "1st", 3 -> "3rd", 21 -> "21st" etc. */
-export function ordinal(n) {
+export function ordinal(n: number): string {
   if (!n || Number.isNaN(n)) return "—";
   const s = ["th", "st", "nd", "rd"];
   const v = n % 100;
