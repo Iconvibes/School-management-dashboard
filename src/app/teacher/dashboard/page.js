@@ -27,6 +27,7 @@ import {
   Printer,
   KeyRound,
   BookOpen,
+  CloudUpload,
 } from "lucide-react";
 import Sidebar from "@/components/Sidebar";
 import TopStudents from "@/components/TopStudents";
@@ -38,6 +39,11 @@ import { DAYS, getDayTimeline, MAX_PERIOD, PERIODS, schoolDayOf } from "@/lib/ti
 import { bounceTeacherSelection } from "@/lib/teacher-scope";
 import { bounceToLogin } from "@/lib/auth-client";
 import { useClassAlerts } from "@/hooks/useClassAlerts";
+import PushNotificationManager from "@/components/PushNotificationManager";
+import { useOfflineSync } from "@/hooks/useOfflineSync";
+import { useSession } from "@/hooks/useSession";
+import { cacheData, getCachedData } from "@/lib/offline-db";
+import { timeAgo } from "@/lib/relative-time";
 
 import AttendanceView from "@/components/teacher/AttendanceView";
 import TimetableView from "@/components/teacher/TimetableView";
@@ -57,7 +63,10 @@ export default function TeacherDashboard() {
   // actually bounced the selection, so a revoked arm stops ringing at once.
   const [scopeVersion, setScopeVersion] = useState(0);
   const classAlerts = useClassAlerts(scopeVersion);
-  const [session, setSession] = useState(null);
+  const offlineSync = useOfflineSync();
+  const { meData: session, loading: sessionLoading, refetch } = useSession();
+  const [lastSync, setLastSync] = useState(null);
+  const [tick, setTick] = useState(0); // forces re-render for relative time
   const [loading, setLoading] = useState(true);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [view, setView] = useState("matrix"); // "matrix" | "attendance" | "timetable" | "reports"
@@ -117,21 +126,17 @@ export default function TeacherDashboard() {
   }, [session, subjects]);
 
   useEffect(() => {
-    (async () => {
-      const meRes = await fetch("/api/auth/me");
-      const meData = await meRes.json();
-      if (!meData.user || meData.user.role !== "TEACHER") {
-        bounceToLogin(router);
-        return;
-      }
-      setSession(meData);
-      const preferred =
-        meData.user.assignedClasses?.[0] || meData.user.assignedClass || meData.school?.activeArms?.[0] || "";
-      setClassArm(preferred);
-      setSubject(meData.user.subjects?.[0] || subjects[0] || "");
-      setLoading(false);
-    })();
-  }, [router, subjects]);
+    if (sessionLoading) return;
+    if (!session?.user || session.user.role !== "TEACHER") {
+      bounceToLogin(router);
+      return;
+    }
+    const preferred =
+      session.user.assignedClasses?.[0] || session.user.assignedClass || session.school?.activeArms?.[0] || "";
+    setClassArm(preferred);
+    setSubject(session.user.subjects?.[0] || subjects[0] || "");
+    setLoading(false);
+  }, [session, sessionLoading, router, subjects]);
 
   // ---- Live scope enforcement ----------------------------------------------
   // The API revalidates the teacher's subject-specialist scope on EVERY
@@ -147,40 +152,14 @@ export default function TeacherDashboard() {
     if (refreshBusy.current) return;
     refreshBusy.current = true;
     try {
-      const meRes = await fetch("/api/auth/me");
-      const meData = await meRes.json();
-      if (!meData.user || meData.user.role !== "TEACHER") {
-        bounceToLogin(router);
-        return;
-      }
-      const next = bounceTeacherSelection({
-        currentArm: classArm,
-        currentSubject: subject,
-        assignedClasses: meData.user.assignedClasses || [],
-        assignedClass: meData.user.assignedClass || "",
-        subjects: meData.user.subjects || [],
-        schoolArms: meData.school?.activeArms || [],
-        allSubjects: subjects,
-      });
-      const changed = [];
-      if (next.classArm !== classArm) changed.push(next.classArm);
-      if (next.subject !== subject) changed.push(next.subject);
-      // Keep the session fresh so the selectors (and any legacy single-arm
-      // fallback) render the teacher's CURRENT scope, not a stale snapshot.
-      setSession(meData);
-      if (next.classArm !== classArm) setClassArm(next.classArm);
-      if (next.subject !== subject) setSubject(next.subject);
-      if (changed.length > 0) {
-        setScopeVersion((v) => v + 1); // reload the alert scheduler's data
-        setToast(`Your assignment changed — now showing ${changed.join(" · ")}`);
-        setTimeout(() => setToast(""), 4000);
-      }
+      // Refetch session to check for scope changes
+      await refetch();
     } catch {
       // A failed /me must never break the portal — the next tick retries.
     } finally {
       refreshBusy.current = false;
     }
-  }, [classArm, subject, router, subjects]);
+  }, [refetch]);
 
   // Poll the scope on a cadence and whenever the tab regains focus (the
   // teacher likely steps away while the admin edits their assignment). Keyed
@@ -222,7 +201,24 @@ export default function TeacherDashboard() {
         if (r.status === 403) refreshScopeRef.current();
         return r.json();
       })
-      .catch(() => ({})), []);
+      .then((data) => {
+        // Cache successful responses for offline viewing (1-hour TTL)
+        if (data && Object.keys(data).length > 0) {
+          cacheData(url, data, 60 * 60 * 1000).catch(() => {});
+          setLastSync(Date.now());
+        }
+        return data;
+      })
+      .catch(() =>
+        // Network failed — try to serve from IndexedDB cache
+        getCachedData(url).then((cached) => cached || {})
+      ), []);
+
+  // Tick every minute so the "Last synced X ago" relative time updates
+  useEffect(() => {
+    const id = setInterval(() => setTick((t) => t + 1), 60000);
+    return () => clearInterval(id);
+  }, []);
 
   // Load students when class arm changes
   useEffect(() => {
@@ -366,10 +362,13 @@ export default function TeacherDashboard() {
           examScore: rows[id].exam,
         }));
 
-      const res = await fetch("/api/scores", {
+      const body = { classArm, subject, rows: payload };
+      const res = await offlineSync.offlineFetch("/api/scores", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ classArm, subject, rows: payload }),
+        body: JSON.stringify(body),
+        syncType: "grade",
+        description: `Grades ${subject} · ${classArm}`,
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Failed to save scores");
@@ -382,7 +381,11 @@ export default function TeacherDashboard() {
           ])
         )
       );
-      setToast(`Saved ${payload.length} score${payload.length === 1 ? "" : "s"} for ${subject} · ${classArm}`);
+      if (data.offline) {
+        setToast(`Queued ${payload.length} score${payload.length === 1 ? "" : "s"} for ${subject} · ${classArm} — will sync when online`);
+      } else {
+        setToast(`Saved ${payload.length} score${payload.length === 1 ? "" : "s"} for ${subject} · ${classArm}`);
+      }
       setTimeout(() => setToast(""), 3000);
     } catch (err) {
       setToast(err.message);
@@ -436,15 +439,22 @@ export default function TeacherDashboard() {
         .filter((r) => r.present !== null)
         .map((r) => ({ studentId: r.studentId, present: r.present }));
       if (payload.length === 0) throw new Error("Mark at least one student first");
-      const res = await fetch("/api/attendance", {
+      const body = { classArm, date: attDate, rows: payload };
+      const res = await offlineSync.offlineFetch("/api/attendance", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ classArm, date: attDate, rows: payload }),
+        body: JSON.stringify(body),
+        syncType: "attendance",
+        description: `Attendance ${attDate} · ${classArm}`,
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Failed to save attendance");
       const present = payload.filter((p) => p.present).length;
-      setToast(`Saved attendance · ${present} present, ${payload.length - present} absent (${attDate})`);
+      if (data.offline) {
+        setToast(`Queued attendance · ${present} present, ${payload.length - present} absent (${attDate}) — will sync when online`);
+      } else {
+        setToast(`Saved attendance · ${present} present, ${payload.length - present} absent (${attDate})`);
+      }
       setTimeout(() => setToast(""), 3500);
     } catch (err) {
       setToast(err.message);
@@ -588,6 +598,12 @@ export default function TeacherDashboard() {
               <p className="truncate text-sm font-bold text-navy-800">{session.school?.name}</p>
               <p className="truncate text-xs text-navy-400">
                 {session.school?.currentSession} · {session.school?.currentTerm}
+                {lastSync && (
+                  <span className="ml-2 inline-flex items-center gap-1 text-navy-300">
+                    <span className="inline-block h-1.5 w-1.5 rounded-full bg-navy-300" />
+                    synced {timeAgo(lastSync)}
+                  </span>
+                )}
               </p>
             </div>
           </div>
@@ -595,6 +611,19 @@ export default function TeacherDashboard() {
             <span className="hidden items-center gap-1.5 rounded-full bg-brand-50 px-3 py-1 text-xs font-semibold text-brand-700 ring-1 ring-brand-600/20 sm:flex">
               <ShieldCheck className="h-3.5 w-3.5" /> Teacher
             </span>
+            {session?.school?.id && session?.user?.id && (
+              <PushNotificationManager schoolId={session.school.id} userId={session.user.id} />
+            )}
+            {/* Pending sync button — the global banner handles the offline state */}
+            {offlineSync.pendingCount > 0 && !offlineSync.isOffline && (
+              <button
+                onClick={offlineSync.syncPending}
+                className="inline-flex items-center gap-1.5 rounded-full bg-amber-50 px-3 py-1 text-xs font-semibold text-amber-700 ring-1 ring-amber-600/20 transition hover:bg-amber-100"
+              >
+                <CloudUpload className="h-3.5 w-3.5" />
+                {offlineSync.syncing ? "Syncing…" : `${offlineSync.pendingCount} pending`}
+              </button>
+            )}
             <button
               onClick={() => {
                 setPwError("");

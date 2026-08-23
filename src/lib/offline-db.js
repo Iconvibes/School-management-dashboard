@@ -69,6 +69,19 @@ function openDB() {
 }
 
 /**
+ * Generate a unique idempotency key for a queued change.
+ * Used to prevent duplicate processing if the browser crashes mid-sync.
+ */
+function generateIdempotencyKey() {
+  // Use crypto.randomUUID() if available (modern browsers)
+  if (typeof crypto !== "undefined" && crypto.randomUUID) {
+    return crypto.randomUUID();
+  }
+  // Fallback for older browsers
+  return `${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
+}
+
+/**
  * Queue a write operation for later sync.
  *
  * @param {Object} change
@@ -85,8 +98,9 @@ export async function queueChange(change) {
     const store = tx.objectStore(STORES.PENDING);
     const record = {
       ...change,
+      idempotencyKey: change.idempotencyKey || generateIdempotencyKey(),
       timestamp: Date.now(),
-      synced: false,
+      synced: 0,
       retryCount: 0,
     };
     const request = store.add(record);
@@ -104,7 +118,7 @@ export async function getPendingChanges() {
     const tx = db.transaction(STORES.PENDING, "readonly");
     const store = tx.objectStore(STORES.PENDING);
     const index = store.index("synced");
-    const request = index.getAll(IDBKeyRange.only(false));
+    const request = index.getAll(IDBKeyRange.only(0));
     request.onsuccess = () => resolve(request.result);
     request.onerror = () => reject(request.error);
   });
@@ -122,7 +136,7 @@ export async function markSynced(id) {
     request.onsuccess = () => {
       const record = request.result;
       if (record) {
-        record.synced = true;
+        record.synced = 1;
         record.syncedAt = Date.now();
         store.put(record);
       }
@@ -187,6 +201,20 @@ export async function getCachedData(key) {
         resolve(record.data);
       }
     };
+    request.onerror = () => reject(request.error);
+  });
+}
+
+/**
+ * Delete a specific cached entry by key.
+ */
+export async function deleteCachedData(key) {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORES.CACHE, "readwrite");
+    const store = tx.objectStore(STORES.CACHE);
+    const request = store.delete(key);
+    request.onsuccess = () => resolve();
     request.onerror = () => reject(request.error);
   });
 }
@@ -268,4 +296,24 @@ export async function getPendingSummary() {
     summary[c.type] = (summary[c.type] || 0) + 1;
   }
   return { total: changes.length, byType: summary };
+}
+
+/**
+ * Reset the module's cached DB connection and delete the database.
+ * For testing only — not used in production.
+ */
+export async function __resetForTesting() {
+  // Close the cached connection first so deleteDatabase isn't blocked
+  if (_db && typeof _db.close === "function") {
+    try { _db.close(); } catch {}
+  }
+  _db = null;
+  if (typeof indexedDB !== "undefined") {
+    await new Promise((resolve) => {
+      const req = indexedDB.deleteDatabase(DB_NAME);
+      req.onsuccess = () => resolve();
+      req.onerror = () => resolve();
+      req.onblocked = () => resolve();
+    });
+  }
 }

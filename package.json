@@ -30,6 +30,7 @@
     "react": "19.2.8",
     "react-dom": "19.2.8",
     "redis": "^6.2.1",
+    "web-push": "^3.6.7",
     "zod": "^4.4.3"
   },
   "devDependencies": {
@@ -40,6 +41,7 @@
     "@types/react-dom": "^19.2.4",
     "eslint": "^9",
     "eslint-config-next": "16.3.0",
+    "fake-indexeddb": "^6.2.5",
     "pptxgenjs": "^4.0.1",
     "tailwindcss": "^4",
     "typescript": "^6.0.3"

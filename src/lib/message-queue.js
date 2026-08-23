@@ -152,6 +152,7 @@ transports.whatsapp = {
  * @param {string} opts.body — message body (plain text)
  * @param {string} [opts.preview] — short preview for in-app list
  * @param {number} [opts.amount] — optional money amount
+ * @param {string} [opts.url] — URL to open when notification is clicked (push only)
  * @param {string[]} [opts.channels] — which channels to use (defaults to ["in_app"])
  * @param {string} [opts.notificationId] — existing notification ID to avoid duplicate creation
  * @returns {Promise<{ results: Object[], allFailed: boolean }>}
@@ -165,6 +166,7 @@ export async function dispatchMessage(opts) {
     body,
     preview,
     amount,
+    url,
     channels = ["in_app"],
     notificationId,
   } = opts;
@@ -187,6 +189,7 @@ export async function dispatchMessage(opts) {
         body,
         preview,
         amount,
+        url,
         notificationId,
       });
       results.push({ channel, ...result });
@@ -203,7 +206,7 @@ export async function dispatchMessage(opts) {
  * Convenience: send a fee reminder to a parent via the configured channels.
  * Creates the in-app notification AND sends SMS/email if configured.
  */
-export async function sendFeeReminder({ schoolId, student, parent, balance, schoolName, message, channels }) {
+export async function sendFeeReminder({ schoolId, student, parent, balance, schoolName, message, channels, url }) {
   const studentName = student?.name || "your child";
   const studentLine = `${studentName}${student?.assignedClass ? ` — ${student.assignedClass}` : ""}`;
   const naira = (n) => new Intl.NumberFormat("en-NG", { style: "currency", currency: "NGN", maximumFractionDigits: 0 }).format(Number(n) || 0);
@@ -249,6 +252,7 @@ export async function sendFeeReminder({ schoolId, student, parent, balance, scho
     body,
     preview,
     amount: balance,
+    url: url || "/parent/dashboard",
     channels: channelsToUse,
     notificationId: notification.id,
   });
@@ -257,7 +261,7 @@ export async function sendFeeReminder({ schoolId, student, parent, balance, scho
 /**
  * Convenience: deliver report card notification to a parent.
  */
-export async function sendReportCardReady({ schoolId, student, parent, term, session, reportUrl, channels }) {
+export async function sendReportCardReady({ schoolId, student, parent, term, session, reportUrl, channels, url }) {
   const studentName = student?.name || "your child";
   const naira = (n) => new Intl.NumberFormat("en-NG", { style: "currency", currency: "NGN", maximumFractionDigits: 0 }).format(Number(n) || 0);
 
@@ -296,6 +300,7 @@ export async function sendReportCardReady({ schoolId, student, parent, term, ses
     subject,
     body,
     preview,
+    url: url || "/parent/dashboard",
     channels: channelsToUse,
     notificationId: notification.id,
   });
@@ -304,7 +309,7 @@ export async function sendReportCardReady({ schoolId, student, parent, term, ses
 /**
  * Convenience: send a class resource notification (notes, assignments).
  */
-export async function sendResourceNotification({ schoolId, teacher, students, parentEmails, resource, channels }) {
+export async function sendResourceNotification({ schoolId, teacher, students, parentEmails, resource, channels, url }) {
   const subject = `New ${resource.type} from ${teacher?.name || "your teacher"}`;
   const preview = `${teacher?.name || "Teacher"} posted "${resource.title}" for ${resource.classArm}`;
   const body = [
@@ -335,6 +340,7 @@ export async function sendResourceNotification({ schoolId, teacher, students, pa
     subject,
     body,
     preview,
+    url: url || "/student/dashboard",
     channels: channelsToUse,
     notificationId: notification.id,
   });

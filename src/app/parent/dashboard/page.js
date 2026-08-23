@@ -23,6 +23,7 @@ import {
 } from "lucide-react";
 import Sidebar from "@/components/Sidebar";
 import ExportMyDataButton from "@/components/ExportMyDataButton";
+import PushNotificationManager from "@/components/PushNotificationManager";
 import RequestErasureButton from "@/components/RequestErasureButton";
 import ReportCardModal from "@/components/ReportCardModal";
 import ReceiptModal from "@/components/ReceiptModal";
@@ -36,6 +37,8 @@ import Modal from "@/components/Modal";
 import { gradeBadgeClasses, ordinal } from "@/lib/grading";
 import { summarizeFamilyFees } from "@/lib/family-fees";
 import { bounceToLogin } from "@/lib/auth-client";
+import { useSession } from "@/hooks/useSession";
+import { timeAgo } from "@/lib/relative-time";
 
 const naira = (n) =>
   new Intl.NumberFormat("en-NG", {
@@ -48,7 +51,9 @@ const METHODS = ["CARD", "TRANSFER", "USSD", "POS", "CASH"];
 
 export default function ParentDashboard() {
   const router = useRouter();
-  const [session, setSession] = useState(null);
+  const [lastSync, setLastSync] = useState(null);
+  const [tick, setTick] = useState(0);
+  const { meData: session, loading: sessionLoading } = useSession();
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -85,19 +90,23 @@ export default function ParentDashboard() {
   }, []);
 
   useEffect(() => {
-    (async () => {
-      const meRes = await fetch("/api/auth/me");
-      const meData = await meRes.json();
-      if (!meData.user || meData.user.role !== "PARENT") {
-        bounceToLogin(router);
-        return;
-      }
-      setSession(meData);
-      const body = await refresh();
+    if (sessionLoading) return;
+    if (!session?.user || session.user.role !== "PARENT") {
+      bounceToLogin(router);
+      return;
+    }
+    setLastSync(Date.now());
+    refresh().then((body) => {
       if (body.children?.length) setSelectedId(body.children[0].id);
       setLoading(false);
-    })();
-  }, [router, refresh]);
+    });
+  }, [session, sessionLoading, router, refresh]);
+
+  // Tick every minute so "Last synced X ago" relative time updates
+  useEffect(() => {
+    const id = setInterval(() => setTick((t) => t + 1), 60000);
+    return () => clearInterval(id);
+  }, []);
 
   // Keep the portal fresh — a school confirmation (and its receipt) can arrive
   // at any time, so refetch when the tab regains focus and on a light poll,
@@ -243,6 +252,12 @@ export default function ParentDashboard() {
               <p className="truncate text-sm font-bold text-navy-800">{session?.school?.name}</p>
               <p className="truncate text-xs text-navy-400">
                 {session?.school?.currentSession} · {session?.school?.currentTerm}
+                {lastSync && (
+                  <span className="ml-2 inline-flex items-center gap-1 text-navy-300">
+                    <span className="inline-block h-1.5 w-1.5 rounded-full bg-navy-300" />
+                    synced {timeAgo(lastSync)}
+                  </span>
+                )}
               </p>
             </div>
           </div>
@@ -250,6 +265,9 @@ export default function ParentDashboard() {
             <span className="hidden items-center gap-1.5 rounded-full bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-700 ring-1 ring-emerald-600/20 sm:flex">
               <HeartHandshake className="h-3.5 w-3.5" /> Parent
             </span>
+            {session?.school?.id && session?.user?.id && (
+              <PushNotificationManager schoolId={session.school.id} userId={session.user.id} />
+            )}
             <div className="flex h-9 w-9 items-center justify-center rounded-full bg-gradient-to-br from-brand-500 to-brand-700 text-sm font-bold text-white">
               {session.user.name.split(" ").map((w) => w[0]).join("").slice(0, 2).toUpperCase()}
             </div>

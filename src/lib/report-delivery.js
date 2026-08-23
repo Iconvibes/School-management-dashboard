@@ -143,6 +143,7 @@ async function deliverToStudent({ schoolId, student, session, term, school, chan
     subject,
     body,
     preview,
+    url: "/parent/dashboard",
     channels: channels,
     notificationId: notification.id,
   });

@@ -195,7 +195,11 @@ export default function useAdminActions({
   setReportLoading,
   // Search
   search,
+  // Offline sync — optional; when provided, fee writes queue offline
+  offlineFetch,
 }) {
+  // Fall back to plain fetch when offlineFetch is not provided (e.g. tests)
+  const safeFetch = offlineFetch || fetch;
   const subjects = getSubjects();
   const pendingToggleRef = useRef(new Set());
 
@@ -228,15 +232,21 @@ export default function useAdminActions({
   async function confirmPayment(id) {
     setConfirmingId(id);
     try {
-      const res = await fetch("/api/fees/payments", {
+      const res = await safeFetch("/api/fees/payments", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ id }),
+        syncType: "fee-confirm",
+        description: `Confirm payment ${id}`,
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Failed to confirm payment");
-      showToast(`Payment confirmed — balance updated`);
-      await refreshFeeData();
+      if (data.offline) {
+        showToast(`Payment queued — will confirm when online`);
+      } else {
+        showToast(`Payment confirmed — balance updated`);
+        await refreshFeeData();
+      }
     } catch (err) {
       showToast(err.message);
     } finally {
@@ -247,21 +257,27 @@ export default function useAdminActions({
   async function saveFeeStructure(classArm) {
     setFeeSaving(true);
     try {
-      const res = await fetch("/api/fees/structures", {
+      const res = await safeFetch("/api/fees/structures", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ classArm, amount: feeDraft[classArm] }),
+        syncType: "fee-structure",
+        description: `Fee structure ${classArm}`,
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Failed to save fee structure");
-      setFeeStructures((prev) => {
-        const existing = prev.find((s) => s.classArm === classArm);
-        return existing
-          ? prev.map((s) => (s.classArm === classArm ? data.structure : s))
-          : [...prev, data.structure];
-      });
-      await refreshFeeData();
-      showToast(`Fee for ${classArm} updated`);
+      if (data.offline) {
+        showToast(`Fee update for ${classArm} queued — will sync when online`);
+      } else {
+        setFeeStructures((prev) => {
+          const existing = prev.find((s) => s.classArm === classArm);
+          return existing
+            ? prev.map((s) => (s.classArm === classArm ? data.structure : s))
+            : [...prev, data.structure];
+        });
+        await refreshFeeData();
+        showToast(`Fee for ${classArm} updated`);
+      }
     } catch (err) {
       showToast(err.message);
     } finally {
@@ -273,17 +289,23 @@ export default function useAdminActions({
     if (!payModal) return;
     setFeeSaving(true);
     try {
-      const res = await fetch("/api/fees/payments", {
+      const res = await safeFetch("/api/fees/payments", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ studentId: payModal, ...payForm }),
+        syncType: "fee-payment",
+        description: `Record payment for student ${payModal}`,
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Failed to record payment");
-      showToast(`Payment recorded · ${data.payment.receiptNo}`);
+      if (data.offline) {
+        showToast(`Payment queued — will record when online`);
+      } else {
+        showToast(`Payment recorded · ${data.payment.receiptNo}`);
+      }
       setPayModal(null);
       setPayForm({ amount: "", method: "CASH", note: "" });
-      await refreshFeeData();
+      if (!data.offline) await refreshFeeData();
     } catch (err) {
       showToast(err.message);
     } finally {
@@ -317,7 +339,7 @@ export default function useAdminActions({
         ? crypto.randomUUID()
         : `batch-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     try {
-      const res = await fetch("/api/fees/reminders", {
+      const res = await safeFetch("/api/fees/reminders", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -326,6 +348,8 @@ export default function useAdminActions({
           messageStudent: reminderStudentMessage,
           batchId,
         }),
+        syncType: "fee-reminder",
+        description: `Fee reminder to ${scope === "all" ? "all students" : scope}`,
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Failed to send reminders");

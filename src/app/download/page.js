@@ -113,7 +113,7 @@ export default function DownloadPage() {
       {/* ============ HERO ============ */}
       <section className="relative overflow-hidden">
         <Parallax speed={0.2} className="pointer-events-none absolute inset-0">
-          <div className="absolute -top-40 left-1/2 h-[520px] w-[900px] -translate-x-1/2 rounded-full bg-brand-600/25 blur-[150px]" />
+          <div className="absolute -top-40 left-1/2 h-130 w-225 -translate-x-1/2 rounded-full bg-brand-600/25 blur-[150px]" />
         </Parallax>
         <div className="pointer-events-none absolute inset-0 opacity-[0.12]">
           <div
@@ -134,7 +134,7 @@ export default function DownloadPage() {
             </span>
             <h1 className="mt-6 text-4xl font-extrabold leading-[1.05] tracking-tight text-white sm:text-6xl">
               Edutrack, as an app on{" "}
-              <span className="animate-gradient-text bg-gradient-to-r from-brand-400 via-brand-300 to-violet-400 bg-clip-text text-transparent">
+              <span className="animate-gradient-text bg-linear-to-r from-brand-400 via-brand-300 to-violet-400 bg-clip-text text-transparent">
                 any device
               </span>
             </h1>

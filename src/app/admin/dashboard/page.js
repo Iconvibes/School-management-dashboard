@@ -116,6 +116,10 @@ import { naira } from "@/components/admin/utils";
 import ScheduleHealthCard from "@/components/admin/ScheduleHealthCard";
 import ErrorBoundary from "@/components/ErrorBoundary";
 import { getVisibleTabs } from "@/components/admin/tabConfig";
+import PushNotificationManager from "@/components/PushNotificationManager";
+import { useOfflineSync } from "@/hooks/useOfflineSync";
+import { useSession } from "@/hooks/useSession";
+import { timeAgo } from "@/lib/relative-time";
 import FreezeRestoreModal from "@/components/admin/modals/FreezeRestoreModal";
 import ExitFlowModal from "@/components/admin/modals/ExitFlowModal";
 import LinkParentModal from "@/components/admin/modals/LinkParentModal";
@@ -153,22 +157,13 @@ const BRAND_COLORS = ["#2563EB", "#0EA5E9", "#8B5CF6", "#10B981", "#F59E0B", "#E
 /** "02:00"-style label for the health card's scheduled-scan line. */
 const fmtHour = (h) => `${String(h ?? 2).padStart(2, "0")}:00`;
 
-/** Compact relative time for the health card's "Scanned …" line. */
-function timeAgo(iso) {
-  if (!iso) return "never";
-  const secs = Math.max(1, Math.floor((Date.now() - new Date(iso).getTime()) / 1000));
-  if (secs < 60) return "just now";
-  const mins = Math.floor(secs / 60);
-  if (mins < 60) return `${mins}m ago`;
-  const hrs = Math.floor(mins / 60);
-  if (hrs < 24) return `${hrs}h ago`;
-  const days = Math.floor(hrs / 24);
-  return days === 1 ? "yesterday" : `${days}d ago`;
-}
 
 export default function AdminDashboard() {
   const router = useRouter();
-  const [session, setSession] = useState(null);
+  const offlineSync = useOfflineSync();
+  const { meData: session, loading: sessionLoading } = useSession();
+  const [lastSync, setLastSync] = useState(null);
+  const [tick, setTick] = useState(0);
   const [stats, setStats] = useState(null);
   const [teachers, setTeachers] = useState([]);
   const [students, setStudents] = useState([]);
@@ -399,35 +394,39 @@ export default function AdminDashboard() {
   useEffect(() => { if (roleAuditData) setRoleAudit(roleAuditData); }, [roleAuditData]);
 
   useEffect(() => {
-    (async () => {
-      const meRes = await fetch("/api/auth/me");
-      const meData = await meRes.json();
-      if (!meData.user || !STAFF_ROLES.includes(meData.user.role)) {
-        bounceToLogin(router);
-        return;
-      }
-      setSession(meData);
-      setTtArm(meData.school?.activeArms?.[0] || "");
+    if (sessionLoading) return;
+    if (!session?.user || !STAFF_ROLES.includes(session.user.role)) {
+      bounceToLogin(router);
+      return;
+    }
+    setLastSync(Date.now());
+    setTtArm(session.school?.activeArms?.[0] || "");
 
-      const [statsRes, teachersRes, studentsRes, parentsRes] = await Promise.all([
-        fetch("/api/admin/stats"),
-        fetch("/api/users?role=TEACHER"),
-        fetch("/api/users?role=STUDENT"),
-        fetch("/api/users?role=PARENT"),
-      ]);
+    Promise.all([
+      fetch("/api/admin/stats"),
+      fetch("/api/users?role=TEACHER"),
+      fetch("/api/users?role=STUDENT"),
+      fetch("/api/users?role=PARENT"),
+    ]).then(async ([statsRes, teachersRes, studentsRes, parentsRes]) => {
       setStats((await statsRes.json()).stats);
       setTeachers((await teachersRes.json()).users);
       setStudents((await studentsRes.json()).users);
       setParents((await parentsRes.json()).users);
-      if (meData.user?.role === "SUPER_ADMIN") {
+      if (session.user?.role === "SUPER_ADMIN") {
         fetch("/api/timetable/health")
           .then((r) => r.json())
           .then((d) => setTtHealth(d))
           .catch((e) => warn("tt-health", "refresh failed:", e?.message));
       }
       setLoading(false);
-    })();
-  }, [router]);
+    });
+  }, [session, sessionLoading, router]);
+
+  // Tick every minute so "Last synced X ago" relative time updates
+  useEffect(() => {
+    const id = setInterval(() => setTick((t) => t + 1), 60000);
+    return () => clearInterval(id);
+  }, []);
 
   // ---- Hook: all action functions + derived timetable/fee values ----------
   const {
@@ -506,6 +505,7 @@ export default function AdminDashboard() {
     exitSaving, setExitSaving, exitRestorableUntil, setExitRestorableUntil,
     setReportPayload, setReportLoading,
     search,
+    offlineFetch: offlineSync.offlineFetch,
   });
 
   const subjects = hookSubjects;
@@ -660,6 +660,12 @@ export default function AdminDashboard() {
                 </span>
                 <span className="truncate text-xs text-navy-400">
                   {session.school?.currentSession} · {session.school?.currentTerm}
+                  {lastSync && (
+                    <span className="ml-2 inline-flex items-center gap-1 text-navy-300">
+                      <span className="inline-block h-1.5 w-1.5 rounded-full bg-navy-300" />
+                      synced {timeAgo(lastSync)}
+                    </span>
+                  )}
                 </span>
               </span>
             </button>
@@ -668,6 +674,17 @@ export default function AdminDashboard() {
             <span className="hidden items-center gap-1.5 rounded-full bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-700 ring-1 ring-emerald-600/20 sm:flex">
               <ShieldCheck className="h-3.5 w-3.5" /> {ROLE_LABEL[myRole] || myRole}
             </span>
+            {session?.school?.id && session?.user?.id && (
+              <PushNotificationManager schoolId={session.school.id} userId={session.user.id} />
+            )}
+            {offlineSync.pendingCount > 0 && !offlineSync.isOffline && (
+              <button
+                onClick={offlineSync.syncPending}
+                className="inline-flex items-center gap-1.5 rounded-full bg-amber-50 px-3 py-1 text-xs font-semibold text-amber-700 ring-1 ring-amber-600/20 transition hover:bg-amber-100"
+              >
+                {offlineSync.syncing ? "Syncing…" : `${offlineSync.pendingCount} pending`}
+              </button>
+            )}
             <div className="flex h-9 w-9 items-center justify-center rounded-full bg-gradient-to-br from-brand-500 to-brand-700 text-sm font-bold text-white">
               {session.user.name.split(" ").map((w) => w[0]).join("").slice(0, 2).toUpperCase()}
             </div>

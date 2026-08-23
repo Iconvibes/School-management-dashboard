@@ -67,7 +67,7 @@ src/
 │   └── marketing/            # Marketing-site components (SiteNav, Reveal, etc.)
 ├── lib/                      # THE data layer + business logic
 ├── models/                   # Mongoose schemas (Mongo mode only)
-└── public/                   # (repo root) PWA files: manifest, sw.js, icons
+└── public/                   # (repo root) PWA files: manifest, sw-enhanced.js, icons
 ```
 
 ---
@@ -484,7 +484,7 @@ Server-safe. A brand-gradient rounded square with a graduation-cap icon + "Edu**
 **Used by:** homepage hero + CTA, `SiteNav`, `pricing`, `trust`, `contact`.
 
 #### `PwaRegister.js` — service worker registration
-"use client", renders `null`. Registers `/sw.js` on load (dev AND production) so the app is installable as a PWA. No props.
+"use client", renders `null`. Registers `/sw-enhanced.js` on load (dev AND production) so the app is installable as a PWA. The enhanced SW provides caching for offline dashboards, push notifications, and cache versioning. No props.
 
 **Used by:** `app/layout.js` only (once, app-wide).
 
@@ -522,7 +522,7 @@ The app is a **Progressive Web App** — installable on Android (Chrome) and Win
 | File | Role |
 |---|---|
 | `public/manifest.webmanifest` | App name, icons, `standalone` display, shortcuts |
-| `public/sw.js` | Service worker — network-first with offline shell |
+| `public/sw-enhanced.js` | Service worker — offline shell for all dashboards, push notifications, cache-first static assets, network-first API calls |
 | `public/icons/` | `icon-192`, `icon-512`, `icon-maskable-512`, `apple-touch-icon` |
 | `src/components/PwaRegister.js` | SW registration (runs in dev AND production) |
 | `src/components/InstallPwaButton.js` | Shows the install button when the browser supports it |

@@ -30,9 +30,12 @@ import RequestErasureButton from "@/components/RequestErasureButton";
 import ReportCardModal from "@/components/ReportCardModal";
 import ErrorBoundary from "@/components/ErrorBoundary";
 import PrintableTimetable from "@/components/PrintableTimetable";
+import { useOfflineSync } from "@/hooks/useOfflineSync";
 import { gradeBadgeClasses, standingFromAverage, standingRemark, ordinal } from "@/lib/grading";
 import { DAYS, getDayTimeline, getPeriodTimes, MAX_PERIOD, PERIODS, schoolDayOf } from "@/lib/timetable";
 import { bounceToLogin } from "@/lib/auth-client";
+import { useSession } from "@/hooks/useSession";
+import { timeAgo } from "@/lib/relative-time";
 import ResourcesView from "@/components/student/ResourcesView";
 
 const naira = (n) =>
@@ -53,7 +56,10 @@ const PENDING_STANDING = {
 
 export default function StudentDashboard() {
   const router = useRouter();
-  const [session, setSession] = useState(null);
+  const offlineSync = useOfflineSync();
+  const { meData: session, loading: sessionLoading } = useSession();
+  const [lastSync, setLastSync] = useState(null);
+  const [tick, setTick] = useState(0);
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -74,24 +80,22 @@ export default function StudentDashboard() {
   const [pwDone, setPwDone] = useState(false);
 
   useEffect(() => {
-    (async () => {
-      const meRes = await fetch("/api/auth/me");
-      const meData = await meRes.json();
-      if (!meData.user || meData.user.role !== "STUDENT") {
-        bounceToLogin(router);
-        return;
-      }
-      setSession(meData);
+    if (sessionLoading) return;
+    if (!session?.user || session.user.role !== "STUDENT") {
+      bounceToLogin(router);
+      return;
+    }
+    setLastSync(Date.now());
 
-      const [scoresRes, remindersRes] = await Promise.all([
-        fetch("/api/scores/student"),
-        fetch("/api/student/reminders"),
-      ]);
-      setData(await scoresRes.json());
-      setReminders((await remindersRes.json()).reminders || []);
+    Promise.all([
+      fetch("/api/scores/student"),
+      fetch("/api/student/reminders"),
+    ]).then(([scoresRes, remindersRes]) => {
+      setData(scoresRes.json());
+      setReminders(remindersRes.json().reminders || []);
       setLoading(false);
-    })();
-  }, [router]);
+    });
+  }, [session, sessionLoading, router]);
 
   // Sidebar hash links: /student/dashboard#timetable opens the class schedule.
   // The tab buttons keep the hash in sync (clearing it when leaving), so the
@@ -107,6 +111,12 @@ export default function StudentDashboard() {
     applyHash();
     window.addEventListener("hashchange", applyHash);
     return () => window.removeEventListener("hashchange", applyHash);
+  }, []);
+
+  // Tick every minute so "Last synced X ago" relative time updates
+  useEffect(() => {
+    const id = setInterval(() => setTick((t) => t + 1), 60000);
+    return () => clearInterval(id);
   }, []);
 
   // Load the class-arm timetable (the shared schedule for ALL of the student's
@@ -229,6 +239,12 @@ export default function StudentDashboard() {
               </p>
               <p className="text-xs text-navy-400">
                 {session.school?.currentSession} · {session.school?.currentTerm}
+                {lastSync && (
+                  <span className="ml-2 inline-flex items-center gap-1 text-navy-300">
+                    <span className="inline-block h-1.5 w-1.5 rounded-full bg-navy-300" />
+                    synced {timeAgo(lastSync)}
+                  </span>
+                )}
               </p>
             </div>
           </div>
@@ -236,6 +252,11 @@ export default function StudentDashboard() {
             <span className="hidden items-center gap-1.5 rounded-full bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-700 ring-1 ring-emerald-600/20 sm:flex">
               <ShieldCheck className="h-3.5 w-3.5" /> Student
             </span>
+            {offlineSync.isOffline && (
+              <span className="inline-flex items-center gap-1.5 rounded-full bg-amber-50 px-3 py-1 text-xs font-semibold text-amber-700 ring-1 ring-amber-600/20">
+                Offline
+              </span>
+            )}
             <button
               onClick={() => setPreviewOpen(true)}
               className="inline-flex items-center gap-2 rounded-xl bg-brand-600 px-4 py-2 text-sm font-semibold text-white shadow-lg shadow-brand-600/30 transition hover:bg-brand-500"

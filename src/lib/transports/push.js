@@ -50,7 +50,7 @@ async function sendToSubscription(subscription, payload) {
         body: payload.body || "",
         icon: payload.icon || "/icons/icon-192.png",
         badge: payload.badge || "/icons/badge-72.png",
-        data: { url: payload.url || "/parent/dashboard" },
+        data: { url: payload.url || "/" },
         tag: payload.tag || "edutrack-notification",
         renotify: true,
       })
