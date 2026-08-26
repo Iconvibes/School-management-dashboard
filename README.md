@@ -112,6 +112,32 @@ The container definitions live in `deploy/Dockerfile` and
 nosniff, Referrer-Policy, Permissions-Policy) are stamped on every response
 by `src/proxy.js` automatically.
 
+
+## 🧪 Testing & CI
+
+**Unit tests** (77 test files, `node:test`):
+
+```
+npm test                          # all tests
+node --test tests/permissions.test.js  # single file
+```
+
+**Lint:**
+
+```
+npm run lint                      # full project
+npx eslint src/lib/permissions.js # single file
+```
+
+**E2E tests** (Playwright):
+
+```
+npm run test:e2e                  # requires app on localhost:3000
+```
+
+**CI** runs on every push/PR to `main` via `.github/workflows/ci.yml`:
+lint + unit tests, then build + Playwright e2e.
+
 ## 🧱 Architecture
 
 ```
