@@ -200,17 +200,14 @@ for print-quality output. A server-side pipeline would need a headless browser
 
 These were done for speed and should be revisited when the code stabilizes.
 
-### S1. `console.warn` cleanup (August 2026)
+### S1. `console.warn` cleanup → **Resolved** (Sentry wired, September 2026)
 
 All 27 raw `console.warn`/`console.error` calls were migrated to the
-structured logger (`src/lib/log.js`). The logger delegates to `console.*` in
-dev and is swappable for production logging. **No production logging pipeline
-is configured yet** — the `isDev` gate means production calls are silently
-swallowed.
-
-**Action:** When deploying to production, wire `log.warn`/`log.error` to a
-structured logging service (e.g. Datadog, BetterStack, or a simple JSON stdout
-emitter).
+structured logger (`src/lib/log.js`). The logger now reports to Sentry in
+production (via lazy `import("@sentry/nextjs")` when `SENTRY_DSN` is set)
+and delegates to `console.*` in dev. PII fields (email, phone, password,
+token, secret) are scrubbed by `scrubPII()` in `sentry.server.config.js`
+before reaching Sentry — tested in `tests/sentry-pii-scrub.test.js`.
 
 ### S2. Demo seed edge-coloring extraction (August 2026)
 

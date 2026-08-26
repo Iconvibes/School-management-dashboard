@@ -24,7 +24,17 @@
 const g = globalThis;
 
 export async function register() {
-  if (process.env.NEXT_RUNTIME !== "nodejs") return;
+  // Sentry: initialize error monitoring per runtime. Only active when
+  // SENTRY_DSN is set — no DSN means Sentry is a no-op.
+  if (process.env.NEXT_RUNTIME === "edge") {
+    if (process.env.SENTRY_DSN) {
+      await import("../sentry.edge.config");
+    }
+    return; // Edge skips Node-only background jobs below.
+  }
+  if (process.env.SENTRY_DSN) {
+    await import("../sentry.server.config");
+  }
   if (process.env.NEXT_PHASE === "phase-production-build") return;
   // REDIS_URL is REQUIRED in production: the shared rate-limit buckets and
   // the auth/stats/timetable caches depend on it (a multi-instance deploy

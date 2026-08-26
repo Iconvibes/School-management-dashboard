@@ -19,7 +19,26 @@
  * needs to change this file — callers are untouched.
  */
 
+let Sentry;
 const isDev = () => process.env.NODE_ENV !== "production";
+
+// Lazy-load Sentry — only import when DSN is set and we're in production.
+// This avoids pulling in the SDK in dev/test and keeps the import out of
+// the Edge bundle (Sentry is a Node-only dependency here).
+// NOTE: log.js is ESM, so we use import() not require(). The import is
+// awaited inside the warn/error functions; on first call the promise is
+// cached in the module-level Sentry variable.
+let sentryReady = null;
+function getSentry() {
+  if (Sentry) return Promise.resolve(Sentry);
+  if (!process.env.SENTRY_DSN) return Promise.resolve(null);
+  if (sentryReady) return sentryReady;
+  sentryReady = import("@sentry/nextjs").then((mod) => {
+    Sentry = mod;
+    return mod;
+  }).catch(() => null);
+  return sentryReady;
+}
 
 /**
  * Operational warning — something unexpected happened but the app keeps
@@ -33,7 +52,19 @@ export function warn(tag, msg, ...args) {
   if (isDev()) {
     console.warn(`[${tag}] ${msg}`, ...args);
   }
-  // Production: swallow or pipe to an external logger here.
+  // Production: report to Sentry as a warning. Fire-and-forget — callers
+  // must not await this; the promise is cached for subsequent calls.
+  if (!isDev()) {
+    getSentry().then((s) => {
+      if (s) {
+        s.withScope((scope) => {
+          scope.setTag("log.tag", tag);
+          scope.setLevel("warning");
+          s.captureMessage(`[${tag}] ${msg}`, "warning");
+        });
+      }
+    });
+  }
 }
 
 /**
@@ -48,7 +79,25 @@ export function error(tag, msg, ...args) {
   if (isDev()) {
     console.error(`[${tag}] ${msg}`, ...args);
   }
-  // Production: swallow or pipe to an external logger here.
+  // Production: report to Sentry as an error. Fire-and-forget — callers
+  // must not await this; the promise is cached for subsequent calls.
+  if (!isDev()) {
+    getSentry().then((s) => {
+      if (s) {
+        s.withScope((scope) => {
+          scope.setTag("log.tag", tag);
+          scope.setLevel("error");
+          const err = args.find((a) => a instanceof Error);
+          if (err) {
+            scope.setExtras({ message: msg, tag });
+            s.captureException(err);
+          } else {
+            s.captureMessage(`[${tag}] ${msg}`, "error");
+          }
+        });
+      }
+    });
+  }
 }
 
 /**
