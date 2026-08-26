@@ -49,6 +49,17 @@ export async function register() {
         "See docs/disaster-recovery.md."
     );
   }
+  // JWT_SECRET is REQUIRED in production: without it, token.js falls back to
+  // a hardcoded dev literal (src/lib/token.js) — sessions become forgeable by
+  // anyone who reads the source. Fail the boot loudly instead of running with
+  // a known secret.
+  if (process.env.NODE_ENV === "production" && !process.env.JWT_SECRET) {
+    throw new Error(
+      "JWT_SECRET is required in production: token.js falls back to a hardcoded " +
+        "dev secret when unset, making sessions forgeable. Generate one " +
+        "(e.g. `openssl rand -base64 48`) and set it in your deployment env."
+    );
+  }
   // RUN_JOBS gate: only the designated primary replica starts the timers. A
   // non-primary instance skips even the scheduler imports — no timers, no
   // duplicate scans, no duplicate sweeps.

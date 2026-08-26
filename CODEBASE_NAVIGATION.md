@@ -631,7 +631,7 @@ Copy `.env.example` → `.env.local` to customize:
 | Variable | Purpose | Default |
 |---|---|---|
 | `MONGODB_URI` | MongoDB connection string. **If unset → demo mode.** | *(demo mode)* |
-| `JWT_SECRET` | Signs session tokens | `edutrack-dev-secret-change-in-prod` |
+| `JWT_SECRET` | Signs session tokens. **Required in production** (boot fails without it). | `edutrack-dev-secret-change-in-prod` (dev only) |
 | `EDUTRACK_SUBJECTS` | Comma-separated custom subject list | built-in list |
 | `NEXT_PUBLIC_*` | (none currently used) | — |
 
