@@ -479,3 +479,15 @@ input[type="number"] {
     background: #fff !important;
   }
 }
+
+/* Platform admin dark control-center body override */
+body.platform-admin-body {
+  background-color: #0a0a0f !important;
+  color: #f3f4f6 !important;
+}
+body.platform-admin-body *::-webkit-scrollbar-thumb {
+  background: #334155;
+  border-radius: 8px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}

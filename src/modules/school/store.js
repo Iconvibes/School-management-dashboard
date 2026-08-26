@@ -49,6 +49,10 @@ function termRankKey(session, term) {
 }
 
 export async function createSchoolAndAdmin({ schoolName, adminName, email, password }) {
+  const now = new Date();
+  const trialEnd = new Date(now);
+  trialEnd.setDate(trialEnd.getDate() + 14);
+
   const school = {
     id: nid("sch"),
     name: schoolName,
@@ -63,7 +67,14 @@ export async function createSchoolAndAdmin({ schoolName, adminName, email, passw
     currentTerm: "First Term",
     onboardingComplete: false,
     reminderTemplates: {},
-    createdAt: nowIso(),
+    // New schools start on a 14-day free trial of the Starter plan
+    billingPlan: "trial",
+    billingCycle: "monthly",
+    subscriptionStatus: "trial",
+    trialStart: now.toISOString(),
+    trialEnd: trialEnd.toISOString(),
+    currentPeriodEnd: trialEnd.toISOString(),
+    createdAt: now.toISOString(),
   };
   schools.push(school);
   const user = {
@@ -91,6 +102,7 @@ export async function createSchoolAndAdmin({ schoolName, adminName, email, passw
 export async function searchSchools(search, limit = 8) {
   const q = (search || "").toLowerCase().trim();
   return schools
+    .filter((s) => !s.isPlatformSchool)
     .filter((s) => !q || s.name.toLowerCase().includes(q))
     .slice(0, limit)
     .map((s) => ({
@@ -512,4 +524,87 @@ export async function listLeads(kind) {
   return leads.filter((l) => (kind ? l.kind === kind : true))
     .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
     .map((l) => { const { emailIdx, ...safe } = l; return safe; });
+}
+
+// ── SaaS Subscription Management ─────────────────────────────────────
+
+/**
+ * Update a school's subscription status and billing details.
+ */
+export async function updateSchoolSubscription(schoolId, updates) {
+  const school = schools.find((s) => s.id === schoolId);
+  if (!school) return null;
+  const allowed = [
+    "billingPlan", "billingCycle", "paystackCustomerCode",
+    "paystackSubscriptionCode", "paystackPlanCode",
+    "subscriptionStatus", "currentPeriodEnd", "trialStart", "trialEnd",
+  ];
+  for (const key of allowed) {
+    if (updates[key] !== undefined) school[key] = updates[key];
+  }
+  school.updatedAt = nowIso();
+  persist();
+  return clone(school);
+}
+
+/**
+ * Get all schools with their subscription status (platform admin view).
+ */
+export async function listSchoolSubscriptions() {
+  return schools
+    .filter((s) => s.status !== "deleted")
+    .map((s) => ({
+      id: s.id,
+      name: s.name,
+      brandColor: s.brandColor,
+      billingPlan: s.billingPlan || "trial",
+      billingCycle: s.billingCycle || "monthly",
+      subscriptionStatus: s.subscriptionStatus || "trial",
+      currentPeriodEnd: s.currentPeriodEnd || null,
+      trialEnd: s.trialEnd || null,
+      paystackCustomerCode: s.paystackCustomerCode || "",
+      paystackSubscriptionCode: s.paystackSubscriptionCode || "",
+      isPlatformSchool: !!s.isPlatformSchool,
+    }));
+}
+
+/**
+ * Start a trial for a newly registered school.
+ */
+export async function startSchoolTrial(schoolId) {
+  const school = schools.find((s) => s.id === schoolId);
+  if (!school) return null;
+  const now = new Date();
+  const trialEnd = new Date(now);
+  trialEnd.setDate(trialEnd.getDate() + 14);
+  school.billingPlan = "trial";
+  school.subscriptionStatus = "trial";
+  school.trialStart = now.toISOString();
+  school.trialEnd = trialEnd.toISOString();
+  school.updatedAt = nowIso();
+  persist();
+  return clone(school);
+}
+
+/**
+ * Check if a school's subscription is active, expired, or within a grace period.
+ * Returns { status, expiresAt, isTrial, daysLeft }
+ */
+export function checkSubscriptionStatus(schoolId) {
+  const school = schools.find((s) => s.id === schoolId);
+  if (!school) return { status: 'expired', expiresAt: null, isTrial: false, daysLeft: 0 };
+  const now = Date.now();
+  const billingStatus = school.subscriptionStatus || 'trial';
+  const isTrial = billingStatus === 'trial';
+  const expiry = isTrial
+    ? (school.trialEnd ? new Date(school.trialEnd).getTime() : 0)
+    : (school.currentPeriodEnd ? new Date(school.currentPeriodEnd).getTime() : 0);
+  const daysLeft = expiry ? Math.ceil((expiry - now) / 86400000) : 0;
+  if (billingStatus === 'expired' || (isTrial && daysLeft <= 0) || daysLeft < -3) {
+    return { status: 'expired', expiresAt: expiry ? new Date(expiry) : null, isTrial, daysLeft: Math.max(0, daysLeft) };
+  }
+  if (daysLeft <= 3 && daysLeft > 0) {
+    return { status: 'warning', expiresAt: new Date(expiry), isTrial, daysLeft };
+  }
+  return { status: 'active', expiresAt: expiry ? new Date(expiry) : null, isTrial, daysLeft };
 }

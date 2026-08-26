@@ -7,6 +7,8 @@ import { setAuthCookie, jsonError } from "@/lib/auth";
 import { checkRateLimit } from "@/lib/rate-limit";
 import { registerSchema, firstValidationMessage } from "@/lib/validation";
 import { verifyTurnstile } from "@/lib/turnstile";
+import { createAuditLog } from "@/modules/platform/store";
+import { createPlatformAlert } from "@/modules/platform/store";
 
 export async function POST(request) {
   // New-tenant guard: 5 school registrations per IP per hour.
@@ -56,6 +58,31 @@ export async function POST(request) {
       consentType: "REGISTRATION",
       detail: `School registered by ${adminName}. Data processing consent obtained at registration.`,
     });
+  }
+
+  // Log platform audit entry and create alert for platform admin
+  try {
+    const ip = request.headers.get("x-forwarded-for") || request.headers.get("x-real-ip") || "";
+    await createAuditLog({
+      action: "school_created",
+      actor: adminName,
+      schoolId: school.id,
+      schoolName,
+      description: `${schoolName} was registered on the platform by ${adminName}`,
+      meta: { email, plan: "trial", trialDays: 14 },
+      ip,
+    });
+    await createPlatformAlert({
+      schoolId: school.id,
+      schoolName,
+      type: "school_signup",
+      severity: "info",
+      title: `New school registered: ${schoolName}`,
+      message: `${adminName} (${email}) registered ${schoolName} on the platform. They start a 14-day free trial.`,
+      meta: { adminName, email, plan: "trial" },
+    });
+  } catch {
+    // Platform modules may not be available in some contexts — non-fatal
   }
 
   // Never leak the password hash back to the client

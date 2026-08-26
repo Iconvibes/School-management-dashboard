@@ -14,6 +14,7 @@
 
 /** Canonical roles (mirrors the User model's role enum). */
 export const ROLES = Object.freeze({
+  PLATFORM_ADMIN: "PLATFORM_ADMIN",
   SUPER_ADMIN: "SUPER_ADMIN",
   BURSAR: "BURSAR",
   REGISTRAR: "REGISTRAR",
@@ -24,6 +25,7 @@ export const ROLES = Object.freeze({
 
 /** Every role that opens the staff admin console (in dashboard-gate order). */
 export const STAFF_ROLES = Object.freeze([
+  ROLES.PLATFORM_ADMIN,
   ROLES.SUPER_ADMIN,
   ROLES.BURSAR,
   ROLES.REGISTRAR,
@@ -114,6 +116,39 @@ export const ROLE_PERMISSIONS = Object.freeze({
     "reports.view",
     "timetable.view",
   ]),
+  [ROLES.PLATFORM_ADMIN]: Object.freeze([
+    // Platform-wide: see all schools, impersonate, revenue metrics.
+    // No per-school classroom or fee actions — that's the tenant's job.
+    "platform.view",
+    "platform.schools",
+    "platform.impersonate",
+    "platform.revenue",
+    // Also needs school.edit so impersonated actions work
+    "school.edit",
+    "users.manage",
+    "fees.view",
+    "students.manage",
+    "reports.view",
+    "stats.view",
+    "timetable.view",
+    "attendance.view",
+    "scores.view",
+    "scores.enter",
+    "fees.record",
+    "fees.confirm",
+    "fees.structures.edit",
+    "fees.audit.view",
+    "fees.remind",
+    "users.edit",
+    "users.password.reset",
+    "roles.manage",
+    "roster.view",
+    "attendance.mark",
+    "timetable.manage",
+    "notifications.view",
+    "digest.manage",
+    "leads.view",
+  ]),
   [ROLES.STUDENT]: Object.freeze([
     // Own report-card data only — the route keys off session.userId, so this
     // can never address another student's record.
@@ -165,6 +200,10 @@ export const ACTION_LABELS = Object.freeze({
   "notifications.view": "View the notification inbox",
   "digest.manage": "Manage the digest schedule",
   "leads.view": "View marketing leads",
+  "platform.view": "View platform overview",
+  "platform.schools": "View all schools",
+  "platform.impersonate": "Impersonate school admins",
+  "platform.revenue": "View platform revenue",
 });
 
 /** Domain key → display name, in the order the summary renders them. */

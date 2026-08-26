@@ -172,6 +172,29 @@ async function verifyLogin(store, data) {
       error: "This school's account has been deactivated. Please contact your school administrator.",
     };
   }
+  // Billing enforcement — expired subscription blocks non-admin logins.
+  // Trials past their end date are treated as expired. Active subscriptions
+  // past their renewal date get a grace period of 3 days, then block.
+  if (schoolRec && user.role !== "SUPER_ADMIN") {
+    const billingStatus = schoolRec.subscriptionStatus || "trial";
+    let billingExpired = false;
+    if (billingStatus === "expired") {
+      billingExpired = true;
+    } else if (billingStatus === "trial" && schoolRec.trialEnd) {
+      billingExpired = Date.now() > Date.parse(schoolRec.trialEnd);
+    } else if (billingStatus === "active" && schoolRec.currentPeriodEnd) {
+      const overdue = Date.now() - Date.parse(schoolRec.currentPeriodEnd);
+      billingExpired = overdue > 3 * 24 * 60 * 60 * 1000; // 3-day grace
+    }
+    if (billingExpired) {
+      return {
+        ok: false,
+        status: 402,
+        error: "This school's subscription has expired. Please contact your school administrator to renew.",
+        billingExpired: true,
+      };
+    }
+  }
   if (schoolRec?.status === "deleted") {
     const graceOver =
       !schoolRec.deletedAt ||

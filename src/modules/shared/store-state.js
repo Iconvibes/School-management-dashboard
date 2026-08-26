@@ -41,6 +41,13 @@ export const messages = [];
 export const notificationPreferences = [];
 export const erasureRequests = [];
 export const dataAccessLog = [];
+export const assignmentSubmissions = [];
+export const platformAlerts = [];
+export const auditLogs = [];
+export const healthMetrics = [];
+export const impersonationSessions = [];
+export const webhookConfigs = [];
+export const webhookDeliveries = [];
 
 export let receiptSeq = 1000;
 export const incrementReceiptSeq = () => ++receiptSeq;
@@ -81,5 +88,6 @@ export const ALL_ARRAYS = [
   timetable, classAlertPrefs, conflictScans, termArchives, feeCarryovers,
   reminderBatches, schemesOfWork, classResources, alumniRecords,
   pushSubscriptions, messages, notificationPreferences,
-  erasureRequests, dataAccessLog,
+  erasureRequests, dataAccessLog, assignmentSubmissions, platformAlerts, auditLogs, healthMetrics,
+  impersonationSessions, webhookConfigs, webhookDeliveries,
 ];

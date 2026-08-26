@@ -330,4 +330,64 @@ logging pipeline) rather than architectural.
 
 ---
 
+
+
+### N3. Platform admin module (August 2026)
+
+A complete platform administration layer was added at `/platform/`, entirely
+separate from the school admin portal. Features include:
+
+- **Platform Admin login** (`/platform/login`) -- separate from school login,
+  not visible to schools.
+- **School directory** (`/platform/schools`) -- list all tenants with status,
+  plan, student/teacher counts. Click to drill into per-school detail.
+- **School detail page** (`/platform/schools/[id]`) -- enrollment chart with
+  click-to-drill-down, revenue history, revenue forecast with confidence bands,
+  activity timeline, admin accounts with impersonate buttons.
+- **Audit log** (`/platform/audit`) -- cross-tenant audit trail.
+- **Alerts** (`/platform/alerts`) -- platform-wide notification center.
+- **School comparison** (`/platform/compare`) -- overlay two schools trends.
+- **Settings** (`/platform/settings`) -- digest preferences, webhook config.
+- **Impersonation** -- lets platform admin act as a school admin with timeout.
+- **Billing enforcement** -- subscription lifecycle management.
+- **Webhook system** -- Slack/Discord/generic format, auto-dispatch.
+- **Digest email** -- responsive HTML, auto-send via cron.
+
+**When to revisit:** Platform store functions need real Mongo implementations.
+
+**Files:** `src/app/platform/`, `src/app/api/platform/`, `src/modules/platform/`
+`src/lib/platform-digest.js`, `src/models/PlatformAlert.js`, `src/models/AuditLog.js`
+
+---
+
+### N4. Digest email responsive template (August 2026)
+
+Rewritten for mobile-first responsive design: viewport meta, @media queries,
+dark mode support, Outlook MSO conditionals, role=presentation on tables,
+stat-cell/header-pad/health-row CSS classes, two-column footer with CTA.
+
+**Files:** `src/lib/platform-digest.js`
+
+---
+
+### N5. Demo schools for multi-tenant preview (August 2026)
+
+Three additional demo schools seeded: Sunshine Academy, Lagos Heritage School,
+Prestige College Abuja. Internal school filtered from public directory.
+
+**Files:** `src/lib/demo-store.js`, `src/modules/school/store.js`
+
+---
+
+### N6. Impersonation system (August 2026)
+
+Platform admins can impersonate any school admin for support. Includes
+configurable timeout, countdown banner, auto-redirect, full audit logging.
+Known issue: client-side me-gate timing during cookie propagation.
+
+**Files:** `src/app/api/platform/schools/[id]/impersonate/route.js`,
+`src/components/ImpersonationBanner.js`, `src/lib/token.js`
+
+---
+
 *Last updated: August 2026. Add new entries at the top of each section.*

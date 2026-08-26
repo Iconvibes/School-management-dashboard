@@ -23,6 +23,7 @@ import {
   TrendingUp,
   GraduationCap,
   Building2,
+  CreditCard,
 } from "lucide-react";
 import Logo from "@/components/Logo";
 import NotificationsBell from "@/components/NotificationsBell";
@@ -110,6 +111,10 @@ export default function Sidebar({ role, open, onClose, activeTab, activePath }) 
                 { href: "/admin/dashboard#alumni", label: "Alumni", icon: GraduationCap },
                 { href: "/admin/dashboard#branches", label: "Branches", icon: Building2 },
               ]
+            : []),
+          // ---- Billing ----
+          ...(can(role, "school.edit")
+            ? [{ href: "/admin/dashboard#billing", label: "Billing", icon: CreditCard }]
             : []),
         ];
 

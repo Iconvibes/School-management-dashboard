@@ -20,6 +20,7 @@ Edutrack is a **Next.js 16 (App Router)** app in pure JavaScript. It has two ver
 |---|---|---|
 | **Marketing site** | `src/app/page.js`, `features`, `solutions`, `pricing`, `trust`, `blog`, `contact`, `download`, `register` | The public website you pitch schools with |
 | **App portals** | `login`, `onboarding`, `admin/dashboard`, `teacher/dashboard`, `student/dashboard`, `parent/dashboard` | The actual product: role-based dashboards |
+| **Platform portal** | `platform/login`, `platform/dashboard`, `platform/schools`, `platform/audit`, `platform/alerts`, `platform/compare`, `platform/settings` | Platform admin control panel (separate from school portals) |
 | **API** | `src/app/api/**` | All data flows through these route handlers |
 | **Data layer** | `src/lib/` | The stores (demo ⇄ Mongo), auth, grading logic |
 | **Models** | `src/models/` | Mongoose schemas (used only in Mongo mode) |
@@ -61,6 +62,14 @@ src/
 │   ├── teacher/dashboard/    # Grading matrix + attendance + report cards
 │   ├── student/dashboard/    # "My Report Card" + PDF export
 │   ├── parent/dashboard/     # "My Children" + pay fees
+│   ├── platform/              # Platform Admin portal (separate login)
+│   │   ├── login/             # Platform admin login (not visible to schools)
+│   │   ├── dashboard/         # Overview: stats, revenue, enrollment, alerts
+│   │   ├── schools/           # School directory + drill-down
+│   │   ├── audit/             # Cross-tenant audit log
+│   │   ├── alerts/            # Platform alert center
+│   │   ├── compare/           # School comparison mode
+│   │   └── settings/          # Digest + webhook config
 │   ├── login/ register/ onboarding/   # Auth flows
 │   └── features/ solutions/ pricing/ trust/ blog/ contact/ download/  # Marketing
 ├── components/               # Shared React components
@@ -310,6 +319,26 @@ Every route: (1) reads the session, (2) rejects unauthenticated with 401, (3) ch
 | POST | `/api/leads` | Contact/demo form → stores a lead | public |
 | POST | `/api/newsletter` | Newsletter signup | public |
 
+
+### Platform admin endpoints
+
+| Method(s) | URL | Purpose | Roles |
+|---|---|---|---|
+| GET | `/api/platform/schools` | List all schools with stats | PLATFORM_ADMIN |
+| GET | `/api/platform/schools/[id]` | School detail + enrollment + revenue + activity | PLATFORM_ADMIN |
+| POST | `/api/platform/schools/[id]/impersonate` | Impersonate a school admin | PLATFORM_ADMIN |
+| GET/POST | `/api/platform/alerts` | List/create platform alerts | PLATFORM_ADMIN |
+| POST | `/api/platform/alerts/read` | Mark alerts as read | PLATFORM_ADMIN |
+| GET/POST | `/api/platform/audit` | List/create audit log entries | PLATFORM_ADMIN |
+| GET | `/api/platform/audit/stats` | Audit log statistics | PLATFORM_ADMIN |
+| GET/POST | `/api/platform/webhooks` | List/create webhooks | PLATFORM_ADMIN |
+| POST | `/api/platform/webhooks/test` | Test a webhook | PLATFORM_ADMIN |
+| GET | `/api/platform/webhooks/deliveries` | Recent webhook deliveries | PLATFORM_ADMIN |
+| GET/POST | `/api/platform/digest` | Get/send digest email | PLATFORM_ADMIN |
+| GET | `/api/platform/digest/preview` | Preview digest HTML | PLATFORM_ADMIN |
+| GET | `/api/platform/compare` | Compare multiple schools | PLATFORM_ADMIN |
+| GET/POST | `/api/cron/digest` | Auto-send scheduled digests (CRON_SECRET auth) | cron |
+
 **Route conventions to keep:**
 - Auth first: `const session = await getSession(); if (!session) return jsonError("Not authenticated", 401);`
 - Role gate: `if (session.role !== "SUPER_ADMIN") return jsonError("Forbidden", 403);`
@@ -336,7 +365,32 @@ A thin layout shell: state declarations → data-fetch effects → `useAdminActi
 - 19 tabs with URL hash routing (`#fees`, `#timetable`, etc.).
 - **State lives in page.js; actions live in `src/components/admin/useAdminActions.js`.** Tab components consume state via `useAdminShell()` context.
 - **12 modals** extracted to `src/components/admin/modals/`, each wrapped in `<ErrorBoundary>`.
-- **Each tab has a distinct gradient theme** (blue for Timetable, emerald for Fees, purple for Reports, etc.).
+- 
+
+### Platform Admin portal — `src/app/platform/`
+
+A **completely separate portal** from the school admin. Uses its own login at
+`/platform/login` (credentials: `platform@edutrack.app` / `platform123`). The platform
+admin is NOT visible on the school login page.
+
+- `platform/dashboard/` — overview: school stats, revenue charts, enrollment trends,
+  alert counts, quick actions
+- `platform/schools/` — school directory with search, status badges, plan labels
+- `platform/schools/[id]` — school detail: enrollment chart (click-to-drill-down),
+  revenue history bar chart, revenue forecast with confidence bands, activity timeline,
+  admin accounts with impersonate buttons
+- `platform/audit/` — cross-tenant audit log with search, filters, date range,
+  export (CSV/PDF)
+- `platform/alerts/` — platform alert center with read/unread state
+- `platform/compare/` — school comparison overlay
+- `platform/settings/` — digest email preferences, webhook config
+
+Layout: `src/app/platform/layout.js` — sidebar with icon-only nav on desktop
+(expands on hover), hamburger menu on mobile.
+
+The platform admin has its own models: `PlatformAlert`, `AuditLog`,
+`ImpersonationSession`. Store functions live in `src/modules/platform/`.
+**Each tab has a distinct gradient theme** (blue for Timetable, emerald for Fees, purple for Reports, etc.).
 - **Sidebar highlights the active tab** with a blue indicator + glowing dot.
 - **Standalone admin pages** (`/admin/import`, `/admin/quick-add`, `/admin/placeholders`) use `AdminLayout.js` for persistent sidebar + topbar.
 

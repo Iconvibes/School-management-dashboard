@@ -1,6 +1,7 @@
 import { jsonError } from "@/lib/auth";
 import { store, isDemoMode } from "@/lib/store";
 import { isDenied, requireAuth } from "@/lib/policy";
+import { IMPERSONATION_TIMEOUT_MS } from "@/lib/token";
 
 export async function GET() {
   const session = await requireAuth();
@@ -54,5 +55,16 @@ export async function GET() {
       dailySchedules: school?.dailySchedules || undefined,
     },
     isDemo: isDemoMode(),
+    // Impersonation metadata — drives the countdown banner on the client
+    impersonation: session.impersonatedAt
+      ? {
+          impersonatedAt: session.impersonatedAt,
+          impersonatorId: session.impersonatorId || null,
+          impersonatorName: session.impersonatorName || "Platform Admin",
+          timeoutMs: IMPERSONATION_TIMEOUT_MS,
+          expiresAt: session.impersonatedAt + IMPERSONATION_TIMEOUT_MS,
+          remainingMs: Math.max(0, session.impersonatedAt + IMPERSONATION_TIMEOUT_MS - Date.now()),
+        }
+      : null,
   });
 }

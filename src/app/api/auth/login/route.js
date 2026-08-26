@@ -164,6 +164,15 @@ export async function POST(request) {
     );
   }
 
+  // Platform admins must use the separate /api/platform/auth/login endpoint.
+  // They are never valid for school-scoped login.
+  if (user.role === "PLATFORM_ADMIN") {
+    return deny(
+      403,
+      "This account is not authorized for school access."
+    );
+  }
+
   if (role && user.role !== role) {
     const label = PORTAL_LABELS[user.role] || user.role;
     return deny(

@@ -41,5 +41,6 @@ export function getVisibleTabs(myRole) {
     ...(isSuper ? [{ key: "engagement", label: "Parent Engagement" }] : []),
     ...(isSuper ? [{ key: "branches", label: "Branches" }] : []),
     ...(isSuper ? [{ key: "compliance", label: "Compliance" }] : []),
+    ...(isSuper ? [{ key: "billing", label: "Billing" }] : []),
   ];
 }

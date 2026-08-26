@@ -14,6 +14,7 @@
  */
 
 import { getSession, jsonError } from "@/lib/auth";
+import { IMPERSONATION_TIMEOUT_MS } from "@/lib/token";
 import { store } from "@/lib/store";
 import { cacheDel, cacheDelMany, cacheGetOrSet } from "@/lib/cache";
 import {
@@ -155,6 +156,20 @@ export async function requireAuth(roles, session) {
     return jsonError(MSG.sessionInvalid, 401);
   }
 
+  // Impersonation timeout — if the session was created via impersonation
+  // and the timeout has elapsed, reject it so the platform admin is
+  // automatically logged out of the school.
+  if (session.impersonatedAt) {
+    const elapsed = Date.now() - session.impersonatedAt;
+    if (elapsed > IMPERSONATION_TIMEOUT_MS) {
+      return jsonError(
+        "Impersonation session has expired. Please return to the platform.",
+        401,
+        { impersonationExpired: true }
+      );
+    }
+  }
+
   // Gate on the FRESH role from the store, never the token claim.
   if (roles && !roles.includes(user.role)) return jsonError("Forbidden", 403);
 
@@ -164,7 +179,7 @@ export async function requireAuth(roles, session) {
   // account can be reactivated or restored from the dashboard. (An expired
   // deleted school is purged, so its users no longer exist and this session
   // lookup fails closed with a 401.)
-  if (user.schoolStatus !== "active" && user.role !== "SUPER_ADMIN") {
+  if (user.schoolStatus !== "active" && user.role !== "SUPER_ADMIN" && user.role !== "PLATFORM_ADMIN") {
     return jsonError(
       user.schoolStatus === "frozen"
         ? "This school's account has been deactivated. Please contact your school administrator."
@@ -172,6 +187,33 @@ export async function requireAuth(roles, session) {
       403
     );
   }
+
+  // Billing enforcement — expired subscription or ended trial restricts
+  // non-admin users. SUPER_ADMINs and PLATFORM_ADMINs are exempt so they
+  // can still access the school to manage billing.
+  if (user.role !== "SUPER_ADMIN" && user.role !== "PLATFORM_ADMIN") {
+    const schoolRec = await store.getSchoolById(user.schoolId);
+    if (schoolRec) {
+      const billingStatus = schoolRec.subscriptionStatus || "trial";
+      let billingExpired = false;
+      if (billingStatus === "expired") {
+        billingExpired = true;
+      } else if (billingStatus === "trial" && schoolRec.trialEnd) {
+        billingExpired = Date.now() > Date.parse(schoolRec.trialEnd);
+      } else if (billingStatus === 'active' && schoolRec.currentPeriodEnd) {
+        const overdue = Date.now() - Date.parse(schoolRec.currentPeriodEnd);
+        billingExpired = overdue > 3 * 24 * 60 * 60 * 1000; // 3-day grace
+      }
+      if (billingExpired) {
+        return jsonError(
+          'Your school subscription has expired. Please contact the school administrator to renew.',
+          403,
+          { billingExpired: true }
+        );
+      }
+    }
+  }
+
   return { ...session, role: user.role, schoolId: user.schoolId };
 }
 

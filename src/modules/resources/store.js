@@ -3,7 +3,7 @@
  * Functions: createSchemeOfWork, getSchemesOfWork, getSchemeOfWork, updateSchemeOfWork, deleteSchemeOfWork,
  *            createClassResource, listClassResources, getClassResource, updateClassResource, deleteClassResource
  */
-import { schemesOfWork, classResources, nid, clone, nowIso, persist } from "@/modules/shared/store-state";
+import { schemesOfWork, classResources, assignmentSubmissions, nid, clone, nowIso, persist } from "@/modules/shared/store-state";
 
 export async function createSchemeOfWork({ schoolId, subject, classArm, session, term, topics, createdBy }) {
   const existing = schemesOfWork.find((s) => s.schoolId === schoolId && s.subject === subject && s.classArm === classArm && s.session === session && s.term === term);
@@ -51,4 +51,79 @@ export async function deleteClassResource(resourceId) {
   const idx = classResources.findIndex((r) => r.id === resourceId);
   if (idx === -1) return false;
   classResources.splice(idx, 1); persist(); return true;
+}
+
+// ── Assignment Submissions ──────────────────────────────────────────
+
+export async function createSubmission({ schoolId, resourceId, studentId, classArm, subject, content, attachments }) {
+  // Upsert: one submission per student per resource
+  const existing = assignmentSubmissions.find(
+    (s) => s.resourceId === resourceId && s.studentId === studentId
+  );
+  if (existing) {
+    existing.content = content || "";
+    existing.attachments = attachments || [];
+    existing.status = "submitted";
+    existing.updatedAt = nowIso();
+    persist();
+    return clone(existing);
+  }
+  const resource = classResources.find((r) => r.id === resourceId);
+  const submission = {
+    id: nid("sub"),
+    schoolId,
+    resourceId,
+    studentId,
+    classArm,
+    subject,
+    content: content || "",
+    attachments: attachments || [],
+    score: null,
+    maxScore: resource?.maxScore || null,
+    grade: null,
+    feedback: "",
+    gradedAt: null,
+    gradedBy: null,
+    status: "submitted",
+    createdAt: nowIso(),
+    updatedAt: nowIso(),
+  };
+  assignmentSubmissions.push(submission);
+  persist();
+  return clone(submission);
+}
+
+export async function getSubmissionsForResource(resourceId) {
+  return assignmentSubmissions
+    .filter((s) => s.resourceId === resourceId)
+    .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
+    .map(clone);
+}
+
+export async function getSubmissionForResourceAndStudent(resourceId, studentId) {
+  const sub = assignmentSubmissions.find(
+    (s) => s.resourceId === resourceId && s.studentId === studentId
+  );
+  return sub ? clone(sub) : null;
+}
+
+export async function getSubmissionsByStudent(schoolId, studentId) {
+  return assignmentSubmissions
+    .filter((s) => s.schoolId === schoolId && s.studentId === studentId)
+    .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
+    .map(clone);
+}
+
+export async function gradeSubmission(submissionId, { score, grade, feedback, gradedBy }) {
+  const sub = assignmentSubmissions.find((s) => s.id === submissionId);
+  if (!sub) return null;
+  sub.score = score;
+  sub.grade = grade;
+  sub.feedback = feedback || "";
+  sub.gradedAt = nowIso();
+  sub.gradedBy = gradedBy;
+  sub.status = "graded";
+  sub.updatedAt = nowIso();
+  persist();
+  return clone(sub);
 }

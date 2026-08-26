@@ -51,6 +51,11 @@ import {
   notificationPreferences,
   erasureRequests,
   dataAccessLog,
+  assignmentSubmissions,
+  platformAlerts,
+  auditLogs,
+  healthMetrics,
+  impersonationSessions,
   ALL_ARRAYS,
   nid,
   hash,
@@ -154,6 +159,11 @@ function dump() {
     termArchives,
     erasureRequests,
     dataAccessLog,
+    assignmentSubmissions,
+    platformAlerts,
+    auditLogs,
+    healthMetrics,
+    ...getWebhookSnapshot(),
   };
 }
 
@@ -181,6 +191,12 @@ function restore(data) {
     "termArchives",
     "erasureRequests",
     "dataAccessLog",
+    "assignmentSubmissions",
+    "platformAlerts",
+    "auditLogs",
+    "healthMetrics",
+    "webhookConfigs",
+    "webhookDeliveries",
   ];
   for (const key of collections) {
     // Backward-compatible restore: snapshots written before a collection
@@ -287,6 +303,15 @@ function restore(data) {
   erasureRequests.push(...(data.erasureRequests || []));
   dataAccessLog.length = 0;
   dataAccessLog.push(...(data.dataAccessLog || []));
+  assignmentSubmissions.length = 0;
+  assignmentSubmissions.push(...(data.assignmentSubmissions || []));
+  platformAlerts.length = 0;
+  platformAlerts.push(...(data.platformAlerts || []));
+  auditLogs.length = 0;
+  auditLogs.push(...(data.auditLogs || []));
+  healthMetrics.length = 0;
+  healthMetrics.push(...(data.healthMetrics || []));
+  restoreWebhookState(data);
   return true;
 }
 
@@ -361,6 +386,14 @@ function seed() {
     // The demo school is already fully set up — the onboarding wizard must
     // never appear for it.
     onboardingComplete: true,
+    // SaaS billing — Greenfield is on a Standard annual plan
+    billingPlan: "standard",
+    billingCycle: "annual",
+    subscriptionStatus: "active",
+    paystackCustomerCode: "",
+    paystackSubscriptionCode: "",
+    paystackPlanCode: "",
+    currentPeriodEnd: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString(),
     createdAt: nowIso(),
   };
   schools.push(school);
@@ -397,6 +430,19 @@ function seed() {
     users.push(u);
     return u;
   };
+
+  // Platform admin — monitors all schools, impersonates for support
+  const platformSchool = { id: nid("sch"), name: "EduTrack Platform", logoUrl: "", sealUrl: "", brandColor: "#0F172A", activeArms: [], currentSession: "2025/2026", currentTerm: "First Term", status: "active", onboardingComplete: true, billingPlan: "trial", subscriptionStatus: "trial", trialStart: nowIso(), trialEnd: new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString(), createdAt: nowIso(), isPlatformSchool: true };
+  schools.push(platformSchool);
+
+  addUser(
+    "Platform Admin",
+    "platform@edutrack.app",
+    "platform123",
+    "PLATFORM_ADMIN",
+    "",
+    { schoolId: platformSchool.id, payrollStatus: "PAID" }
+  );
 
   const admin = addUser(
     "Super Admin",
@@ -894,6 +940,378 @@ function seed() {
     if (n > 8) throw new Error(`timetable seed over-books a teacher (${n} periods): ${key}`);
   });
 
+  // ── Seed 3 additional demo schools for a realistic multi-tenant view ──
+  const extraSchoolData = [
+    {
+      name: "Sunshine Academy",
+      brandColor: "#F59E0B",
+      billingPlan: "starter",
+      billingCycle: "monthly",
+      subscriptionStatus: "active",
+      status: "active",
+      arms: ["JSS1", "JSS2", "SS1 Science", "SS1 Arts"],
+      teacherData: [
+        { name: "Mr. Olumide Adeyemi", email: "olumide@sunshine.app", subjects: ["Mathematics"], arms: ["JSS1", "JSS2", "SS1 Science"] },
+        { name: "Mrs. Funke Balogun", email: "funke@sunshine.app", subjects: ["English Language"], arms: ["JSS1", "JSS2", "SS1 Arts"] },
+        { name: "Mr. Yusuf Abubakar", email: "yusuf@sunshine.app", subjects: ["Physics"], arms: ["SS1 Science"] },
+        { name: "Mrs. Adama Ibrahim", email: "adama@sunshine.app", subjects: ["Literature in English"], arms: ["SS1 Arts"] },
+        { name: "Mr. Chukwuemeka Okeke", email: "chukwu@sunshine.app", subjects: ["Basic Science", "Biology"], arms: ["JSS1", "JSS2", "SS1 Science"] },
+      ],
+      studentData: [
+        { name: "Tunde Abiodun", arm: "JSS1" },
+        { name: "Nneka Okafor", arm: "JSS1" },
+        { name: "Bashir Lawal", arm: "JSS2" },
+        { name: "Amara Eze", arm: "JSS2" },
+        { name: "Yemi Alabi", arm: "SS1 Science" },
+        { name: "Chika Nwosu", arm: "SS1 Science" },
+        { name: "Fatimah Garba", arm: "SS1 Arts" },
+        { name: "Segun Afolabi", arm: "SS1 Arts" },
+      ],
+    },
+    {
+      name: "Lagos Heritage School",
+      brandColor: "#8B5CF6",
+      billingPlan: "standard",
+      billingCycle: "annual",
+      subscriptionStatus: "active",
+      status: "active",
+      arms: ["JSS1", "JSS2", "JSS3", "SS1 Science", "SS1 Arts", "SS1 Commercial", "SS2 Science", "SS2 Arts"],
+      teacherData: [
+        { name: "Dr. Emeka Okoro", email: "emeka@heritage.edu", subjects: ["Mathematics"], arms: ["JSS1", "JSS2", "JSS3", "SS1 Science", "SS2 Science"] },
+        { name: "Mrs. Bimpe Coker", email: "bimpe@heritage.edu", subjects: ["English Language"], arms: ["JSS1", "JSS2", "JSS3", "SS1 Arts", "SS2 Arts"] },
+        { name: "Mr. Aliyu Bello", email: "aliyu@heritage.edu", subjects: ["Chemistry"], arms: ["SS1 Science", "SS2 Science"] },
+        { name: "Ms. Zainab Abdullahi", email: "zainab@heritage.edu", subjects: ["Government"], arms: ["SS1 Arts", "SS2 Arts"] },
+        { name: "Mr. Oluwaseun Bankole", email: "seun@heritage.edu", subjects: ["Accounting"], arms: ["SS1 Commercial"] },
+        { name: "Mrs. Ngozi Anyanwu", email: "ngozi@heritage.edu", subjects: ["Civic Education"], arms: ["JSS1", "JSS2", "JSS3"] },
+        { name: "Mr. Dauda Sani", email: "dauda@heritage.edu", subjects: ["Physics"], arms: ["SS1 Science", "SS2 Science"] },
+        { name: "Mrs. Aisha Mohammed", email: "aisha@heritage.edu", subjects: ["Literature in English"], arms: ["SS1 Arts", "SS2 Arts"] },
+      ],
+      studentData: [
+        { name: "Adebola Johnson", arm: "JSS1" },
+        { name: "Chioma Nnamdi", arm: "JSS1" },
+        { name: "Ibrahim Tanko", arm: "JSS2" },
+        { name: "Folashade Lawal", arm: "JSS2" },
+        { name: "Obinna Uche", arm: "JSS3" },
+        { name: "Hauwa Danjuma", arm: "JSS3" },
+        { name: "Tobiloba Adeleke", arm: "SS1 Science" },
+        { name: "Ngozika Eze", arm: "SS1 Science" },
+        { name: "Amina Yusuf", arm: "SS1 Arts" },
+        { name: "Babatunde Ogundipe", arm: "SS1 Arts" },
+        { name: "Chidinma Igwe", arm: "SS1 Commercial" },
+        { name: "Femi Adesina", arm: "SS2 Science" },
+        { name: "Adaeze Okolo", arm: "SS2 Science" },
+        { name: "Kemi Fashola", arm: "SS2 Arts" },
+        { name: "Musa Haruna", arm: "SS2 Arts" },
+        { name: "Titi Ogundimu", arm: "JSS1" },
+      ],
+    },
+    {
+      name: "Prestige College Abuja",
+      brandColor: "#EF4444",
+      billingPlan: "enterprise",
+      billingCycle: "annual",
+      subscriptionStatus: "active",
+      status: "frozen",
+      arms: ["JSS1", "JSS2", "SS1 Science", "SS1 Arts"],
+      teacherData: [
+        { name: "Prof. Akinwale Ogundimu", email: "akinwale@prestige.edu", subjects: ["Mathematics"], arms: ["JSS1", "JSS2", "SS1 Science"] },
+        { name: "Mrs. Bola Akande", email: "bola@prestige.edu", subjects: ["English Language"], arms: ["JSS1", "JSS2", "SS1 Arts"] },
+        { name: "Mr. Chinedu Agu", email: "chinedu@prestige.edu", subjects: ["Computer Studies"], arms: ["JSS1", "JSS2"] },
+        { name: "Mrs. Halima Bello", email: "halima@prestige.edu", subjects: ["Economics"], arms: ["SS1 Arts"] },
+      ],
+      studentData: [
+        { name: "Oluwadamilola Ojo", arm: "JSS1" },
+        { name: "Ifeanyi Okwu", arm: "JSS1" },
+        { name: "Sade Oyewale", arm: "JSS2" },
+        { name: "Emeka Okadigbo", arm: "JSS2" },
+        { name: "Bukola Alabi", arm: "SS1 Science" },
+        { name: "Aminu Bello", arm: "SS1 Arts" },
+        { name: "Chidera Okolo", arm: "SS1 Arts" },
+      ],
+    },
+  ];
+
+  for (const sd of extraSchoolData) {
+    const sId = nid("sch");
+    const daysLeft = sd.subscriptionStatus === "active" ? 365 : 0;
+    schools.push({
+      id: sId,
+      name: sd.name,
+      logoUrl: "",
+      sealUrl: "",
+      brandColor: sd.brandColor,
+      notificationRetentionDays: 90,
+      reconcileDeletedReminders: false,
+      status: sd.status,
+      activeArms: sd.arms,
+      currentSession: "2025/2026",
+      currentTerm: "First Term",
+      periodTimes: DEFAULT_PERIOD_TIMES.map((p) => ({ ...p })),
+      onboardingComplete: true,
+      billingPlan: sd.billingPlan,
+      billingCycle: sd.billingCycle,
+      subscriptionStatus: sd.subscriptionStatus,
+      paystackCustomerCode: "",
+      paystackSubscriptionCode: "",
+      paystackPlanCode: "",
+      currentPeriodEnd: daysLeft > 0 ? new Date(Date.now() + daysLeft * 86400000).toISOString() : nowIso(),
+      createdAt: new Date(Date.now() - 30 * 86400000).toISOString(),
+    });
+
+    // Add super admin for this school
+    const sAdmin = {
+      id: nid("usr"),
+      name: `Admin - ${sd.name}`,
+      email: sd.teacherData[0]?.email?.replace(/@.*/, "@admin.edutrack.app") || `admin@${sd.name.toLowerCase().replace(/\s+/g, "")}.app`,
+      emailIdx: blindEmailIndex(sd.teacherData[0]?.email?.replace(/@.*/, "@admin.edutrack.app") || `admin@${sd.name.toLowerCase().replace(/\s+/g, "")}.app`),
+      password: hash("admin123"),
+      role: "SUPER_ADMIN",
+      schoolId: sId,
+      assignedClass: "",
+      payrollStatus: "PAID",
+      feePaid: false,
+      parentId: null,
+      phone: "",
+      phoneIdx: "",
+      address: "",
+      createdAt: nowIso(),
+    };
+    users.push(sAdmin);
+
+    // Add teachers
+    for (const td of sd.teacherData) {
+      users.push({
+        id: nid("usr"),
+        name: td.name,
+        email: td.email,
+        emailIdx: blindEmailIndex(td.email),
+        password: hash("teacher123"),
+        role: "TEACHER",
+        schoolId: sId,
+        assignedClass: td.arms[0],
+        payrollStatus: "PENDING",
+        subjects: td.subjects,
+        assignedClasses: td.arms,
+        feePaid: false,
+        parentId: null,
+        phone: "",
+        phoneIdx: "",
+        address: "",
+        createdAt: nowIso(),
+      });
+    }
+
+    // Add students
+    const sStudents = [];
+    for (const std of sd.studentData) {
+      const st = {
+        id: nid("usr"),
+        name: std.name,
+        email: `${std.name.toLowerCase().replace(/\s+/g, ".")}@student.edu`,
+        emailIdx: blindEmailIndex(`${std.name.toLowerCase().replace(/\s+/g, ".")}@student.edu`),
+        password: hash("student123"),
+        role: "STUDENT",
+        schoolId: sId,
+        assignedClass: std.arm,
+        payrollStatus: "PENDING",
+        feePaid: Math.random() > 0.3,
+        parentId: null,
+        phone: "",
+        phoneIdx: "",
+        address: "",
+        createdAt: nowIso(),
+      };
+      users.push(st);
+      sStudents.push(st);
+    }
+
+  }
+
+  // ── Seed platform alerts (synchronous — must happen before writeSnapshot) ──
+  const now = new Date();
+  const demoAlerts = [
+    {
+      type: "school_signup",
+      severity: "success",
+      title: "New school registered",
+      message: "Greenfield International School joined EduTrack.",
+      schoolId: school.id,
+      schoolName: school.name,
+      meta: { plan: "standard", students: 16 },
+    },
+    {
+      type: "subscription_activated",
+      severity: "success",
+      title: "Subscription activated",
+      message: "Greenfield International School is on the Standard plan.",
+      schoolId: school.id,
+      schoolName: school.name,
+      meta: { plan: "standard", cycle: "annual" },
+    },
+    {
+      type: "system",
+      severity: "info",
+      title: "Platform deployed",
+      message: "EduTrack v1.0 platform infrastructure is live and operational.",
+      meta: {},
+    },
+  ];
+  for (const alert of demoAlerts) {
+    platformAlerts.push({
+      id: nid("alert"),
+      schoolId: alert.schoolId || null,
+      schoolName: alert.schoolName || "",
+      type: alert.type,
+      severity: alert.severity || "info",
+      title: alert.title,
+      message: alert.message || "",
+      read: false,
+      meta: alert.meta || {},
+      createdAt: now.toISOString(),
+      updatedAt: now.toISOString(),
+    });
+  }
+
+  // ── Seed demo audit log entries (spread across 90 days for heatmap) ──
+  const now2 = new Date();
+  const actionTypes = [
+    { action: "impersonate", weight: 3 },
+    { action: "plan_change", weight: 2 },
+    { action: "subscription_activate", weight: 2 },
+    { action: "school_created", weight: 1 },
+    { action: "subscription_cancel", weight: 1 },
+    { action: "status_change", weight: 1 },
+  ];
+  const actors = ["Platform Admin", "Platform Admin", "System", "Platform Admin"];
+
+  // Deterministic pseudo-random for consistent seeding
+  let seed = 42;
+  function pseudoRandom() { seed = (seed * 16807 + 0) % 2147483647; return seed / 2147483647; }
+
+  // Generate ~80 audit entries across 90 days with realistic clustering
+  for (let day = 0; day < 90; day++) {
+    // More activity in recent days, less in older days
+    const recencyBias = day < 7 ? 4 : day < 14 ? 3 : day < 30 ? 2 : 1;
+    const entriesThisDay = Math.max(1, Math.floor(pseudoRandom() * recencyBias + 0.5));
+    for (let e = 0; e < entriesThisDay; e++) {
+      // Pick weighted random action type
+      const totalWeight = actionTypes.reduce((s, a) => s + a.weight, 0);
+      let roll = pseudoRandom() * totalWeight;
+      let picked = actionTypes[0];
+      for (const at of actionTypes) {
+        roll -= at.weight;
+        if (roll <= 0) { picked = at; break; }
+      }
+      const actor = actors[Math.floor(pseudoRandom() * actors.length)];
+      const hoursOffset = Math.floor(pseudoRandom() * 24);
+      const minutesOffset = Math.floor(pseudoRandom() * 60);
+      const entryDate = new Date(now2 - day * 86400000 - hoursOffset * 3600000 - minutesOffset * 60000);
+
+      let description = `${actor} performed ${picked.action}`;
+      if (picked.action === "impersonate") description = `${actor} impersonated ${admin.name} (SUPER_ADMIN) at ${school.name}`;
+      else if (picked.action === "plan_change") description = `${actor} changed ${school.name} plan to standard`;
+      else if (picked.action === "subscription_activate") description = `${actor} activated subscription for ${school.name}`;
+      else if (picked.action === "school_created") description = `${school.name} was registered on the platform`;
+      else if (picked.action === "subscription_cancel") description = `${actor} cancelled subscription for ${school.name}`;
+      else if (picked.action === "status_change") description = `${actor} changed ${school.name} status to frozen`;
+
+      auditLogs.push({
+        id: nid("audit"),
+        action: picked.action,
+        actor,
+        schoolId: school.id,
+        schoolName: school.name,
+        description,
+        meta: { seeded: true },
+        ip: "192.168.1." + (10 + Math.floor(pseudoRandom() * 200)),
+        createdAt: entryDate.toISOString(),
+      });
+    }
+  }
+
+  // ── Seed demo health metrics ──
+  const now3 = new Date();
+  const endpoints = [
+    { method: "GET", endpoint: "/api/school", avgMs: 45, p95Ms: 120 },
+    { method: "GET", endpoint: "/api/users", avgMs: 85, p95Ms: 210 },
+    { method: "POST", endpoint: "/api/scores", avgMs: 150, p95Ms: 380 },
+    { method: "GET", endpoint: "/api/reports", avgMs: 320, p95Ms: 800 },
+    { method: "POST", endpoint: "/api/fees/payments", avgMs: 180, p95Ms: 420 },
+    { method: "GET", endpoint: "/api/attendance", avgMs: 60, p95Ms: 140 },
+    { method: "POST", endpoint: "/api/auth/login", avgMs: 200, p95Ms: 450 },
+    { method: "GET", endpoint: "/api/timetable", avgMs: 90, p95Ms: 200 },
+    { method: "GET", endpoint: "/api/resources", avgMs: 110, p95Ms: 280 },
+    { method: "POST", endpoint: "/api/attendance", avgMs: 75, p95Ms: 170 },
+  ];
+
+  // Generate 24h of API response metrics
+  for (let h = 23; h >= 0; h--) {
+    const hourTime = new Date(now3 - h * 3600000);
+    const requestsInHour = 15 + Math.floor(Math.random() * 25);
+    for (let r = 0; r < requestsInHour; r++) {
+      const ep = endpoints[Math.floor(Math.random() * endpoints.length)];
+      const jitter = 0.7 + Math.random() * 0.6;
+      const responseTime = Math.round(ep.avgMs * jitter);
+      const isError = Math.random() < 0.04;
+      const minuteOffset = Math.floor(Math.random() * 60) * 60000;
+      const ts = new Date(hourTime.getTime() + minuteOffset);
+
+      healthMetrics.push({
+        id: nid("health"),
+        type: "api_response",
+        endpoint: ep.endpoint,
+        method: ep.method,
+        value: responseTime,
+        statusCode: isError ? (Math.random() < 0.5 ? 500 : 503) : 200,
+        errorMessage: isError ? "Internal server error" : null,
+        meta: {},
+        createdAt: ts.toISOString(),
+      });
+
+      if (isError) {
+        healthMetrics.push({
+          id: nid("health"),
+          type: "error",
+          endpoint: ep.endpoint,
+          method: ep.method,
+          value: responseTime,
+          statusCode: Math.random() < 0.5 ? 500 : 503,
+          errorMessage: Math.random() < 0.5 ? "Database connection timeout" : "Rate limit exceeded",
+          meta: {},
+          createdAt: ts.toISOString(),
+        });
+      }
+    }
+  }
+
+  // DB size trend (24 data points)
+  for (let h = 23; h >= 0; h--) {
+    const ts = new Date(now3 - h * 3600000);
+    const baseSize = 42 * 1024 * 1024;
+    const growth = h * 100 * 1024;
+    healthMetrics.push({
+      id: nid("health"),
+      type: "db_size",
+      value: baseSize - growth + Math.floor(Math.random() * 500000),
+      meta: { collections: 28 },
+      createdAt: ts.toISOString(),
+    });
+  }
+
+  // Memory usage trend (24 data points)
+  for (let h = 23; h >= 0; h--) {
+    const ts = new Date(now3 - h * 3600000);
+    const baseMem = 512;
+    const usage = baseMem + Math.floor(Math.random() * 128) + (h < 8 ? 64 : 0);
+    healthMetrics.push({
+      id: nid("health"),
+      type: "memory",
+      value: usage,
+      meta: { totalMb: 2048 },
+      createdAt: ts.toISOString(),
+    });
+  }
+
   return { admin, teachers, students };
 }
 
@@ -917,6 +1335,10 @@ function clearAll() {
   reminderBatches.length = 0;
   erasureRequests.length = 0;
   dataAccessLog.length = 0;
+  assignmentSubmissions.length = 0;
+  platformAlerts.length = 0;
+  auditLogs.length = 0;
+  healthMetrics.length = 0;
 }
 
 /**
@@ -1014,6 +1436,10 @@ export {
   getDashboardStats,
   createLead,
   listLeads,
+  updateSchoolSubscription,
+  listSchoolSubscriptions,
+  startSchoolTrial,
+  checkSubscriptionStatus,
 } from "@/modules/school/store";
 
 // Users module
@@ -1119,6 +1545,11 @@ export {
   getClassResource,
   updateClassResource,
   deleteClassResource,
+  createSubmission,
+  getSubmissionsForResource,
+  getSubmissionForResourceAndStudent,
+  getSubmissionsByStudent,
+  gradeSubmission,
 } from "@/modules/resources/store";
 
 // Alumni module
@@ -1147,5 +1578,42 @@ export {
   withdrawConsent,
 } from "@/modules/compliance/store";
 
+import { seedPlatformAlerts } from "@/modules/platform/store";
+
 // School deletion grace period constant (used by API routes)
 export const SCHOOL_DELETION_GRACE_MS = 30 * 24 * 60 * 60 * 1000;
+
+// Platform alerts + audit log + health module
+export {
+  createPlatformAlert,
+  listPlatformAlerts,
+  markAlertsRead,
+  markAllAlertsRead,
+  getUnreadAlertCount,
+  seedPlatformAlerts,
+  createAuditLog,
+  listAuditLogs,
+  getAuditLogStats,
+  getAuditHeatmap,
+  createImpersonationSession,
+  endImpersonationSession,
+  getImpersonationSessions,
+  getImpersonationSessionDetail,
+  recordImpersonationAction,
+  recordHealthMetric,
+  getHealthDashboard,
+  getApiHealthSeries,
+} from "@/modules/platform/store";
+export {
+  listWebhooks,
+  getWebhook,
+  createWebhook,
+  updateWebhook,
+  deleteWebhook,
+  dispatchWebhook,
+  listDeliveries,
+} from "@/modules/platform/webhooks";
+import {
+  restoreWebhookState,
+  getWebhookSnapshot,
+} from "@/modules/platform/webhooks";

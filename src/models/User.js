@@ -24,7 +24,7 @@ const userSchema = new mongoose.Schema(
     role: {
       type: String,
       required: true,
-      enum: ["SUPER_ADMIN", "BURSAR", "REGISTRAR", "TEACHER", "STUDENT", "PARENT"],
+      enum: ["PLATFORM_ADMIN", "SUPER_ADMIN", "BURSAR", "REGISTRAR", "TEACHER", "STUDENT", "PARENT"],
     },
     schoolId: {
       type: mongoose.Schema.Types.ObjectId,

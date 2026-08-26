@@ -110,8 +110,13 @@ function route(request, requestHeaders) {
   // them to their role home, or to a validated ?next= deep link they are
   // allowed to render. (resolvePostLoginRedirect guarantees the target is
   // role-safe, so this can never bounce back into the proxy in a loop.)
-  if (pathname === "/login" || pathname === "/register") {
+  // Platform admin login is also a public auth page.
+  if (pathname === "/login" || pathname === "/register" || pathname === "/platform/login") {
     if (!session?.role) return renderNext(requestHeaders);
+    // Platform admin login should redirect to platform dashboard, not school dashboard
+    if (pathname === "/platform/login" && session.role === "PLATFORM_ADMIN") {
+      return NextResponse.redirect(new URL("/platform/dashboard", request.url));
+    }
     const target = resolvePostLoginRedirect(
       session.role,
       request.nextUrl.searchParams.get("next")

@@ -1,0 +1,121 @@
+/* Platform Admin dark control-center theme */
+/* Overrides the global body background from globals.css */
+
+body {
+  background-color: #09090b !important;
+  color: #fafafa !important;
+  font-family: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
+}
+
+/* Platform layout: sidebar is 260px, main content needs matching margin */
+.platform-main {
+  margin-left: 260px;
+  flex: 1;
+  transition: margin-left 300ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+.platform-main.sidebar-collapsed {
+  margin-left: 72px;
+}
+
+/* Dark scrollbar for platform portal */
+body *::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+body *::-webkit-scrollbar-thumb {
+  background: #27272a;
+  border-radius: 3px;
+}
+body *::-webkit-scrollbar-thumb:hover {
+  background: #3f3f46;
+}
+body *::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* Subtle card glow on hover */
+.platform-card {
+  background: #18181b;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 12px;
+  transition: all 0.2s ease;
+}
+.platform-card:hover {
+  border-color: rgba(255, 255, 255, 0.1);
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.03), 0 4px 24px rgba(0, 0, 0, 0.3);
+}
+
+/* Sparkline chart container */
+.platform-sparkline {
+  height: 48px;
+  opacity: 0.6;
+  transition: opacity 0.2s;
+}
+.platform-card:hover .platform-sparkline {
+  opacity: 1;
+}
+
+/* Data table styles */
+.platform-table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+}
+.platform-table th {
+  padding: 10px 16px;
+  text-align: left;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: #71717a;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+.platform-table td {
+  padding: 14px 16px;
+  font-size: 13px;
+  color: #d4d4d8;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+}
+.platform-table tr:last-child td {
+  border-bottom: none;
+}
+.platform-table tbody tr {
+  transition: background-color 0.15s;
+}
+.platform-table tbody tr:hover {
+  background-color: rgba(255, 255, 255, 0.02);
+}
+
+/* Badge styles */
+.platform-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  font-size: 11px;
+  font-weight: 600;
+  border-radius: 6px;
+  letter-spacing: 0.02em;
+}
+.platform-badge-green {
+  background: rgba(34, 197, 94, 0.12);
+  color: #4ade80;
+}
+.platform-badge-amber {
+  background: rgba(245, 158, 11, 0.12);
+  color: #fbbf24;
+}
+.platform-badge-red {
+  background: rgba(239, 68, 68, 0.12);
+  color: #f87171;
+}
+
+/* Metric highlight */
+.metric-value {
+  font-size: 28px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: #fafafa;
+  line-height: 1.2;
+}

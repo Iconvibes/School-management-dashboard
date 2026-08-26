@@ -7,6 +7,7 @@
 import { ROLES, STAFF_ROLES } from "@/lib/permissions";
 
 const PORTAL_GUARDS = Object.freeze([
+  { prefix: "/platform", roles: Object.freeze([ROLES.PLATFORM_ADMIN]) },
   { prefix: "/admin", roles: STAFF_ROLES }, // SUPER_ADMIN, BURSAR, REGISTRAR
   { prefix: "/teacher", roles: Object.freeze([ROLES.TEACHER]) },
   { prefix: "/student", roles: Object.freeze([ROLES.STUDENT]) },
@@ -38,6 +39,7 @@ export function mayRenderPortal(role, pathname) {
  * role home is configured in exactly one place.
  */
 export const ROLE_HOME = Object.freeze({
+  [ROLES.PLATFORM_ADMIN]: "/platform/dashboard",
   [ROLES.SUPER_ADMIN]: "/admin/dashboard",
   [ROLES.BURSAR]: "/admin/dashboard",
   [ROLES.REGISTRAR]: "/admin/dashboard",

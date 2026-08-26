@@ -27,6 +27,9 @@ export {
   getDashboardStats,
   createLead,
   listLeads,
+  updateSchoolSubscription,
+  listSchoolSubscriptions,
+  startSchoolTrial,
 } from "./school/store";
 
 // Users
@@ -132,6 +135,11 @@ export {
   getClassResource,
   updateClassResource,
   deleteClassResource,
+  createSubmission,
+  getSubmissionsForResource,
+  getSubmissionForResourceAndStudent,
+  getSubmissionsByStudent,
+  gradeSubmission,
 } from "./resources/store";
 
 // Alumni (detailed alumni management)
@@ -156,3 +164,13 @@ export {
   recordConsent,
   withdrawConsent,
 } from "./compliance/store";
+
+// Platform alerts
+export {
+  createPlatformAlert,
+  listPlatformAlerts,
+  markAlertsRead,
+  markAllAlertsRead,
+  getUnreadAlertCount,
+  seedPlatformAlerts,
+} from "./platform/store";

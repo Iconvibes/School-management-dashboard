@@ -25,6 +25,16 @@ Every school gets a fully isolated tenant: students, teachers, scores and payrol
 - **Error Boundaries** — each dashboard tab and modal is individually wrapped in React ErrorBoundary components, so a crash in one section shows a friendly fallback without white-screening the entire portal.
 - **Multi-Tenant Isolation** — every query is scoped by `schoolId` and verified server-side.
 - **Installable PWA** — install on Android phones and Windows PCs like a native app.
+- **Platform Admin Portal** — a separate, fully isolated control panel at `/platform/` for the EduTrack platform owner to monitor all schools, manage subscriptions, impersonate school admins, and view cross-tenant analytics.
+- **School Impersonation** — platform admins can impersonate any school admin to troubleshoot issues directly, with session timeout, countdown banner, and full audit logging.
+- **Billing Enforcement** — subscription lifecycle management: trials, active, expired, frozen. Expired schools are blocked from non-admin logins. Billing banners warn of expiring trials.
+- **Cross-Tenant Audit Log** — every admin action across all schools is tracked: impersonation events, status changes, billing events. Filterable, searchable, exportable as CSV/PDF.
+- **Platform Alerts** — real-time notifications when schools sign up, change subscription, freeze, or have errors. Severity-based (critical/warning/info) with read/unread state.
+- **Webhook Integrations** — send platform events to Slack, Discord, or custom endpoints. Auto-fires on school signups, subscription changes, impersonation, and alerts.
+- **Revenue Forecast** — weighted moving average + linear trend analysis projects next quarter revenue with confidence bands. Per-school and platform-wide views.
+- **School Comparison** — overlay two schools enrollment or revenue trends side-by-side for competitive analysis.
+- **Enrollment Drill-Down** — click any month on the enrollment chart to see exactly which students/teachers joined that month.
+- **Responsive Digest Email** — polished HTML email template with mobile-first design, dark mode support, Outlook compatibility, and auto-send scheduling.
 
 ## 🚀 Getting Started
 
@@ -47,6 +57,7 @@ becomes the first school's admin. In dev/test the demo seed is on by default:
 | Portal       | Email                  | Password    |
 | ------------ | ---------------------- | ----------- |
 | Super Admin  | `admin@edutrack.app`   | `admin123`  |
+| Platform Admin | `platform@edutrack.app` | `platform123` |
 | Teacher      | `a.okafor@edutrack.app`| `teacher123`|
 | Student      | `k.adebayo@edutrack.app`| `student123`|
 | Parent       | linked via admin dashboard | student's name as password |
@@ -122,8 +133,17 @@ src/
       resources/           # class resources
       scheme/              # scheme of work
       alumni/              # alumni management
+      platform/            # platform admin: alerts, audit, schools, webhooks, digest, compare
+      cron/                # scheduled tasks (digest auto-send)
       me/                  # GDPR data export + erasure request (per-user)
     admin/dashboard/       # Super Admin / Bursar / Registrar portal (~998 lines, thin layout shell)
+    platform/              # Platform Admin portal (separate from school admin)
+      dashboard/           # Overview: school stats, revenue, enrollment, alerts
+      schools/             # School directory + drill-down per tenant
+      audit/               # Cross-tenant audit log
+      alerts/              # Platform alert center
+      compare/             # School comparison mode
+      settings/            # Digest preferences, webhook config
     teacher/dashboard/     # Grading matrix + attendance
     student/dashboard/     # Report card + timetable + fee status
     parent/dashboard/      # Children's reports, fees, messaging
@@ -137,11 +157,13 @@ src/
     Notification, NotificationPreference, Message, PushSubscription,
     DigestPref, Digest, ReminderBatch, RoleAudit, SchemeOfWork,
     ClassResource, ClassAlertPref, Alumni, Branch, Lead,
-    ErasureRequest, DataAccessLog
+    ErasureRequest, DataAccessLog,
+    PlatformAlert, AuditLog, ImpersonationSession
 
   modules/                 # Domain modules (shared in-memory arrays for demo store)
     school/ users/ scores/ fees/ attendance/ communications/
     timetable/ grading/ resources/ alumni/ compliance/
+    platform/            # platform alerts, audit logs, impersonation, webhooks, digest
 
   components/
     ErrorBoundary.js        # React error boundary (class component)
@@ -178,12 +200,15 @@ src/
     timetable.js           # Period/break/bell schedule helpers
     validation.js          # Zod schemas for API input validation
     log.js                 # Structured logger (isDev-gated console replacement)
+    platform-digest.js    # Platform digest email builder (responsive HTML template)
+    relative-time.js      # Human-readable time formatting ("2 minutes ago")
+    billing.js            # Subscription status checks, grace period logic
 ```
 
 ## 🔐 Security & Authorization
 
 EduTrack is multi-tenant (each school's scores, fees and payroll are isolated) and
-role-based (six roles: `SUPER_ADMIN`, `BURSAR`, `REGISTRAR`, `TEACHER`, `PARENT`,
+role-based (seven roles: `PLATFORM_ADMIN`, `SUPER_ADMIN`, `BURSAR`, `REGISTRAR`, `TEACHER`, `PARENT`,
 `STUDENT`). Authorization is enforced by **three independent layers** — a request
 must pass all of them before a user sees anything. Each layer is deliberately
 weak alone and strong together.
@@ -196,13 +221,14 @@ weak alone and strong together.
 | **2. API revalidation** | `src/lib/policy.js` + `src/lib/permissions.js` | Re-fetches the acting user from the store on **every** request; token role/schoolId must match the live record | Authoritative, but fires per request — a page's HTML would already be sent |
 | **3. Client me-gate** | each dashboard page | Re-checks `/api/auth/me` on mount and bounces mismatches to `/login` | Runs in the browser only — never a security boundary on its own |
 
-**Layer 1 — Proxy render guard** (`src/proxy.js`). The Next 16 `proxy`
+**Layer 1 — Proxy render guard** (`src/proxy.js`). The platform admin portal (`/platform/*`) uses a completely separate login at `/platform/login` — it is not visible on the school login page and shares no UI with school portals. The Next 16 `proxy`
 (middleware's successor) locks the four role portals to their roles at the
 routing layer, so the wrong role can never even *receive* the wrong portal's
 HTML:
 
 | Portal      | Roles                              | Home              |
 | ----------- | ---------------------------------- | ----------------- |
+| `/platform/*` | `PLATFORM_ADMIN`                    | `/platform/dashboard` |
 | `/admin/*`  | `SUPER_ADMIN`, `BURSAR`, `REGISTRAR` | `/admin/dashboard` |
 | `/teacher/*`| `TEACHER`                          | `/teacher/dashboard` |
 | `/student/*`| `STUDENT`                          | `/student/dashboard` |

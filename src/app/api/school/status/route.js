@@ -2,6 +2,7 @@ import { NextResponse } from "next/server.js";
 import { jsonError } from "@/lib/auth";
 import { store } from "@/lib/store";
 import { invalidateSchoolAuthSnapshots, isDenied, requirePermission } from "@/lib/policy";
+import { createPlatformAlert } from "@/modules/platform/store";
 import { sendEmail } from "@/lib/mailer";
 import { schoolStatusSchema, firstValidationMessage } from "@/lib/validation";
 import * as log from "@/lib/log";
@@ -87,6 +88,23 @@ export async function POST(request) {
   } catch (err) {
     // The confirmation must never take the status change down with it.
     log.error("school-status", "alert failed:", err?.message || err);
+  }
+
+  // Platform admin alert for school status change
+  try {
+    const alertType = body.action === 'deactivate' ? 'school_frozen' : 'school_restored';
+    const alertSeverity = body.action === 'deactivate' ? 'critical' : 'success';
+    await createPlatformAlert({
+      schoolId: session.schoolId,
+      schoolName: school.name,
+      type: alertType,
+      severity: alertSeverity,
+      title: `${school.name} has been ${verb.past}`,
+      message: `${verb.now}`,
+      meta: { action: body.action, previousStatus: school.status },
+    });
+  } catch {
+    // Platform alert failure is non-fatal
   }
 
   return NextResponse.json({ success: true, school });

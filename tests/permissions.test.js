@@ -15,7 +15,7 @@ import {
 test("ROLES includes the staff roles below SUPER_ADMIN", () => {
   assert.equal(ROLES.BURSAR, "BURSAR");
   assert.equal(ROLES.REGISTRAR, "REGISTRAR");
-  assert.deepEqual([...STAFF_ROLES], ["SUPER_ADMIN", "BURSAR", "REGISTRAR"]);
+  assert.deepEqual([...STAFF_ROLES], ["PLATFORM_ADMIN", "SUPER_ADMIN", "BURSAR", "REGISTRAR"]);
 });
 
 test("SUPER_ADMIN can do everything", () => {

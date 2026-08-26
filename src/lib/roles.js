@@ -20,6 +20,7 @@ export const MANAGED_ROLES = Object.freeze([
 ]);
 
 export const ROLE_LABELS = Object.freeze({
+  PLATFORM_ADMIN: "Platform Admin",
   SUPER_ADMIN: "Super Admin",
   BURSAR: "Bursar",
   REGISTRAR: "Registrar",

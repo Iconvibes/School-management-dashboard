@@ -71,6 +71,37 @@ const schoolSchema = new mongoose.Schema(
       sortCode: { type: String, default: "" },
       otherInstructions: { type: String, default: "" },
     },
+    // ── SaaS Billing / Subscription ──────────────────────────────────
+    // Which EduTrack plan the school is on. Free trial until first payment.
+    billingPlan: {
+      type: String,
+      enum: ["trial", "starter", "standard", "enterprise"],
+      default: "trial",
+    },
+    // "monthly" or "annual" — controls the Paystack subscription interval.
+    billingCycle: {
+      type: String,
+      enum: ["monthly", "annual"],
+      default: "monthly",
+    },
+    // Paystack customer code — created on first subscription attempt.
+    paystackCustomerCode: { type: String, default: "" },
+    // Paystack subscription code — created when a plan is activated.
+    paystackSubscriptionCode: { type: String, default: "" },
+    // Paystack plan code — the active plan in Paystack.
+    paystackPlanCode: { type: String, default: "" },
+    // Subscription lifecycle status.
+    subscriptionStatus: {
+      type: String,
+      enum: ["active", "past_due", "cancelled", "trial", "none"],
+      default: "trial",
+    },
+    // When the current billing period ends (next charge date).
+    currentPeriodEnd: { type: Date, default: undefined },
+    // When the trial started — 14 days from school creation.
+    trialStart: { type: Date, default: undefined },
+    // When the trial ends.
+    trialEnd: { type: Date, default: undefined },
   },
   {
     timestamps: true,

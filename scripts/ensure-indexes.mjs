@@ -39,6 +39,7 @@ import "../src/models/DigestPref.js";
 import "../src/models/Digest.js";
 import "../src/models/SchemeOfWork.js";
 import "../src/models/ClassResource.js";
+import "../src/models/AssignmentSubmission.js";
 import "../src/models/Alumni.js";
 import "../src/models/PushSubscription.js";
 import "../src/models/ConflictScan.js";

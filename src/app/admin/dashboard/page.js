@@ -64,6 +64,7 @@ import MetricCard from "@/components/MetricCard";
 import Modal from "@/components/Modal";
 import Logo from "@/components/Logo";
 import TopStudents from "@/components/TopStudents";
+import ImpersonationBanner from "@/components/ImpersonationBanner";
 import { AreaChart, DonutChart, DayBars } from "@/components/OverviewCharts";
 import ReportCardModal from "@/components/ReportCardModal";
 import PrintableCredentials from "@/components/PrintableCredentials";
@@ -86,6 +87,8 @@ import AlumniTab from "@/components/admin/AlumniTab";
 import EngagementTab from "@/components/admin/EngagementTab";
 import BranchesTab from "@/components/admin/BranchesTab";
 import ComplianceTab from "@/components/admin/ComplianceTab";
+import BillingTab from "@/components/admin/BillingTab";
+import BillingBanner from "@/components/BillingBanner";
 import { AdminProvider } from "@/components/admin/context/AdminContext";
 import { armAlreadyExists } from "@/lib/arms";
 import { downloadBlob, toCSV, withBOM } from "@/lib/csv";
@@ -161,7 +164,9 @@ const fmtHour = (h) => `${String(h ?? 2).padStart(2, "0")}:00`;
 export default function AdminDashboard() {
   const router = useRouter();
   const offlineSync = useOfflineSync();
-  const { meData: session, loading: sessionLoading } = useSession();
+  const { meData: initialSession, loading: sessionLoading } = useSession();
+  const [session, setSession] = useState(null);
+  useEffect(() => { if (initialSession) setSession(initialSession); }, [initialSession]);
   const [lastSync, setLastSync] = useState(null);
   const [tick, setTick] = useState(0);
   const [stats, setStats] = useState(null);
@@ -310,7 +315,7 @@ export default function AdminDashboard() {
   useEffect(() => {
     const applyHash = () => {
       const hash = window.location.hash.replace("#", "");
-      if (["classes", "teachers", "roles", "logins", "students", "fees", "reports", "timetable", "archives", "settings", "scheme", "risk", "performance", "alumni", "engagement", "branches", "compliance"].includes(hash)) setTab(hash);
+      if (["classes", "teachers", "roles", "logins", "students", "fees", "reports", "timetable", "archives", "settings", "scheme", "risk", "performance", "alumni", "engagement", "branches", "compliance", "billing"].includes(hash)) setTab(hash);
       else if (!hash) setTab("overview");
     };
     applyHash();
@@ -625,6 +630,14 @@ export default function AdminDashboard() {
           min-width, or wide children (metric grids, tables, tab strips) blow
           the whole page out horizontally on small screens */}
       <div className="min-w-0 flex-1 lg:pl-64">
+        {/* Impersonation timeout banner — only shown when platform admin is impersonating */}
+        {session?.impersonation && (
+          <ImpersonationBanner impersonation={session.impersonation} />
+        )}
+        {/* Billing enforcement banner */}
+        <div className="px-4 pt-4">
+          <BillingBanner isSuperAdmin={isSuper} />
+        </div>
         {/* Topbar */}
         <header className="sticky top-0 z-30 flex h-16 items-center justify-between border-b border-navy-200/70 bg-white/80 px-5 backdrop-blur-lg">
           <div className="flex min-w-0 items-center gap-3">
@@ -939,6 +952,13 @@ export default function AdminDashboard() {
           {activeTab === "archives" && (
             <div className="mt-6 rounded-2xl border border-slate-200/60 bg-gradient-to-br from-slate-50/80 via-white to-gray-50/40 p-1 shadow-sm shadow-slate-100/50">
               <ArchivesTab openReportPayload={(data) => setReportPayload(data)} />
+            </div>
+          )}
+
+          {/* Billing — cyan finance theme */}
+          {activeTab === "billing" && (
+            <div className="mt-6 rounded-2xl border border-cyan-200/60 bg-gradient-to-br from-cyan-50/60 via-white to-teal-50/40 p-1 shadow-sm shadow-cyan-100/50">
+              <ErrorBoundary label="Billing"><BillingTab /></ErrorBoundary>
             </div>
           )}
 
