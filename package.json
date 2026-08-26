@@ -18,6 +18,7 @@
     "test:e2e": "npx playwright test"
   },
   "dependencies": {
+    "@sentry/nextjs": "^10.71.0",
     "bcrypt": "^6.0.0",
     "bullmq": "^6.2.0",
     "html2canvas": "^1.4.1",
