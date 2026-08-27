@@ -1,4 +1,61 @@
 /**
+ * Role permission matrix - pure data + a tiny can() helper with NO imports,
+ * so both server guards (policy.js) and client components (Sidebar, dashboard)
+ * can share one source of truth without pulling Next.js server bits in.
+ *
+ * Add a role here AND to: (1) src/models/User.js enum, (2) STAFF_ROLES when
+ * it opens the admin console, (3) MANAGED_ROLES in src/lib/roles.js when it
+ * is a staff role (role management may only re-roll that list),
+ * (4) ROLE_HOME in src/lib/portal-guard.js, (5) ROLE_LABELS in
+ * src/lib/roles.js, (6) the login page ROLES list, (7) the demo seed if
+ * the demo should ship a sample account. The full checklist lives in
+ * README.md (Adding a new role).
+ */
+
+/** Canonical role strings (mirrors the User model role enum). */
+export type Role =
+  | "PLATFORM_ADMIN"
+  | "SUPER_ADMIN"
+  | "BURSAR"
+  | "REGISTRAR"
+  | "TEACHER"
+  | "PARENT"
+  | "STUDENT";
+
+/** Permission action strings used across the app. */
+export type Permission =
+  | "fees.view"
+  | "fees.record"
+  | "fees.confirm"
+  | "fees.remind"
+  | "fees.structures.edit"
+  | "fees.audit.view"
+  | "students.manage"
+  | "students.add"
+  | "users.manage"
+  | "users.edit"
+  | "users.password.reset"
+  | "roles.manage"
+  | "roster.view"
+  | "reports.view"
+  | "scores.enter"
+  | "scores.view"
+  | "scores.own.view"
+  | "attendance.mark"
+  | "attendance.view"
+  | "stats.view"
+  | "school.edit"
+  | "notifications.view"
+  | "digest.manage"
+  | "leads.view"
+  | "timetable.view"
+  | "timetable.manage"
+  | "platform.view"
+  | "platform.schools"
+  | "platform.impersonate"
+  | "platform.revenue";
+
+/**
  * Role permission matrix — pure data + a tiny `can()` helper with NO imports,
  * so both server guards (policy.js) and client components (Sidebar, dashboard)
  * can share one source of truth without pulling Next.js server bits in.
@@ -14,17 +71,17 @@
 
 /** Canonical roles (mirrors the User model's role enum). */
 export const ROLES = Object.freeze({
-  PLATFORM_ADMIN: "PLATFORM_ADMIN",
-  SUPER_ADMIN: "SUPER_ADMIN",
-  BURSAR: "BURSAR",
-  REGISTRAR: "REGISTRAR",
-  TEACHER: "TEACHER",
-  PARENT: "PARENT",
-  STUDENT: "STUDENT",
-});
+  PLATFORM_ADMIN: "PLATFORM_ADMIN" as const,
+  SUPER_ADMIN: "SUPER_ADMIN" as const,
+  BURSAR: "BURSAR" as const,
+  REGISTRAR: "REGISTRAR" as const,
+  TEACHER: "TEACHER" as const,
+  PARENT: "PARENT" as const,
+  STUDENT: "STUDENT" as const,
+}) satisfies Record<string, Role>;
 
 /** Every role that opens the staff admin console (in dashboard-gate order). */
-export const STAFF_ROLES = Object.freeze([
+export const STAFF_ROLES: readonly Role[] = Object.freeze([
   ROLES.PLATFORM_ADMIN,
   ROLES.SUPER_ADMIN,
   ROLES.BURSAR,
@@ -158,10 +215,10 @@ export const ROLE_PERMISSIONS = Object.freeze({
 });
 
 /** True when `role` may perform `action`. SUPER_ADMIN is always allowed. */
-export function can(role, action) {
+export function can(role: string | undefined, action?: Permission | string): boolean {
   if (!action) return true;
-  const perms = ROLE_PERMISSIONS[role] || [];
-  return perms.includes(action);
+  const perms = ROLE_PERMISSIONS[role as Role] || [];
+  return perms.includes(action as Permission);
 }
 
 // ---------------------------------------------------------------------------
@@ -171,7 +228,7 @@ export function can(role, action) {
 // pin that none are missing).
 
 /** One human label per matrix action — keep in sync with ROLE_PERMISSIONS. */
-export const ACTION_LABELS = Object.freeze({
+export const ACTION_LABELS: Readonly<Record<string, string>> = Object.freeze({
   "fees.view": "View the fee ledger & balances",
   "fees.record": "Record fee payments",
   "fees.confirm": "Confirm parent-portal payments",
@@ -226,9 +283,29 @@ export const PERMISSION_DOMAINS = Object.freeze([
 ]);
 
 /** The summary domain an action belongs to ("scores.own.view" → "own"). */
-export function permissionDomain(action) {
+export function permissionDomain(action: string): string {
   if (action === "scores.own.view") return "own";
   return String(action).split(".")[0];
+}
+
+/** Action label entry for summarizeRolePermissions output. */
+export interface ActionLabel {
+  action: string;
+  label: string;
+}
+
+/** Domain entry for summarizeRolePermissions output. */
+export interface DomainEntry {
+  key: string;
+  label: string;
+  actions: ActionLabel[];
+}
+
+/** Summary of one role permissions, grouped by domain. */
+export interface RolePermissionSummary {
+  role: string;
+  count: number;
+  domains: DomainEntry[];
 }
 
 /**
@@ -237,14 +314,14 @@ export function permissionDomain(action) {
  * with empty domains omitted. Unknown actions fall back to their raw string,
  * and an action prefix not yet in PERMISSION_DOMAINS still renders (last).
  */
-export function summarizeRolePermissions(role) {
-  const byDomain = new Map();
-  for (const action of ROLE_PERMISSIONS[role] || []) {
+export function summarizeRolePermissions(role: string): RolePermissionSummary {
+  const byDomain = new Map<string, string[]>();
+  for (const action of ROLE_PERMISSIONS[role as Role] || []) {
     const key = permissionDomain(action);
     if (!byDomain.has(key)) byDomain.set(key, []);
-    byDomain.get(key).push(action);
+    byDomain.get(key)!.push(action);
   }
-  const domains = [];
+  const domains: DomainEntry[] = [];
   for (const [key, label] of PERMISSION_DOMAINS) {
     const actions = byDomain.get(key);
     if (!actions || actions.length === 0) continue;
@@ -262,7 +339,7 @@ export function summarizeRolePermissions(role) {
       actions: actions.map((a) => ({ action: a, label: ACTION_LABELS[a] || a })),
     });
   }
-  return { role, count: (ROLE_PERMISSIONS[role] || []).length, domains };
+  return { role, count: (ROLE_PERMISSIONS[role as Role] || []).length, domains };
 }
 
 /**
@@ -278,10 +355,14 @@ export function summarizeRolePermissions(role) {
  * @param {Object} body    the PATCH body
  * @returns {boolean} true when the edit is allowed
  */
-export function mayEditUser(role, target, body = {}) {
+export function mayEditUser(
+  role: string,
+  target: { role?: string } | null | undefined,
+  body: Record<string, unknown> = {}
+): boolean {
   if (role !== ROLES.REGISTRAR) return true;
   if (!target) return false;
-  if (!["STUDENT", "PARENT"].includes(target.role)) return false;
+  if (!["STUDENT", "PARENT"].includes(target.role!)) return false;
   if (body.payrollStatus !== undefined || body.feePaid !== undefined) return false;
   return true;
 }
@@ -291,7 +372,7 @@ export function mayEditUser(role, target, body = {}) {
  * @param {string} role    the acting session's role
  * @param {string} targetRole  the target user's role
  */
-export function mayResetPassword(role, targetRole) {
+export function mayResetPassword(role: string, targetRole: string): boolean {
   if (role !== ROLES.REGISTRAR) return true;
   return ["STUDENT", "PARENT"].includes(targetRole);
 }
