@@ -9,6 +9,7 @@ import {
 } from "lucide-react";
 import Modal from "@/components/Modal";
 import { useAdminShell } from "@/components/admin/context/AdminContext";
+import { useFeeContext } from "@/components/admin/context/FeeContext";
 import {
   DEFAULT_REMINDER_MESSAGE,
   DEFAULT_STUDENT_REMINDER_MESSAGE,
@@ -23,21 +24,15 @@ const inputCls =
  */
 export default function FeeReminderModal() {
   const {
-    reminderModal,
-    setReminderModal,
-    reminderSending,
-    reminderResult,
-    setReminderResult,
-    reminderMessage,
-    setReminderMessage,
-    reminderStudentMessage,
-    setReminderStudentMessage,
-    sendReminders,
-    loadReminderTemplates,
-    feeTotals,
-    feeLedger,
-    naira,
+    naira, sendReminders, loadReminderTemplates,
   } = useAdminShell();
+  const { state: feeState } = useFeeContext();
+  const {
+    reminderModal, setReminderModal, reminderSending, reminderResult,
+    setReminderResult, reminderMessage, setReminderMessage,
+    reminderStudentMessage, setReminderStudentMessage,
+    feeTotals, feeLedger,
+  } = feeState;
 
   const [msg, setMsg] = useState(reminderMessage);
   const [stdMsg, setStdMsg] = useState(reminderStudentMessage);

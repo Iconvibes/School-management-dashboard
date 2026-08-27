@@ -15,6 +15,7 @@ import {
 import MetricCard from "@/components/MetricCard";
 import { naira, AuditBadge } from "./utils";
 import { useAdminShell } from "./context/AdminContext";
+import { useFeeContext } from "./context/FeeContext";
 
 /**
  * Fee Management tab — extracted from admin dashboard page.js.
@@ -22,15 +23,18 @@ import { useAdminShell } from "./context/AdminContext";
  */
 export default function FeesTab() {
   const {
-    feeTotals, pendingReconciles, pendingPayments, confirmingId,
-    feeClass, setFeeClass, feeDefaultersOnly, setFeeDefaultersOnly,
-    feeDraft, setFeeDraft, feeLedger, feeSaving, audit,
     isSuper, session,
     confirmPayment, saveFeeStructure,
     setPayModal, setPayForm,
     setReminderModal, setReminderResult, loadReminderTemplates,
     setReconcileModal, setReconcileResult,
   } = useAdminShell();
+  const { state: feeState } = useFeeContext();
+  const {
+    feeTotals, pendingReconciles, pendingPayments, confirmingId,
+    feeClass, setFeeClass, feeDefaultersOnly, setFeeDefaultersOnly,
+    feeDraft, setFeeDraft, feeLedger, feeSaving, audit,
+  } = feeState;
   return (
     <div className="mt-5 animate-fade-up">
                 {/* Summary cards */}

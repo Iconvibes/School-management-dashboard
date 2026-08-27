@@ -3,6 +3,7 @@
 import { Loader2, Banknote } from "lucide-react";
 import Modal from "@/components/Modal";
 import { useAdminShell } from "@/components/admin/context/AdminContext";
+import { useFeeContext } from "@/components/admin/context/FeeContext";
 
 const inputCls =
   "w-full rounded-xl border border-navy-200 bg-white px-4 py-2.5 text-sm text-navy-800 outline-none transition focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20";
@@ -12,14 +13,12 @@ const inputCls =
  */
 export default function FeePaymentModal() {
   const {
-    payModal,
-    setPayModal,
-    payForm,
-    setPayForm,
     recordPayment,
-    feeLedger,
-    feeSaving,
   } = useAdminShell();
+  const { state: feeState } = useFeeContext();
+  const {
+    payModal, setPayModal, payForm, setPayForm, feeLedger, feeSaving,
+  } = feeState;
 
   return (
     <Modal

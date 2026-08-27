@@ -3,6 +3,7 @@
 import { Loader2, CheckCircle2, Send } from "lucide-react";
 import Modal from "@/components/Modal";
 import { useAdminShell } from "@/components/admin/context/AdminContext";
+import { useFeeContext } from "@/components/admin/context/FeeContext";
 
 /**
  * Reconcile & forward modal — push student-addressed reminders to newly
@@ -10,13 +11,13 @@ import { useAdminShell } from "@/components/admin/context/AdminContext";
  */
 export default function ReconcileModal() {
   const {
-    reconcileModal,
-    setReconcileModal,
-    reconcileSending,
-    reconcileResult,
-    pendingReconciles,
     reconcileAndForward,
   } = useAdminShell();
+  const { state: feeState } = useFeeContext();
+  const {
+    reconcileModal, setReconcileModal, reconcileSending, reconcileResult,
+    pendingReconciles,
+  } = feeState;
 
   return (
     <Modal

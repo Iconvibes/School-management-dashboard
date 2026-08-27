@@ -37,19 +37,10 @@ import { createContext, useContext } from "react";
  * ── Report cards ────────────────────────────────────────────────
  *   reportPayload, setReportPayload, openReport, reportLoading
  *
- * ── Fee management ─────────────────────────────────────────────
- *   feeStructures, feeLedger, feeTotals, pendingPayments, audit,
- *   pendingReconciles, confirmingId, feeClass, setFeeClass,
- *   feeDefaultersOnly, setFeeDefaultersOnly, feeDraft, setFeeDraft,
- *   feeSaving, confirmPayment, saveFeeStructure,
- *   payModal, setPayModal, payForm, setPayForm, recordPayment,
- *   reminderModal, setReminderModal, reminderSending, reminderResult,
- *   setReminderResult, reminderMessage, setReminderMessage,
- *   reminderStudentMessage, setReminderStudentMessage,
- *   sendReminders, loadReminderTemplates,
- *   reconcileModal, setReconcileModal, reconcileSending,
- *   reconcileResult, setReconcileResult, reconcileAndForward,
- *   payForm helpers: recordPayment
+ * ── Fee management (state in FeeContext, actions here) ──────────
+ *   confirmPayment, saveFeeStructure, recordPayment,
+ *   loadReminderTemplates, sendReminders, reconcileAndForward,
+ *   (fee state reads: use useFeeContext() in fee tabs/modals)
  *
  * ── Timetable ───────────────────────────────────────────────────
  *   ttArm, setTtArm, ttEntries, ttByKey, ttFilled, ttConflicts,

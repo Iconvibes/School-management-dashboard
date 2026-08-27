@@ -90,6 +90,7 @@ import ComplianceTab from "@/components/admin/ComplianceTab";
 import BillingTab from "@/components/admin/BillingTab";
 import BillingBanner from "@/components/BillingBanner";
 import { AdminProvider } from "@/components/admin/context/AdminContext";
+import { FeeProvider, useFeeContext, FEE_ACTION_TYPES } from "@/components/admin/context/FeeContext";
 import { armAlreadyExists } from "@/lib/arms";
 import { downloadBlob, toCSV, withBOM } from "@/lib/csv";
 import { getSubjects, gradeBadgeClasses, ordinal, TERMS } from "@/lib/grading";
@@ -196,31 +197,36 @@ export default function AdminDashboard() {
   const [reportClass, setReportClass] = useState("");
   const [reportPayload, setReportPayload] = useState(null);
   const [reportLoading, setReportLoading] = useState(false);
-  // Fee management tab state
-  const [feeStructures, setFeeStructures] = useState([]);
-  const [feeLedger, setFeeLedger] = useState([]);
-  const [feeTotals, setFeeTotals] = useState(null);
-  const [pendingPayments, setPendingPayments] = useState([]);
-  const [confirmingId, setConfirmingId] = useState(null);
-  const [feeClass, setFeeClass] = useState("");
-  const [feeDefaultersOnly, setFeeDefaultersOnly] = useState(false);
-  const [feeDraft, setFeeDraft] = useState({}); // classArm -> amount input
-  const [payModal, setPayModal] = useState(null); // studentId
-  const [payForm, setPayForm] = useState({ amount: "", method: "CASH", note: "" });
-  const [feeSaving, setFeeSaving] = useState(false);
-  // Reminder state — "Send reminder" to parents of defaulters
-  const [reminderModal, setReminderModal] = useState(null); // null | "all" | studentId
-  const [reminderSending, setReminderSending] = useState(false);
-  const [reminderResult, setReminderResult] = useState(null); // { sent, skipped } after send
-  const [reminderMessage, setReminderMessage] = useState(DEFAULT_REMINDER_MESSAGE); // editable parent template
-  const [reminderStudentMessage, setReminderStudentMessage] = useState(DEFAULT_STUDENT_REMINDER_MESSAGE); // no-parent student template
-  // Reconcile & forward — push student-addressed reminders to newly linked parents
-  const [pendingReconciles, setPendingReconciles] = useState([]);
-  const [reconcileModal, setReconcileModal] = useState(false);
-  const [reconcileSending, setReconcileSending] = useState(false);
-  const [reconcileResult, setReconcileResult] = useState(null); // { forwarded, skipped }
-  // Fee audit trail — who did what (record / confirm / parent pay / download)
-  const [audit, setAudit] = useState([]);
+  // Fee management tab state — extracted to FeeContext for isolated re-renders
+  const { state: feeState, dispatch: feeDispatch } = useFeeContext();
+  const {
+    feeStructures, feeLedger, feeTotals, pendingPayments, confirmingId,
+    feeClass, feeDefaultersOnly, feeDraft, payModal, payForm, feeSaving,
+    reminderModal, reminderSending, reminderResult, reminderMessage, reminderStudentMessage,
+    pendingReconciles, reconcileModal, reconcileSending, reconcileResult, audit,
+  } = feeState;
+  // Setter adapters — bridge existing useState-style setters to reducer dispatch
+  const setFeeStructures = (v) => feeDispatch({ type: FEE_ACTION_TYPES.SET_STRUCTURES, value: typeof v === "function" ? v(feeStructures) : v });
+  const setFeeLedger = (v) => feeDispatch({ type: FEE_ACTION_TYPES.SET_LEDGER, value: typeof v === "function" ? v(feeLedger) : v });
+  const setFeeTotals = (v) => feeDispatch({ type: FEE_ACTION_TYPES.SET_TOTALS, value: typeof v === "function" ? v(feeTotals) : v });
+  const setPendingPayments = (v) => feeDispatch({ type: FEE_ACTION_TYPES.SET_PENDING_PAYMENTS, value: typeof v === "function" ? v(pendingPayments) : v });
+  const setConfirmingId = (v) => feeDispatch({ type: FEE_ACTION_TYPES.SET_CONFIRMING_ID, value: typeof v === "function" ? v(confirmingId) : v });
+  const setFeeClass = (v) => feeDispatch({ type: FEE_ACTION_TYPES.SET_CLASS, value: typeof v === "function" ? v(feeClass) : v });
+  const setFeeDefaultersOnly = (v) => feeDispatch({ type: FEE_ACTION_TYPES.SET_DEFAULTERS_ONLY, value: typeof v === "function" ? v(feeDefaultersOnly) : v });
+  const setFeeDraft = (v) => feeDispatch({ type: FEE_ACTION_TYPES.SET_DRAFT, value: typeof v === "function" ? v(feeDraft) : v });
+  const setPayModal = (v) => feeDispatch({ type: FEE_ACTION_TYPES.SET_PAY_MODAL, value: typeof v === "function" ? v(payModal) : v });
+  const setPayForm = (v) => feeDispatch({ type: FEE_ACTION_TYPES.SET_PAY_FORM, value: typeof v === "function" ? v(payForm) : v });
+  const setFeeSaving = (v) => feeDispatch({ type: FEE_ACTION_TYPES.SET_SAVING, value: typeof v === "function" ? v(feeSaving) : v });
+  const setReminderModal = (v) => feeDispatch({ type: FEE_ACTION_TYPES.SET_REMINDER_MODAL, value: typeof v === "function" ? v(reminderModal) : v });
+  const setReminderSending = (v) => feeDispatch({ type: FEE_ACTION_TYPES.SET_REMINDER_SENDING, value: typeof v === "function" ? v(reminderSending) : v });
+  const setReminderResult = (v) => feeDispatch({ type: FEE_ACTION_TYPES.SET_REMINDER_RESULT, value: typeof v === "function" ? v(reminderResult) : v });
+  const setReminderMessage = (v) => feeDispatch({ type: FEE_ACTION_TYPES.SET_REMINDER_MESSAGE, value: typeof v === "function" ? v(reminderMessage) : v });
+  const setReminderStudentMessage = (v) => feeDispatch({ type: FEE_ACTION_TYPES.SET_REMINDER_STUDENT_MESSAGE, value: typeof v === "function" ? v(reminderStudentMessage) : v });
+  const setPendingReconciles = useMemo(() => (v) => feeDispatch({ type: FEE_ACTION_TYPES.SET_PENDING_RECONCILES, value: typeof v === "function" ? v(pendingReconciles) : v }), [feeDispatch, pendingReconciles]);
+  const setReconcileModal = (v) => feeDispatch({ type: FEE_ACTION_TYPES.SET_RECONCILE_MODAL, value: typeof v === "function" ? v(reconcileModal) : v });
+  const setReconcileSending = (v) => feeDispatch({ type: FEE_ACTION_TYPES.SET_RECONCILE_SENDING, value: typeof v === "function" ? v(reconcileSending) : v });
+  const setReconcileResult = (v) => feeDispatch({ type: FEE_ACTION_TYPES.SET_RECONCILE_RESULT, value: typeof v === "function" ? v(reconcileResult) : v });
+  const setAudit = useMemo(() => (v) => feeDispatch({ type: FEE_ACTION_TYPES.SET_AUDIT, value: typeof v === "function" ? v(audit) : v }), [feeDispatch, audit]);
   // Parent linking state
   const [parents, setParents] = useState([]);
   const [linkModal, setLinkModal] = useState(null); // studentId being linked
@@ -383,13 +389,13 @@ export default function AdminDashboard() {
     enabled: tab === "fees",
     transform: (d) => d.entries || [],
   });
-  useEffect(() => { if (auditData) setAudit(auditData); }, [auditData]);
+  useEffect(() => { if (auditData) setAudit(auditData); }, [auditData, setAudit]);
 
   const { data: reconcileData } = useTabFetch("/api/fees/reconcile", {
     enabled: tab === "fees",
     transform: (d) => d.pending || [],
   });
-  useEffect(() => { if (reconcileData) setPendingReconciles(reconcileData); }, [reconcileData]);
+  useEffect(() => { if (reconcileData) setPendingReconciles(reconcileData); }, [reconcileData, setPendingReconciles]);
 
   // Roles & Access: role-change audit trail via useTabFetch
   const { data: roleAuditData } = useTabFetch("/api/users/roles/audit", {
@@ -564,6 +570,7 @@ export default function AdminDashboard() {
   const maxArm = Math.max(1, ...Object.values(stats.classDistribution || {}));
 
   return (
+    <FeeProvider>
     <AdminProvider value={{
       // Core
       session, setSession, stats, setStats, showToast,
@@ -1075,5 +1082,6 @@ export default function AdminDashboard() {
       )}
     </main>
     </AdminProvider>
+    </FeeProvider>
   );
 }
