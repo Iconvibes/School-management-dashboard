@@ -4,7 +4,7 @@ import { NextResponse } from "next/server.js";
 import bcrypt from "bcrypt";
 import { store } from "@/lib/store";
 import { setAuthCookie, jsonError } from "@/lib/auth";
-import { checkRateLimit, isLockedOut } from "@/lib/rate-limit";
+import { checkRateLimit, checkAccountRateLimit, isLockedOut, isAccountLockedOut } from "@/lib/rate-limit";
 import { loginSchema, firstValidationMessage } from "@/lib/validation";
 import * as log from "@/lib/log";
 import { verifyTurnstile } from "@/lib/turnstile";
@@ -42,6 +42,7 @@ const LOGIN_ACCOUNT_MAX = 10;
 const LOGIN_ACCOUNT_LOCKOUT_MS = 60 * 60 * 1000; // 1h hard block after 10 fails
 const LOGIN_TEACHER_NAME_MAX = 5;
 const LOGIN_SCHOOL_MAX = 5000;
+const LOGIN_ACCOUNT_GLOBAL_MAX = 30; // IP-independent: catches distributed attacks
 
 // Human portal names for the role-mismatch message (the login page's tabs).
 const PORTAL_LABELS = Object.freeze({
@@ -90,6 +91,13 @@ export async function POST(request) {
       429
     );
   }
+  // IP-independent global lockout — catches distributed attacks across rotating IPs.
+  if (await isAccountLockedOut({ accountKey })) {
+    return jsonError(
+      "Too many failed attempts for this account. Please try again later.",
+      429
+    );
+  }
 
   // Record the failed attempt in EVERY applicable bucket and return the 429
   // when any is exhausted, otherwise the caller's error response.
@@ -131,6 +139,11 @@ export async function POST(request) {
         max: LOGIN_SCHOOL_MAX,
         prefix: "auth-login-school",
         key: `school:${schoolId}`,
+      })) ||
+      (await checkAccountRateLimit({
+        accountKey: accountKey,
+        windowMs: LOGIN_WINDOW_MS,
+        max: LOGIN_ACCOUNT_GLOBAL_MAX,
       }));
     return limited || jsonError(message, status);
   };

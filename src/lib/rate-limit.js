@@ -26,6 +26,8 @@ const fallbackBuckets = new Map();
 // Hard lockouts (1h blocks after repeated failures) — a SEPARATE map so a
 // lockout survives its window slot rotating. Mirrors the Redis lockout key.
 const lockouts = new Map(); // bucketKey -> until (ms epoch)
+// IP-independent account lockouts - survives IP rotation.
+const accountLockouts = new Map(); // accountKey -> { until, count }
 const SWEEP_AT = 2000; // prune expired entries once the map grows this large
 const SWEEP_INTERVAL = 60 * 1000; // …but at most once per minute, so the sweep stays amortized
 let lastSweep = 0;
@@ -43,6 +45,7 @@ function clientIp(request) {
 export function __resetRateLimits() {
   fallbackBuckets.clear();
   lockouts.clear();
+  accountLockouts.clear();
   lastSweep = 0;
 }
 
@@ -181,3 +184,92 @@ export async function checkRateLimit({ request, windowMs, max, prefix = "rl", ke
 
   return null;
 }
+
+/**
+ * IP-independent account rate limit — catches distributed brute-force attacks
+ * where an attacker rotates source IPs to bypass per-IP buckets.
+ *
+ * The bucket key is purely the account identifier (email/name + school), so
+ * failures from ANY IP count toward the same limit. Uses escalating backoff:
+ * the first lockout lasts 10 minutes, the second 30 minutes, then 1 hour.
+ *
+ * This is deliberately more lenient than the per-IP buckets (30 failures vs
+ * 10-20) to reduce false positives from legitimate users on shared networks
+ * (NAT, VPNs, corporate proxies). The trade-off is intentional per P1.4's
+ * security review: a distributed attack against one account is caught, but a
+ * single-IP targeted attack is still caught by the tighter per-IP account
+ * bucket (10 failures -> 1h lockout).
+ *
+ * @param {Object}  opts
+ * @param {string}  opts.accountKey  account identifier (email/name + school)
+ * @param {number}  [opts.windowMs]  window length (default 15 min)
+ * @param {number}  [opts.max]       max failures per window (default 30)
+ * @param {string}  [opts.prefix]    bucket prefix (default "auth-account")
+ * @returns {Promise<Response|null>}  429 Response when limit hit, null otherwise
+ */
+export async function checkAccountRateLimit({
+  accountKey,
+  windowMs = 15 * 60 * 1000,
+  max = 30,
+  prefix = "auth-account",
+}) {
+  if (!accountKey) return null;
+  const now = Date.now();
+  const bucketKey = `${prefix}:${accountKey}`;
+
+  // -- Escalating lockout check --
+  const lock = accountLockouts.get(bucketKey);
+  if (lock && lock.until > now) {
+    const retryAfterMs = lock.until - now;
+    const retryAfter = Math.max(1, Math.ceil(retryAfterMs / 1000));
+    return Response.json(
+      { error: "Too many failed attempts for this account. Please try again later.", retryAfter },
+      { status: 429, headers: { "Retry-After": String(retryAfter), "X-RateLimit-Limit": String(max), "X-RateLimit-Remaining": "0" } }
+    );
+  }
+
+  // -- Fixed window count --
+  let entry = fallbackBuckets.get(bucketKey);
+  if (!entry || now - entry.start >= entry.windowMs) {
+    entry = { start: now, count: 0, windowMs };
+    fallbackBuckets.set(bucketKey, entry);
+  }
+
+  if (entry.count >= max) {
+    // Escalating lockout: 10min -> 30min -> 1h (cap)
+    const LOCKOUT_TIERS = [10, 30, 60]; // minutes
+    const prevCount = lock ? lock.count : 0;
+    const tier = Math.min(prevCount, LOCKOUT_TIERS.length - 1);
+    const lockoutMs = LOCKOUT_TIERS[tier] * 60 * 1000;
+    accountLockouts.set(bucketKey, { until: now + lockoutMs, count: prevCount + 1 });
+    const retryAfterMs = entry.start + entry.windowMs - now;
+    const retryAfter = Math.max(1, Math.ceil(retryAfterMs / 1000));
+    return Response.json(
+      { error: "Too many failed attempts for this account. Please try again later.", retryAfter },
+      { status: 429, headers: { "Retry-After": String(retryAfter), "X-RateLimit-Limit": String(max), "X-RateLimit-Remaining": "0" } }
+    );
+  }
+
+  entry.count += 1;
+  return null;
+}
+
+
+/**
+ * Check if an account is globally locked out (IP-independent).
+ * Used as a pre-check before bcrypt so a locked account costs nothing.
+ *
+ * @param {Object} opts
+ * @param {string} opts.accountKey  account identifier (email/name + school)
+ * @param {string} [opts.prefix]    bucket prefix (default "auth-account")
+ * @returns {Promise<number>}  remaining lockout seconds (>= 1) or 0
+ */
+export async function isAccountLockedOut({ accountKey, prefix = "auth-account" }) {
+  if (!accountKey) return 0;
+  const bucketKey = `${prefix}:${accountKey}`;
+  const lock = accountLockouts.get(bucketKey);
+  if (!lock) return 0;
+  const remaining = Math.ceil((lock.until - Date.now()) / 1000);
+  return remaining > 0 ? remaining : 0;
+}
+
