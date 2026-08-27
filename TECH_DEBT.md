@@ -49,6 +49,7 @@ permissions.js) provide the most important type documentation.
 - `src/lib/grading.js` → `grading.ts` — full type annotations, 128 lines
 - `src/lib/ranking.js` → `ranking.ts` — 5 interfaces + 4 typed functions, 93 lines
 - `tests/register-aliases.js` handles `.js` → `.ts` remapping for test suite
+- `src/lib/permissions.js` → `permissions.ts` — 3 typed interfaces + 10 typed functions, 378 lines
 - Build compiles clean with Turbopack
 
 **Cost:**
@@ -81,7 +82,7 @@ and is threaded to 19 tab components via React Context.
 - **tabConfig.js** — visible tabs computation.
 
 **Remaining cost:**
-- Every context value change still re-renders all 19 tabs (React Context
+- **Fee state is now isolated** via `FeeContext` (useReducer) — fee updates no longer re-render all 19 tabs. The remaining re-render cost is for non-fee state changes (timetable, users, etc.).
   doesn't support selector-based subscriptions).
 - State for fees, timetable, reports, users, and school lifecycle all live in
   the same useState stack in page.js.
@@ -184,14 +185,14 @@ schools.
 **Mitigation:** The conflict scanner (`/api/timetable/scan`) catches problems
 after manual edits.
 
-### L5. Report card PDF is client-side only
+### L5. Report card PDF is client-side only — **Resolved (P1.3, August 2026)**
 
 The PDF export uses jsPDF + html2canvas in the browser. There's no server-side
 PDF generation, so bulk printing (e.g. "export all report cards for this arm")
 isn't possible — each card must be opened and downloaded individually.
 
 **Mitigation:** The `ReportCardModal` component renders at full A4 resolution
-for print-quality output. A server-side pipeline would need a headless browser
+Server-side bulk PDF generation is now available via `src/lib/report-card-pdf.js` (pdfkit) and `POST /api/reports/bulk`. The client-side jsPDF approach in `ReportCardModal` remains for individual student exports.
 (Puppeteer/Playwright) and is tracked as a future enhancement.
 
 ---
@@ -263,7 +264,7 @@ Options:
 - **Keep both** — demo store for zero-config dev, Mongo for production. This
   is the current approach.
 
-### Q2. Should the admin dashboard use a state manager? — PARTIALLY RESOLVED
+### Q2. Should the admin dashboard use a state manager? — PARTIALLY RESOLVED (fee domain done)
 
 The action functions were extracted to `useAdminActions.js`, but all state
 still lives in the page's useState stack. Options:
@@ -276,7 +277,7 @@ still lives in the page's useState stack. Options:
 
 ### Q3. Should the dual-store contract be enforced by types? — IN PROGRESS
 
-The first two TypeScript files (`grading.ts`, `ranking.ts`) prove the approach.
+- **Migrate to TypeScript** — full compile-time safety. Gradual migration of `src/lib/` is underway (`grading.ts` + `ranking.ts` + `permissions.ts`). Follow this pattern for the remaining library files.
 Options:
 
 - **Keep as tests** — the `dual-store-contract.test.js` catches signature
@@ -284,7 +285,6 @@ Options:
 - **Add JSDoc `@returns` types** — lightweight, no build step. Catches shape
   drift in IDEs.
 - **Migrate to TypeScript** — full compile-time safety. Gradual migration of
-  `src/lib/` is underway (`grading.ts` + `ranking.ts`). Follow this pattern
   for the remaining library files.
 
 ---
@@ -320,7 +320,7 @@ When adding new entries, tag them:
 | ⚪ **Documented trade-off** | Intentional — revisit when constraints change |
 
 Current status: no 🔴 items. The architecture is sound for a v1.0 launch.
-The admin dashboard is now a thin layout shell (74% reduction from 3,770 to
+The admin dashboard is now a thin layout shell (74% reduction from 3,770 to 998 lines) with FeeContext isolating fee re-renders. TypeScript migration is underway (3 files: grading, ranking, permissions). Sentry error monitoring with PII scrubbing is wired. CI pipeline runs lint + tests + Playwright on every push. Rate limiting now covers distributed attacks. Server-side bulk report card PDF generation is available. E2E test infrastructure exists. The main remaining risks are operational (no production logging pipeline) rather than architectural.
 998 lines). TypeScript proof-of-concept is in place (2 files). E2E test
 infrastructure exists. The main remaining risks are operational (no production
 logging pipeline) rather than architectural.
@@ -386,5 +386,20 @@ Known issue: client-side me-gate timing during cookie propagation.
 `src/components/ImpersonationBanner.js`, `src/lib/token.js`
 
 ---
+
+
+### N7. IP-independent rate limit bucket (August 2026)
+
+Added `checkAccountRateLimit()` to catch distributed brute-force attacks where
+an attacker rotates source IPs to bypass per-IP buckets. Keys purely on the
+account identifier (email/name + school), with escalating backoff (10min → 30min
+→ 1h lockout). Threshold is 30 failures/15min (deliberately more lenient than
+per-IP buckets to reduce false positives on shared networks).
+
+**Security note:** This changes login rate-limiting behavior. Flagged for human
+review per ground rule 6.
+
+**Files:** `src/lib/rate-limit.js`, `src/app/api/auth/login/route.js`,
+`tests/rate-limit-account-global.test.js`
 
 *Last updated: August 2026. Add new entries at the top of each section.*
