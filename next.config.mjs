@@ -1,5 +1,7 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
+  // Required for Docker standalone builds (see deploy/Dockerfile).
+  output: "standalone",
   // Next 16's dev request log prints a line for EVERY request
   // (GET /api/auth/me 200 in 25ms (next.js: 5ms, proxy.ts: 6ms, ...)) —
   // under a load test that's ~9,000 lines per storm, drowning real errors.

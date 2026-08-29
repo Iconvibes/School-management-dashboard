@@ -1,0 +1,26 @@
+# EduTrack Caddyfile — free automatic HTTPS
+# Replace edutrack.yourdomain.com with your actual domain.
+#
+# Caddy automatically provisions and renews Let's Encrypt TLS certificates.
+# No certbot, no cron jobs, no manual renewal.
+
+edutrack.yourdomain.com {
+    reverse_proxy app:3000
+
+    # Security headers (Caddy adds HSTS automatically with HTTPS)
+    header {
+        X-Content-Type-Options nosniff
+        X-Frame-Options SAMEORIGIN
+        Referrer-Policy strict-origin-when-cross-origin
+        -Server
+    }
+
+    # gzip compression
+    encode gzip
+
+    # Log access
+    log {
+        output stdout
+        format json
+    }
+}

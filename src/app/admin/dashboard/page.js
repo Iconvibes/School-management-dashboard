@@ -162,7 +162,7 @@ const BRAND_COLORS = ["#2563EB", "#0EA5E9", "#8B5CF6", "#10B981", "#F59E0B", "#E
 const fmtHour = (h) => `${String(h ?? 2).padStart(2, "0")}:00`;
 
 
-export default function AdminDashboard() {
+function AdminDashboardInner() {
   const router = useRouter();
   const offlineSync = useOfflineSync();
   const { meData: initialSession, loading: sessionLoading } = useSession();
@@ -570,7 +570,6 @@ export default function AdminDashboard() {
   const maxArm = Math.max(1, ...Object.values(stats.classDistribution || {}));
 
   return (
-    <FeeProvider>
     <AdminProvider value={{
       // Core
       session, setSession, stats, setStats, showToast,
@@ -1082,6 +1081,13 @@ export default function AdminDashboard() {
       )}
     </main>
     </AdminProvider>
+  );
+}
+
+export default function AdminDashboard() {
+  return (
+    <FeeProvider>
+      <AdminDashboardInner />
     </FeeProvider>
   );
 }

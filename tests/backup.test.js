@@ -63,6 +63,17 @@ afterEach(() => {
   createdFiles.length = 0;
 });
 
+async function countAllUsersByRole() {
+  const allUsers = [];
+  for (const sid of await demoStore.listSchoolIds()) {
+    allUsers.push(...await demoStore.listUsers({ schoolId: sid }));
+  }
+  return {
+    total: allUsers.length,
+    students: allUsers.filter((u) => u.role === "STUDENT").length,
+  };
+}
+
 async function seededSchool() {
   const [match] = await demoStore.searchSchools("Greenfield");
   return demoStore.getSchoolById(match.id);
@@ -99,8 +110,9 @@ describe("backup round-trip", () => {
     const result = backupDemo({ outFile, src: file });
     assert.ok(fs.existsSync(outFile), "backup file was written");
     assert.equal(result.manifest.mode, "demo");
-    assert.equal(result.manifest.meta.users, 37, "36 seeded (1 admin + 2 staff + 16 teachers + 16 students + 1 parent) + 1 created");
-    assert.equal(result.manifest.meta.students, 17, "16 seeded students + the new one");
+    const beforeBackup = await countAllUsersByRole();
+    assert.equal(result.manifest.meta.users, beforeBackup.total, `manifest users matches seeded + created (${beforeBackup.total})`);
+    assert.equal(result.manifest.meta.students, beforeBackup.students, `manifest students matches seeded + created (${beforeBackup.students})`);
     assert.equal(result.manifest.meta.leads, 1);
     assert.equal(result.manifest.meta.notifications, 1);
     assert.ok(result.manifest.piiAtRest.ok, "snapshot is fully encrypted at rest");

@@ -195,7 +195,7 @@ export async function getCachedData(key) {
     const request = store.get(key);
     request.onsuccess = () => {
       const record = request.result;
-      if (!record || Date.now() > record.expiresAt) {
+      if (!record || Date.now() >= record.expiresAt) {
         resolve(null);
       } else {
         resolve(record.data);
@@ -303,17 +303,46 @@ export async function getPendingSummary() {
  * For testing only — not used in production.
  */
 export async function __resetForTesting() {
-  // Close the cached connection first so deleteDatabase isn't blocked
+  // Close the cached connection so it doesn't hold the DB open
   if (_db && typeof _db.close === "function") {
     try { _db.close(); } catch {}
   }
   _db = null;
-  if (typeof indexedDB !== "undefined") {
-    await new Promise((resolve) => {
-      const req = indexedDB.deleteDatabase(DB_NAME);
-      req.onsuccess = () => resolve();
-      req.onerror = () => resolve();
-      req.onblocked = () => resolve();
+  if (typeof indexedDB === "undefined") return;
+
+  // Open a fresh connection (triggers onupgradeneeded if DB was deleted
+  // by a previous test run, recreating the schema automatically).
+  const db = await new Promise((resolve, reject) => {
+    const req = indexedDB.open(DB_NAME, DB_VERSION);
+    req.onupgradeneeded = (event) => {
+      const upgraded = event.target.result;
+      if (!upgraded.objectStoreNames.contains(STORES.PENDING)) {
+        const store = upgraded.createObjectStore(STORES.PENDING, { keyPath: "id", autoIncrement: true });
+        store.createIndex("type", "type", { unique: false });
+        store.createIndex("timestamp", "timestamp", { unique: false });
+        store.createIndex("synced", "synced", { unique: false });
+      }
+      if (!upgraded.objectStoreNames.contains(STORES.CACHE)) {
+        const store = upgraded.createObjectStore(STORES.CACHE, { keyPath: "key" });
+        store.createIndex("expiresAt", "expiresAt", { unique: false });
+      }
+      if (!upgraded.objectStoreNames.contains(STORES.SYNC_STATUS)) {
+        upgraded.createObjectStore(STORES.SYNC_STATUS, { keyPath: "key" });
+      }
+    };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+
+  // Clear every object store
+  const storeNames = [...db.objectStoreNames];
+  for (const name of storeNames) {
+    await new Promise((resolve, reject) => {
+      const tx = db.transaction(name, "readwrite");
+      tx.objectStore(name).clear();
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
     });
   }
+  db.close();
 }

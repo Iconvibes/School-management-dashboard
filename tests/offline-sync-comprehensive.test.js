@@ -140,6 +140,8 @@ describe("offline-sync-comprehensive", () => {
         };
       });
 
+      db.close();
+
       const pending = await getPendingChanges();
       const record = pending.find((c) => c.id === id);
       assert.equal(record.retryCount, 3);
@@ -170,6 +172,8 @@ describe("offline-sync-comprehensive", () => {
           tx.oncomplete = () => resolve();
         };
       });
+
+      db.close();
 
       const pending = await getPendingChanges();
       assert.equal(pending.length, 1);
@@ -206,6 +210,8 @@ describe("offline-sync-comprehensive", () => {
           };
         });
       }
+
+      db.close();
 
       // Filter like useOfflineSync does
       const pending = await getPendingChanges();
@@ -259,6 +265,8 @@ describe("offline-sync-comprehensive", () => {
           };
         });
       }
+
+      db.close();
 
       // Simulate discardFailed logic
       const pending = await getPendingChanges();
@@ -510,6 +518,8 @@ describe("offline-sync-comprehensive", () => {
       let record = pending.find((c) => c.id === attendanceId);
       assert.equal(record.retryCount, 2);
 
+      db.close();
+
       // 4. Sync succeeds on third attempt
       await markSynced(attendanceId);
       await removeSynced(attendanceId);
@@ -545,6 +555,8 @@ describe("offline-sync-comprehensive", () => {
           tx.oncomplete = () => resolve();
         };
       });
+
+      db.close();
 
       // Verify state
       const pending = await getPendingChanges();

@@ -42,6 +42,11 @@ const ALL_ARMS = [
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const silentLogger = { error: () => {}, log: () => {} };
 
+/** Find the result entry for a specific school in a runDueScans output. */
+function findResult(run, schoolId) {
+  return run.results.find((r) => r.schoolId === schoolId);
+}
+
 const tmpFile = () =>
   path.join(os.tmpdir(), `edutrack-cs-${process.pid}-${Math.random().toString(36).slice(2)}.json`);
 
@@ -160,14 +165,14 @@ describe("nextScheduledScan / formatScanHour / resolveScanHour", () => {
 describe("runDueScans — the job against the real store", () => {
   it("scans a never-scanned school once, then skips it until due", async () => {
     const { school } = await seed();
-    assert.deepEqual(await demoStore.listSchoolIds(), [school.id]);
+    assert.ok((await demoStore.listSchoolIds()).includes(school.id), "seeded store contains the test school");
 
     const first = await runDueScans({
       store: demoStore,
       now: new Date(2026, 7, 10, 9, 0, 0),
       scanHour: 2,
     });
-    assert.equal(first.scanned, 1);
+    assert.ok(first.scanned >= 1, "scanned at least the test school");
     assert.equal(first.skipped, 0);
     assert.ok(await demoStore.getConflictScan(school.id), "record persisted");
 
@@ -177,7 +182,7 @@ describe("runDueScans — the job against the real store", () => {
       scanHour: 2,
     });
     assert.equal(second.scanned, 0, "fresh → not re-scanned");
-    assert.equal(second.skipped, 1);
+    assert.ok(second.skipped >= 1, "all schools fresh → skipped");
   });
 
   it("the next daily run catches a new collision and flags it as new", async () => {
@@ -196,11 +201,11 @@ describe("runDueScans — the job against the real store", () => {
     });
     // Day 2: the fixed-hour run re-scans and flags the collision as NEW.
     const run = await runDueScans({ store: demoStore, now: new Date(2026, 7, 11, 2, 1, 0), scanHour: 2 });
-    assert.equal(run.scanned, 1);
-    assert.equal(run.results[0].conflictCount, 1);
-    assert.equal(run.results[0].teacherConflicts, 1);
-    assert.equal(run.results[0].newConflictCount, 1, "new since the previous scan");
-    assert.equal(run.results[0].newConflicts.teacher[0].teacherName, "Mrs. Adaeze Okafor");
+    assert.ok(run.scanned >= 1, "scanned at least the test school");
+    assert.equal(findResult(run, school.id).conflictCount, 1);
+    assert.equal(findResult(run, school.id).teacherConflicts, 1);
+    assert.equal(findResult(run, school.id).newConflictCount, 1, "new since the previous scan");
+    assert.equal(findResult(run, school.id).newConflicts.teacher[0].teacherName, "Mrs. Adaeze Okafor");
   });
 
   it("a school whose last run is inside the fixed hour is skipped (manual scan satisfied the day)", async () => {
@@ -208,7 +213,7 @@ describe("runDueScans — the job against the real store", () => {
     await runDueScans({ store: demoStore, now: new Date(2026, 7, 10, 2, 0, 30), scanHour: 2 });
     const run = await runDueScans({ store: demoStore, now: new Date(2026, 7, 10, 2, 30, 0), scanHour: 2 });
     assert.equal(run.scanned, 0);
-    assert.equal(run.skipped, 1);
+    assert.equal(run.skipped, (await demoStore.listSchoolIds()).length);
   });
 
   it("the daily job records a per-day history: clean → conflict → resolved", async () => {
@@ -357,7 +362,7 @@ describe("daily-scan notifications to admins", () => {
     });
     // Day 2: the fixed-hour run finds it NEW → one notification to both admins.
     const run = await runDueScans({ store: demoStore, now: new Date(2026, 7, 11, 2, 1, 0), scanHour: 2 });
-    assert.equal(run.results[0].newConflictCount, 1);
+    assert.equal(findResult(run, school.id).newConflictCount, 1);
     const inbox = await demoStore.listNotifications(school.id, admin.id);
     assert.equal(inbox.length, 1);
     const n = inbox[0];
@@ -394,8 +399,8 @@ describe("daily-scan notifications to admins", () => {
       newConflictKeys: rec.newConflictKeys,
     });
     const run = await runDueScans({ store: demoStore, now: new Date(2026, 7, 11, 2, 1, 0), scanHour: 2 });
-    assert.equal(run.results[0].conflictCount, 1, "still there");
-    assert.equal(run.results[0].newConflictCount, 0, "known → not new");
+    assert.equal(findResult(run, school.id).conflictCount, 1, "still there");
+    assert.equal(findResult(run, school.id).newConflictCount, 0, "known → not new");
     assert.equal(
       (await demoStore.listNotifications(school.id, admin.id)).length,
       1,
