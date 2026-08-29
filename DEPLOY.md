@@ -28,7 +28,7 @@ Zero-cost hosting for 200 beta testers. All services on one ARM Ampere instance.
 
 Then run these commands:
 
-    git clone https://github.com/youruser/edutrack.git /opt/edutrack
+    git clone https://github.com/Iconvibes/School-management-dashboard.git /opt/edutrack
     cd /opt/edutrack
     export JWT_SECRET=$(openssl rand -base64 48 | tr -d "
 ")
