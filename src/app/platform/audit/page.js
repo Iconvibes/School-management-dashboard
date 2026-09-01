@@ -86,6 +86,14 @@ const ACTION_META = {
     border: "border-red-500/20",
     dot: "bg-red-400",
   },
+  school_purged: {
+    label: "School Purged",
+    icon: AlertTriangle,
+    color: "text-red-300",
+    bg: "bg-red-600/10",
+    border: "border-red-600/20",
+    dot: "bg-red-300",
+  },
   alert_created: {
     label: "Alert",
     icon: Info,

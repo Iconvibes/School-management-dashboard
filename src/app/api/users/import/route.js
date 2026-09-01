@@ -54,6 +54,21 @@ export async function POST(request) {
   ]);
   if (!school) return jsonError("School not found", 404);
 
+  // Student-count plan enforcement
+  if (role === "STUDENT") {
+    const currentStudents = existingUsers.filter((u) => u.role === "STUDENT").length;
+    const { checkStudentLimit } = await import("@/lib/paystack");
+    const limit = checkStudentLimit(
+      school.billingPlan || "trial",
+      school.subscriptionStatus || "trial",
+      currentStudents,
+      parsed.rows.length
+    );
+    if (!limit.allowed) {
+      return jsonError(limit.message, 402, { planLimit: true, limit });
+    }
+  }
+
   const planned = planImport({
     role,
     rows: parsed.rows,

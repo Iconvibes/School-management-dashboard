@@ -76,6 +76,8 @@ export async function GET(request) {
   });
 }
 
+import { checkStudentLimit } from "@/lib/paystack";
+
 export async function POST(request) {
   const session = await requirePermission(
     ["SUPER_ADMIN", "REGISTRAR", "TEACHER"],
@@ -214,6 +216,21 @@ export async function POST(request) {
         `A teacher named "${String(name).trim()}" already exists in your school.`,
         409
       );
+    }
+  }
+
+  // Student-count plan enforcement
+  if (roleEnum === "STUDENT") {
+    const school = await store.getSchoolById(session.schoolId);
+    const students = (await store.listUsers?.({ schoolId: session.schoolId, role: "STUDENT" })) || [];
+    const limit = checkStudentLimit(
+      school?.billingPlan || "trial",
+      school?.subscriptionStatus || "trial",
+      students.length,
+      1
+    );
+    if (!limit.allowed) {
+      return jsonError(limit.message, 402, { planLimit: true, limit });
     }
   }
 

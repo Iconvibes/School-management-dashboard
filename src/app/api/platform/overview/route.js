@@ -38,6 +38,7 @@ export async function GET() {
         billingPlan: school.billingPlan || "trial",
         subscriptionStatus: school.subscriptionStatus || "trial",
         isPlatformSchool: !!school.isPlatformSchool,
+        deletedAt: school.deletedAt || null,
       };
     })
   );

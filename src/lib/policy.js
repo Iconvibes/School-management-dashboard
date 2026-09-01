@@ -196,8 +196,10 @@ export async function requireAuth(roles, session) {
     if (schoolRec) {
       const billingStatus = schoolRec.subscriptionStatus || "trial";
       let billingExpired = false;
-      if (billingStatus === "expired") {
+      let billingPaused = false;
+      if (billingStatus === "expired" || billingStatus === "paused") {
         billingExpired = true;
+        billingPaused = billingStatus === "paused";
       } else if (billingStatus === "trial" && schoolRec.trialEnd) {
         billingExpired = Date.now() > Date.parse(schoolRec.trialEnd);
       } else if (billingStatus === 'active' && schoolRec.currentPeriodEnd) {
@@ -206,7 +208,9 @@ export async function requireAuth(roles, session) {
       }
       if (billingExpired) {
         return jsonError(
-          'Your school subscription has expired. Please contact the school administrator to renew.',
+          billingPaused
+            ? 'Your school subscription has been paused due to failed payments. Please update your payment method.'
+            : 'Your school subscription has expired. Please contact the school administrator to renew.',
           403,
           { billingExpired: true }
         );

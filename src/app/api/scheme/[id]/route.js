@@ -24,6 +24,26 @@ export async function PATCH(req, { params }) {
   if (existing.schoolId !== session.schoolId) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
 
   const body = await req.json();
+  const { fileUrl, fileName, fileType, fileSize } = body;
+
+  // If uploading a new file, use createSchemeOfWork to handle the upsert logic
+  if (fileUrl) {
+    const scheme = await store.createSchemeOfWork({
+      schoolId: session.schoolId,
+      subject: existing.subject,
+      classArm: existing.classArm,
+      session: existing.session,
+      term: existing.term,
+      fileUrl,
+      fileName: fileName || "",
+      fileType: fileType || "",
+      fileSize: fileSize || 0,
+      uploadedBy: session.userId,
+      createdBy: session.userId,
+    });
+    return NextResponse.json({ scheme });
+  }
+
   const scheme = await store.updateSchemeOfWork(id, {
     ...body,
     updatedBy: session.userId,

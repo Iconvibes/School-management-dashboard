@@ -538,6 +538,7 @@ export async function updateSchoolSubscription(schoolId, updates) {
     "billingPlan", "billingCycle", "paystackCustomerCode",
     "paystackSubscriptionCode", "paystackPlanCode",
     "subscriptionStatus", "currentPeriodEnd", "trialStart", "trialEnd",
+    "lastPaymentFailure", "lastPaymentFailureReason", "pausedAt",
   ];
   for (const key of allowed) {
     if (updates[key] !== undefined) school[key] = updates[key];

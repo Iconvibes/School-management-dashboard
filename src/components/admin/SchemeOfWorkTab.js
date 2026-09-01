@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { BookOpen, Plus, ChevronDown, ChevronRight, Check, Clock, X } from "lucide-react";
+import { BookOpen, Plus, ChevronDown, ChevronRight, Check, Clock, X, Upload, FileText, Download, ExternalLink } from "lucide-react";
 
 /**
  * Scheme of Work management tab for admin dashboard.
@@ -20,6 +20,8 @@ export default function SchemeOfWorkTab({ session }) {
   const [topicForm, setTopicForm] = useState({ week: 1, title: "", objectives: "" });
   const [saving, setSaving] = useState(false);
   const [toast, setToast] = useState("");
+  const [pdfFile, setPdfFile] = useState(null);
+  const [pdfPreview, setPdfPreview] = useState(null);
 
   const subjects = [
     "Mathematics", "English Language", "Civic Education", "Further Mathematics",
@@ -44,6 +46,31 @@ export default function SchemeOfWorkTab({ session }) {
     setLoading(false);
   }
 
+  function handlePdfSelect(e) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (file.type !== "application/pdf") {
+      setToast("Only PDF files are allowed");
+      setTimeout(() => setToast(""), 3000);
+      return;
+    }
+    if (file.size > 10 * 1024 * 1024) {
+      setToast("PDF must be under 10MB");
+      setTimeout(() => setToast(""), 3000);
+      return;
+    }
+    setPdfFile(file);
+    // Read as base64 for storage
+    const reader = new FileReader();
+    reader.onload = () => setPdfPreview(reader.result);
+    reader.readAsDataURL(file);
+  }
+
+  function removePdf() {
+    setPdfFile(null);
+    setPdfPreview(null);
+  }
+
   async function handleCreate() {
     if (!form.subject || !form.classArm || form.topics.length === 0) {
       setToast("Please fill in subject, class, and add at least one topic");
@@ -52,15 +79,24 @@ export default function SchemeOfWorkTab({ session }) {
     }
     setSaving(true);
     try {
+      const payload = { ...form };
+      if (pdfPreview) {
+        payload.fileUrl = pdfPreview;
+        payload.fileName = pdfFile.name;
+        payload.fileType = pdfFile.type;
+        payload.fileSize = pdfFile.size;
+      }
       const res = await fetch("/api/scheme", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(form),
+        body: JSON.stringify(payload),
       });
       if (res.ok) {
         setToast("Scheme of work created");
         setCreateOpen(false);
         setForm({ subject: "", classArm: "", topics: [] });
+        setPdfFile(null);
+        setPdfPreview(null);
         loadSchemes();
       }
     } catch {}
@@ -185,6 +221,31 @@ export default function SchemeOfWorkTab({ session }) {
             )}
           </div>
 
+          <div className="mt-4">
+            <label className="mb-2 block text-sm font-medium text-navy-600">Scheme Document (PDF)</label>
+            {pdfPreview ? (
+              <div className="flex items-center gap-3 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3">
+                <FileText className="h-5 w-5 text-emerald-600" />
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-sm font-medium text-emerald-800">{pdfFile?.name}</p>
+                  <p className="text-xs text-emerald-600">{pdfFile ? (pdfFile.size / 1024).toFixed(0) + " KB" : ""}</p>
+                </div>
+                <button onClick={removePdf} className="text-emerald-600 hover:text-red-500 transition">
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+            ) : (
+              <label className="flex cursor-pointer items-center gap-3 rounded-xl border-2 border-dashed border-navy-200 px-4 py-6 text-center transition hover:border-brand-400 hover:bg-brand-50/50">
+                <Upload className="mx-auto h-6 w-6 text-navy-400" />
+                <div>
+                  <p className="text-sm font-medium text-navy-600">Click to upload a PDF</p>
+                  <p className="text-xs text-navy-400">Max 10MB. This will be visible to teachers of this subject.</p>
+                </div>
+                <input type="file" accept=".pdf" className="hidden" onChange={handlePdfSelect} />
+              </label>
+            )}
+          </div>
+
           <div className="mt-4 flex gap-2">
             <button
               onClick={handleCreate}
@@ -215,7 +276,35 @@ export default function SchemeOfWorkTab({ session }) {
                 <p className="text-xs text-navy-400">{items[0]?.session} · {items[0]?.term}</p>
               </div>
               <div className="divide-y divide-navy-100">
-                {items[0]?.topics?.map((topic, i) => (
+                {items[0]?.fileUrl && (
+                <div className="border-b border-navy-100 px-6 py-3 bg-navy-50/50">
+                  <div className="flex items-center gap-3">
+                    <FileText className="h-5 w-5 text-blue-500" />
+                    <div className="min-w-0 flex-1">
+                      <p className="text-sm font-medium text-navy-700">{items[0].fileName || "Scheme Document"}</p>
+                      <p className="text-xs text-navy-400">{items[0].fileSize ? (items[0].fileSize / 1024).toFixed(0) + " KB" : "PDF document"}</p>
+                    </div>
+                    <a
+                      href={items[0].fileUrl}
+                      download={items[0].fileName || "scheme.pdf"}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1.5 rounded-lg bg-blue-50 px-3 py-1.5 text-xs font-semibold text-blue-600 transition hover:bg-blue-100"
+                    >
+                      <Download className="h-3.5 w-3.5" /> Download
+                    </a>
+                    <a
+                      href={items[0].fileUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1.5 rounded-lg bg-white px-3 py-1.5 text-xs font-semibold text-navy-600 ring-1 ring-navy-200 transition hover:bg-navy-50"
+                    >
+                      <ExternalLink className="h-3.5 w-3.5" /> View
+                    </a>
+                  </div>
+                </div>
+              )}
+              {items[0]?.topics?.map((topic, i) => (
                   <div key={topic.id || i} className="flex items-center gap-4 px-6 py-3">
                     <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-navy-100 text-xs font-bold text-navy-600">
                       W{topic.week}

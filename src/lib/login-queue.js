@@ -172,14 +172,18 @@ async function verifyLogin(store, data) {
       error: "This school's account has been deactivated. Please contact your school administrator.",
     };
   }
-  // Billing enforcement — expired subscription blocks non-admin logins.
+  // Billing enforcement — expired/paused subscription blocks non-admin logins.
   // Trials past their end date are treated as expired. Active subscriptions
   // past their renewal date get a grace period of 3 days, then block.
+  // "paused" subscriptions (Paystack auto-pause on failed retries) block immediately.
+  // "past_due" subscriptions (failed payment, still retrying) get a warning.
   if (schoolRec && user.role !== "SUPER_ADMIN") {
     const billingStatus = schoolRec.subscriptionStatus || "trial";
     let billingExpired = false;
-    if (billingStatus === "expired") {
+    let billingPaused = false;
+    if (billingStatus === "expired" || billingStatus === "paused") {
       billingExpired = true;
+      billingPaused = billingStatus === "paused";
     } else if (billingStatus === "trial" && schoolRec.trialEnd) {
       billingExpired = Date.now() > Date.parse(schoolRec.trialEnd);
     } else if (billingStatus === "active" && schoolRec.currentPeriodEnd) {
@@ -190,7 +194,9 @@ async function verifyLogin(store, data) {
       return {
         ok: false,
         status: 402,
-        error: "This school's subscription has expired. Please contact your school administrator to renew.",
+        error: billingPaused
+          ? "This school's subscription has been paused due to failed payments. Please contact your school administrator to update the payment method."
+          : "This school's subscription has expired. Please contact your school administrator to renew.",
         billingExpired: true,
       };
     }

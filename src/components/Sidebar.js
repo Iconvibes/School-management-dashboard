@@ -55,6 +55,7 @@ export default function Sidebar({ role, open, onClose, activeTab, activePath }) 
       : role === "STUDENT"
       ? [
           { href: "/student/dashboard", label: "My Report", icon: BookOpen },
+          { href: "/student/dashboard#scheme", label: "Schemes of Work", icon: BookOpen },
           { href: "/student/dashboard#timetable", label: "My Timetable", icon: CalendarDays },
           { href: "/student/dashboard#resources", label: "Class Resources", icon: FileText },
         ]

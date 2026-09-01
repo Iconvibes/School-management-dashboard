@@ -30,6 +30,8 @@ import {
   Sparkles,
   Target,
   Info,
+  Trash2,
+  RotateCcw,
 } from "lucide-react";
 
 /* ── Helpers ────────────────────────────────────────────────── */
@@ -76,6 +78,8 @@ const ACTIVITY_COLORS = {
   config_change: { bg: "bg-zinc-500/10", border: "border-zinc-500/20", text: "text-zinc-400", icon: "⚙️" },
   school_frozen: { bg: "bg-red-500/10", border: "border-red-500/20", text: "text-red-400", icon: "🧊" },
   school_restored: { bg: "bg-emerald-500/10", border: "border-emerald-500/20", text: "text-emerald-400", icon: "🔄" },
+  school_deleted: { bg: "bg-red-500/10", border: "border-red-500/20", text: "text-red-400", icon: "🗑️" },
+  school_purged: { bg: "bg-red-600/10", border: "border-red-600/20", text: "text-red-300", icon: "💀" },
 };
 
 /* ── SVG Mini Charts ────────────────────────────────────────── */
@@ -512,6 +516,13 @@ export default function SchoolDetailPage() {
   // Enrollment chart state
   const [enrollMetric, setEnrollMetric] = useState("total"); // total | students | teachers
 
+  // Delete school state
+  const [showDeleteModal, setShowDeleteModal] = useState(false);
+  const [deleteAction, setDeleteAction] = useState("soft"); // "soft" | "purge"
+  const [deleting, setDeleting] = useState(false);
+  const [confirmStep, setConfirmStep] = useState(1);
+  const [confirmText, setConfirmText] = useState("");
+
   useEffect(() => {
     let cancelled = false;
     async function load() {
@@ -553,6 +564,59 @@ export default function SchoolDetailPage() {
       alert(err.message);
       setImpersonating(null);
     }
+  }
+
+
+  async function handleDelete() {
+    setDeleting(true);
+    try {
+      const res = await fetch(`/api/platform/schools/${school.id}`, {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: deleteAction }),
+      });
+      if (!res.ok) {
+        const data = await res.json();
+        throw new Error(data.error || "Failed to delete school");
+      }
+      router.push("/platform/schools");
+    } catch (err) {
+      alert(err.message);
+      setDeleting(false);
+      setShowDeleteModal(false);
+      setConfirmStep(1);
+      setConfirmText("");
+    }
+  }
+
+  async function handleRestore() {
+    setDeleting(true);
+    try {
+      const res = await fetch(`/api/platform/schools/${school.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "restore" }),
+      });
+      if (!res.ok) {
+        const data = await res.json();
+        throw new Error(data.error || "Failed to restore school");
+      }
+      setSchool((prev) => ({ ...prev, status: "active", deletedAt: null }));
+      setShowDeleteModal(false);
+      setConfirmStep(1);
+      setConfirmText("");
+    } catch (err) {
+      alert(err.message);
+    } finally {
+      setDeleting(false);
+    }
+  }
+
+  function openDeleteModal(action) {
+    setDeleteAction(action);
+    setShowDeleteModal(true);
+    setConfirmStep(1);
+    setConfirmText("");
   }
 
   // Group activities by date
@@ -654,6 +718,49 @@ export default function SchoolDetailPage() {
               >
                 {school.status?.toUpperCase()}
               </span>
+              {!school.isPlatformSchool && school.status !== "deleted" && (
+                <button
+                  onClick={() => openDeleteModal("soft")}
+                  className="ml-2 inline-flex items-center gap-1.5 rounded-lg bg-red-500/10 px-3 py-1.5 text-xs font-semibold text-red-400 transition hover:bg-red-500/20"
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                  Delete
+                </button>
+              )}
+              {!school.isPlatformSchool && school.status === "deleted" && (() => {
+                const GRACE_MS = 30 * 24 * 60 * 60 * 1000;
+                const deletedAt = school.deletedAt ? new Date(school.deletedAt).getTime() : 0;
+                const elapsed = deletedAt ? Date.now() - deletedAt : 0;
+                const remaining = Math.max(0, GRACE_MS - elapsed);
+                const daysLeft = Math.ceil(remaining / (24 * 60 * 60 * 1000));
+                const inGrace = deletedAt && remaining > 0;
+                return (
+                  <div className="ml-2 flex items-center gap-2">
+                    {inGrace && (
+                      <>
+                        <span className="rounded-full bg-amber-500/10 px-2.5 py-1 text-[10px] font-bold text-amber-400">
+                          {daysLeft}d left
+                        </span>
+                        <button
+                          onClick={handleRestore}
+                          disabled={deleting}
+                          className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-500/10 px-3 py-1.5 text-xs font-semibold text-emerald-400 transition hover:bg-emerald-500/20 disabled:opacity-50"
+                        >
+                          <RotateCcw className="h-3.5 w-3.5" />
+                          Restore
+                        </button>
+                      </>
+                    )}
+                    <button
+                      onClick={() => openDeleteModal("purge")}
+                      className="inline-flex items-center gap-1.5 rounded-lg bg-red-600/10 px-3 py-1.5 text-xs font-bold text-red-300 transition hover:bg-red-600/20"
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                      Purge Permanently
+                    </button>
+                  </div>
+                );
+              })()}
             </div>
             <div className="mt-1 flex items-center gap-4 text-sm text-gray-400">
               <span>{school.currentSession} · {school.currentTerm}</span>
@@ -1220,4 +1327,113 @@ export default function SchoolDetailPage() {
       )}
     </div>
   );
+
+      {/* Delete Confirmation Modal */}
+      {showDeleteModal && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" onClick={() => { setShowDeleteModal(false); setConfirmStep(1); setConfirmText(""); }} />
+          <div className="relative w-full max-w-md rounded-2xl border border-white/10 bg-[#111827] p-6 shadow-2xl">
+            {confirmStep === 1 ? (
+              <>
+                <div className="flex items-center gap-3 mb-4">
+                  <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-red-500/10">
+                    <Trash2 className="h-5 w-5 text-red-400" />
+                  </div>
+                  <div>
+                    <h3 className="text-sm font-bold text-white">
+                      {deleteAction === "purge" ? "Permanently Purge School?" : "Delete School?"}
+                    </h3>
+                    <p className="text-xs text-gray-500">
+                      {deleteAction === "purge"
+                        ? "This action cannot be undone"
+                        : "School will be recoverable for 30 days"}
+                    </p>
+                  </div>
+                </div>
+                <div className="rounded-xl bg-red-500/5 border border-red-500/20 p-4 mb-4">
+                  <p className="text-sm text-gray-300">
+                    {deleteAction === "purge" ? (
+                      <>
+                        <span className="font-bold text-red-400">{school.name}</span> and ALL of its data
+                        (users, scores, attendance, fees, timetables) will be{" "}
+                        <span className="font-bold text-red-400">permanently destroyed</span>.
+                        There is no recovery.
+                      </>
+                    ) : (
+                      <>
+                        <span className="font-bold text-red-400">{school.name}</span> will be marked as
+                        deleted. All users will be logged out immediately. Data stays
+                        recoverable for <span className="font-bold text-amber-400">30 days</span>,
+                        then is permanently wiped.
+                      </>
+                    )}
+                  </p>
+                </div>
+                <div className="flex items-center gap-3 justify-end">
+                  <button
+                    onClick={() => { setShowDeleteModal(false); setConfirmStep(1); setConfirmText(""); }}
+                    className="rounded-lg bg-white/5 px-4 py-2 text-xs font-semibold text-gray-400 transition hover:bg-white/10"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={() => setConfirmStep(2)}
+                    className={`rounded-lg px-4 py-2 text-xs font-bold transition ${
+                      deleteAction === "purge"
+                        ? "bg-red-600 text-white hover:bg-red-500"
+                        : "bg-red-500/20 text-red-400 hover:bg-red-500/30"
+                    }`}
+                  >
+                    {deleteAction === "purge" ? "I understand, continue" : "Yes, delete school"}
+                  </button>
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="mb-4">
+                  <h3 className="text-sm font-bold text-white mb-2">
+                    Type the school name to confirm
+                  </h3>
+                  <p className="text-xs text-gray-500 mb-3">
+                    Enter <span className="font-mono font-bold text-red-400">{school.name}</span> below:
+                  </p>
+                  <input
+                    type="text"
+                    value={confirmText}
+                    onChange={(e) => setConfirmText(e.target.value)}
+                    placeholder={school.name}
+                    className="w-full rounded-xl border border-white/10 bg-[#0a0e17] px-4 py-3 text-sm text-white placeholder:text-gray-600 outline-none transition focus:border-red-500/50 focus:ring-1 focus:ring-red-500/20"
+                    autoFocus
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" && confirmText === school.name) handleDelete();
+                    }}
+                  />
+                </div>
+                <div className="flex items-center gap-3 justify-end">
+                  <button
+                    onClick={() => { setConfirmStep(1); setConfirmText(""); }}
+                    className="rounded-lg bg-white/5 px-4 py-2 text-xs font-semibold text-gray-400 transition hover:bg-white/10"
+                  >
+                    Back
+                  </button>
+                  <button
+                    onClick={handleDelete}
+                    disabled={confirmText !== school.name || deleting}
+                    className="rounded-lg bg-red-600 px-4 py-2 text-xs font-bold text-white transition hover:bg-red-500 disabled:opacity-30 disabled:cursor-not-allowed"
+                  >
+                    {deleting ? (
+                      <span className="flex items-center gap-2">
+                        <div className="h-3 w-3 animate-spin rounded-full border-2 border-white border-t-transparent" />
+                        Deleting...
+                      </span>
+                    ) : (
+                      deleteAction === "purge" ? "Permanently Delete" : "Delete School"
+                    )}
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      )}
 }

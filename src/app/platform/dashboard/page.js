@@ -12,6 +12,8 @@ import {
   Globe,
   ArrowUpRight,
   ArrowDownRight,
+  AlertTriangle,
+  Clock,
 } from "lucide-react";
 import ActivityHeatmap from "@/components/platform/ActivityHeatmap";
 
@@ -122,6 +124,19 @@ export default function PlatformDashboard() {
   const totalTeachers = schools.reduce((acc, s) => acc + (s.teacherCount || 0), 0);
   const activeSchools = schools.filter((s) => s.status === "active").length;
 
+  // Deleted schools in grace period
+  const GRACE_MS = 30 * 24 * 60 * 60 * 1000;
+  const deletedSchools = schools
+    .filter((s) => s.status === "deleted" && s.deletedAt)
+    .map((s) => {
+      const deletedAt = new Date(s.deletedAt).getTime();
+      const elapsed = Date.now() - deletedAt;
+      const remaining = Math.max(0, GRACE_MS - elapsed);
+      const daysLeft = Math.ceil(remaining / (24 * 60 * 60 * 1000));
+      return { ...s, daysLeft, deletedAt };
+    })
+    .sort((a, b) => a.daysLeft - b.daysLeft);
+
   // Simulated trend data for sparklines (would come from API in production)
   const studentTrend = [12, 14, 13, 15, 14, 16, 15, 16];
   const teacherTrend = [14, 15, 15, 16, 16, 16, 16, 16];
@@ -214,6 +229,73 @@ export default function PlatformDashboard() {
           </div>
         </div>
       </div>
+
+      {/* Deleted Schools - Grace Period */}
+      {deletedSchools.length > 0 && (
+        <div className="rounded-xl border border-red-500/20 bg-red-500/5">
+          <div className="flex items-center gap-3 border-b border-red-500/10 px-6 py-4">
+            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-red-500/10">
+              <AlertTriangle className="h-4 w-4 text-red-400" />
+            </div>
+            <div className="flex-1">
+              <h3 className="text-sm font-bold text-white">Deleted Schools</h3>
+              <p className="text-xs text-red-400/70">
+                {deletedSchools.length} school{deletedSchools.length > 1 ? "s" : ""} in 30-day grace period
+              </p>
+            </div>
+            <Link
+              href="/platform/schools?filter=deleted"
+              className="text-xs font-medium text-red-400 hover:text-red-300 transition"
+            >
+              View all
+            </Link>
+          </div>
+          <div className="divide-y divide-red-500/5">
+            {deletedSchools.map((school) => (
+              <Link
+                key={school.id}
+                href={`/platform/schools/${school.id}`}
+                className="flex items-center gap-4 px-6 py-4 transition hover:bg-red-500/5"
+              >
+                <div
+                  className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg text-xs font-bold text-white opacity-60"
+                  style={{ backgroundColor: school.brandColor || "#2563EB" }}
+                >
+                  {school.name.split(" ").map((w) => w[0]).join("").slice(0, 2).toUpperCase()}
+                </div>
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-sm font-medium text-white">{school.name}</p>
+                  <p className="text-xs text-zinc-500">
+                    {(school.studentCount || 0)} students / {(school.teacherCount || 0)} teachers
+                  </p>
+                </div>
+                <div className="flex items-center gap-3">
+                  <div className="flex items-center gap-1.5 rounded-full bg-amber-500/10 px-2.5 py-1">
+                    <Clock className="h-3 w-3 text-amber-400" />
+                    <span className="text-[10px] font-bold text-amber-400">
+                      {school.daysLeft}d left
+                    </span>
+                  </div>
+                  <div className="hidden w-20 sm:block">
+                    <div className="h-1.5 overflow-hidden rounded-full bg-white/5">
+                      <div
+                        className={`h-full rounded-full transition-all ${
+                          school.daysLeft <= 7
+                            ? "bg-red-500"
+                            : school.daysLeft <= 14
+                            ? "bg-amber-500"
+                            : "bg-emerald-500"
+                        }`}
+                        style={{ width: `${Math.max(5, ((30 - school.daysLeft) / 30) * 100)}%` }}
+                      />
+                    </div>
+                  </div>
+                </div>
+              </Link>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Activity Heatmap */}
       <ActivityHeatmap />

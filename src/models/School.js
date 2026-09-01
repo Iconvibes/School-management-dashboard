@@ -93,7 +93,7 @@ const schoolSchema = new mongoose.Schema(
     // Subscription lifecycle status.
     subscriptionStatus: {
       type: String,
-      enum: ["active", "past_due", "cancelled", "trial", "none"],
+      enum: ["active", "past_due", "paused", "expired", "cancelled", "trial", "none"],
       default: "trial",
     },
     // When the current billing period ends (next charge date).
@@ -102,6 +102,12 @@ const schoolSchema = new mongoose.Schema(
     trialStart: { type: Date, default: undefined },
     // When the trial ends.
     trialEnd: { type: Date, default: undefined },
+    // When the last payment failure occurred.
+    lastPaymentFailure: { type: Date, default: undefined },
+    // Paystack gateway response for the last failed payment.
+    lastPaymentFailureReason: { type: String, default: "" },
+    // When the subscription was paused by Paystack (auto-pause on failed retries).
+    pausedAt: { type: Date, default: undefined },
   },
   {
     timestamps: true,

@@ -37,6 +37,7 @@ import { bounceToLogin } from "@/lib/auth-client";
 import { useSession } from "@/hooks/useSession";
 import { timeAgo } from "@/lib/relative-time";
 import ResourcesView from "@/components/student/ResourcesView";
+import StudentSchemeView from "@/components/student/SchemeView";
 
 const naira = (n) =>
   new Intl.NumberFormat("en-NG", {
@@ -103,7 +104,7 @@ export default function StudentDashboard() {
   useEffect(() => {
     const applyHash = () => {
       const hash = window.location.hash.replace("#", "");
-      if ("timetable" === hash || "resources" === hash) {
+      if ("timetable" === hash || "resources" === hash || "scheme" === hash) {
         setView(hash);
         window.scrollTo({ top: 0 });
       }
@@ -292,6 +293,18 @@ export default function StudentDashboard() {
               }`}
             >
               <CalendarDays className="h-4 w-4" /> My Timetable
+            </button>
+            <button
+              onClick={() => {
+                setView("scheme");
+                history.replaceState(null, "", "#scheme");
+                window.scrollTo({ top: 0 });
+              }}
+              className={`flex items-center gap-1.5 rounded-lg px-4 py-2 text-sm font-semibold transition ${
+                view === "scheme" ? "bg-white text-navy-800 shadow-sm" : "text-navy-500 hover:text-navy-700"
+              }`}
+            >
+              <BookOpen className="h-4 w-4" /> Schemes
             </button>
           </div>
 
@@ -708,6 +721,12 @@ export default function StudentDashboard() {
               </div>
             )}            </div>
           </ErrorBoundary>
+          )}
+
+          {view === "scheme" && (
+            <ErrorBoundary label="Schemes of Work">
+              <StudentSchemeView classArm={session.user.assignedClass} />
+            </ErrorBoundary>
           )}
 
           {view === "resources" && (

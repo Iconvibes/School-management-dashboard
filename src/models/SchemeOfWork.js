@@ -36,6 +36,15 @@ const schemeOfWorkSchema = new mongoose.Schema(
     session: { type: String, required: true },
     term: { type: String, required: true },
     topics: [topicSchema],
+    // PDF upload fields
+    fileUrl: { type: String, default: "" },
+    fileName: { type: String, default: "" },
+    fileType: { type: String, default: "" },
+    fileSize: { type: Number, default: 0 },
+    uploadedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+    },
     createdBy: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",

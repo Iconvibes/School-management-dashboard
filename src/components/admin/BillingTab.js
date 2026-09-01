@@ -125,6 +125,13 @@ export default function BillingTab() {
   const isTrial = subscription?.subscriptionStatus === "trial";
   const periodEnd = subscription?.currentPeriodEnd;
 
+  // Student limit calculation
+  const planLimits = { trial: 200, starter: 200, standard: 500, enterprise: Infinity };
+  const planLimit = planLimits[currentPlan] || 200;
+  const usagePct = planLimit === Infinity ? 0 : Math.min(100, Math.round((studentCount / planLimit) * 100));
+  const isOverLimit = studentCount > planLimit;
+  const isNearLimit = usagePct >= 80 && !isOverLimit;
+
   return (
     <div className="space-y-6">
       {/* Header */}
@@ -162,6 +169,35 @@ export default function BillingTab() {
             <p className="text-xs text-zinc-500">{studentCount} students enrolled</p>
           </div>
         </div>
+
+        {/* Student usage bar */}
+        {currentPlan !== "enterprise" && (
+          <div className="mt-4">
+            <div className="flex items-center justify-between text-xs">
+              <span className="text-zinc-500">Student usage</span>
+              <span className={`font-semibold ${
+                isOverLimit ? "text-red-400" : isNearLimit ? "text-amber-400" : "text-zinc-400"
+              }`}>
+                {studentCount} / {planLimit === Infinity ? "Unlimited" : planLimit}
+              </span>
+            </div>
+            <div className="mt-1.5 h-2 overflow-hidden rounded-full bg-white/5">
+              <div
+                className={`h-full rounded-full transition-all ${
+                  isOverLimit ? "bg-red-500" : isNearLimit ? "bg-amber-500" : "bg-emerald-500"
+                }`}
+                style={{ width: `${usagePct}%` }}
+              />
+            </div>
+            {(isOverLimit || isNearLimit) && (
+              <p className="mt-1.5 text-[11px] text-amber-400">
+                {isOverLimit
+                  ? `Over limit by ${studentCount - planLimit}. Upgrade to Standard for 500 students.`
+                  : `${planLimit - studentCount} student slots remaining. Consider upgrading soon.`}
+              </p>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Checkout Result */}

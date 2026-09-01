@@ -1,5 +1,5 @@
 import { store } from "@/lib/store";
-import { isDenied, requirePermission } from "@/lib/policy";
+import { invalidateSchoolAuthSnapshots, isDenied, requirePermission } from "@/lib/policy";
 import { getFeeLedger } from "@/modules/fees/store";
 
 /**
@@ -80,6 +80,164 @@ export async function GET(req, { params }) {
   });
 }
 
+
+/**
+ * DELETE /api/platform/schools/[id]
+ * Delete a school — platform admin only.
+ *
+ * Body: { action?: "soft" | "purge" }
+ *   - "soft" (default): marks the school deleted with a 30-day recovery window
+ *   - "purge": permanent wipe (only allowed on already-deleted schools)
+ */
+export async function DELETE(request, { params }) {
+  const session = await requirePermission(["PLATFORM_ADMIN"], "platform.schools");
+  if (isDenied(session)) return session;
+
+  const { id } = await params;
+  const school = await store.getSchoolById(id);
+  if (!school) {
+    return Response.json({ error: "School not found" }, { status: 404 });
+  }
+
+  // Block deletion of the internal platform school
+  if (school.isPlatformSchool) {
+    return Response.json({ error: "Cannot delete the platform school" }, { status: 400 });
+  }
+
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    body = {};
+  }
+  const action = body.action === "purge" ? "purge" : "soft";
+
+  // Purge is only allowed on schools already in grace period
+  if (action === "purge" && school.status !== "deleted") {
+    return Response.json(
+      { error: "School must be soft-deleted first before permanent purge" },
+      { status: 400 }
+    );
+  }
+
+  let ok;
+  if (action === "purge") {
+    ok = await store.purgeSchool(id);
+  } else {
+    ok = await store.deleteSchool(id);
+    if (ok) {
+      await invalidateSchoolAuthSnapshots(id);
+    }
+  }
+
+  if (!ok) {
+    return Response.json({ error: "Failed to delete school" }, { status: 500 });
+  }
+
+  // Audit log
+  try {
+    await store.createAuditLog({
+      action: action === "purge" ? "school_purged" : "school_deleted",
+      actor: "Platform Admin",
+      schoolId: school.id,
+      schoolName: school.name,
+      description: action === "purge"
+        ? "Platform admin permanently purged " + school.name
+        : "Platform admin deleted " + school.name + " (30-day grace period)",
+      meta: { action, triggeredBy: session.userId },
+    });
+  } catch {
+    // Audit log failure is non-blocking
+  }
+
+  // Platform alert
+  try {
+    await store.createPlatformAlert({
+      schoolId: school.id,
+      schoolName: school.name,
+      type: "school_deleted",
+      severity: "warning",
+      title: action === "purge" ? "School permanently purged" : "School deleted",
+      message: action === "purge"
+        ? school.name + " was permanently removed by Platform Admin."
+        : school.name + " was deleted by Platform Admin (recoverable for 30 days).",
+      meta: { action },
+    });
+  } catch {
+    // Alert creation is non-blocking
+  }
+
+  return Response.json({ success: true, action });
+}
+
+export async function PATCH(request, { params }) {
+  const session = await requirePermission(["PLATFORM_ADMIN"], "platform.schools");
+  if (isDenied(session)) return session;
+
+  const { id } = await params;
+  const school = await store.getSchoolById(id);
+  if (!school) {
+    return Response.json({ error: "School not found" }, { status: 404 });
+  }
+
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    body = {};
+  }
+
+  if (body.action !== "restore") {
+    return Response.json({ error: "Invalid action" }, { status: 400 });
+  }
+
+  if (school.status !== "deleted") {
+    return Response.json({ error: "School is not deleted" }, { status: 400 });
+  }
+
+  const SCHOOL_DELETION_GRACE_MS = 30 * 24 * 60 * 60 * 1000;
+  if (school.deletedAt && Date.now() - new Date(school.deletedAt).getTime() > SCHOOL_DELETION_GRACE_MS) {
+    return Response.json({ error: "Grace period has expired" }, { status: 400 });
+  }
+
+  const restored = await store.setSchoolStatus(id, "active");
+  if (!restored) {
+    return Response.json({ error: "Failed to restore school" }, { status: 500 });
+  }
+
+  await invalidateSchoolAuthSnapshots(id);
+
+  try {
+    await store.createAuditLog({
+      action: "school_restored",
+      actor: "Platform Admin",
+      schoolId: school.id,
+      schoolName: school.name,
+      description: "Platform admin restored " + school.name + " from deleted status",
+      meta: { triggeredBy: session.userId },
+    });
+  } catch {
+    // Non-blocking
+  }
+
+  try {
+    await store.createPlatformAlert({
+      schoolId: school.id,
+      schoolName: school.name,
+      type: "school_restored",
+      severity: "success",
+      title: "School restored",
+      message: school.name + " was restored by Platform Admin. All logins have resumed.",
+      meta: {},
+    });
+  } catch {
+    // Non-blocking
+  }
+
+  return Response.json({ success: true, school: restored });
+}
+
+/**
 /**
  * Build a 3-month revenue forecast using weighted moving average + linear trend.
  * Uses the last 6 months of history to predict the next quarter.

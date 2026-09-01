@@ -293,9 +293,9 @@ export const SAAS_PLANS = [
     tagline: "For small schools getting digital",
     monthlyPrice: 150,
     annualPrice: 1000,
-    maxStudents: 150,
+    maxStudents: 200,
     features: [
-      "Up to 150 students",
+      "Up to 200 students",
       "Grading matrix & report cards",
       "Attendance register",
       "Fee tracking & receipts",
@@ -350,4 +350,81 @@ export function calculateSaaSPrice(planId, cycle, studentCount) {
   const perStudent = cycle === "annual" ? plan.annualPrice : plan.monthlyPrice;
   // Monthly price is per-student/month; annual is per-student/year
   return perStudent * studentCount;
+}
+
+/**
+ * Check if a school can add more students given their current plan.
+ * Returns { allowed, current, limit, plan, remaining, overBy, message }.
+ *
+ * Trial schools get Starter limits. Enterprise is always allowed.
+ * Past_due/paused/expired schools are blocked from adding students.
+ *
+ * @param {string} planId — current billing plan
+ * @param {string} status — subscription status
+ * @param {number} currentStudents — current student count
+ * @param {number} adding — number of students being added (default 1)
+ * @returns {Object}
+ */
+export function checkStudentLimit(planId, status, currentStudents, adding = 1) {
+  const effectivePlan = planId === "trial" ? "starter" : (planId || "starter");
+  const plan = SAAS_PLANS.find((p) => p.id === effectivePlan);
+  const limit = plan?.maxStudents ?? 200;
+  const newTotal = currentStudents + adding;
+  const overBy = Math.max(0, newTotal - limit);
+  const remaining = Math.max(0, limit - currentStudents);
+  const blocked = ["expired", "paused", "cancelled"].includes(status);
+
+  if (blocked) {
+    return {
+      allowed: false,
+      current: currentStudents,
+      limit,
+      plan: effectivePlan,
+      remaining: 0,
+      overBy: 0,
+      adding,
+      message: "Your subscription is inactive. Please renew before adding students.",
+    };
+  }
+
+  if (effectivePlan === "enterprise") {
+    return {
+      allowed: true,
+      current: currentStudents,
+      limit: Infinity,
+      plan: "enterprise",
+      remaining: Infinity,
+      overBy: 0,
+      adding,
+      message: null,
+    };
+  }
+
+  if (overBy > 0) {
+    return {
+      allowed: false,
+      current: currentStudents,
+      limit,
+      plan: effectivePlan,
+      remaining,
+      overBy,
+      adding,
+      message: `Your ${plan?.name || effectivePlan} plan allows up to ${limit} students. You currently have ${currentStudents}. Upgrade to add more students.`,
+    };
+  }
+
+  // Warn when within 10% of limit
+  const nearLimit = remaining <= Math.ceil(limit * 0.1) && remaining > 0;
+
+  return {
+    allowed: true,
+    current: currentStudents,
+    limit,
+    plan: effectivePlan,
+    remaining,
+    overBy: 0,
+    adding,
+    nearLimit,
+    message: nearLimit ? `You have ${remaining} student slots remaining on your ${plan?.name || effectivePlan} plan.` : null,
+  };
 }

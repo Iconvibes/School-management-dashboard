@@ -13,6 +13,7 @@ const auditLogSchema = new mongoose.Schema(
         "school_status_change",  // school frozen/unfrozen
         "school_created",        // new school registered
         "school_deleted",        // school deleted
+        "school_purged",         // school permanently purged
         "alert_created",         // platform alert created
         "config_change",         // platform config changed
       ],

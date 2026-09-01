@@ -21,7 +21,7 @@ export async function POST(req) {
   if (isDenied(session)) return session;
 
   const body = await req.json();
-  const { subject, classArm, topics } = body;
+  const { subject, classArm, topics, fileUrl, fileName, fileType, fileSize } = body;
 
   if (!subject || !classArm) {
     return NextResponse.json({ error: "subject and classArm are required" }, { status: 400 });
@@ -37,6 +37,11 @@ export async function POST(req) {
     session: sess,
     term,
     topics: topics || [],
+    fileUrl: fileUrl || "",
+    fileName: fileName || "",
+    fileType: fileType || "",
+    fileSize: fileSize || 0,
+    uploadedBy: fileUrl ? session.userId : undefined,
     createdBy: session.userId,
   });
 

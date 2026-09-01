@@ -89,6 +89,7 @@ import BranchesTab from "@/components/admin/BranchesTab";
 import ComplianceTab from "@/components/admin/ComplianceTab";
 import BillingTab from "@/components/admin/BillingTab";
 import BillingBanner from "@/components/BillingBanner";
+import StudentLimitBanner from "@/components/StudentLimitBanner";
 import { AdminProvider } from "@/components/admin/context/AdminContext";
 import { FeeProvider, useFeeContext, FEE_ACTION_TYPES } from "@/components/admin/context/FeeContext";
 import { armAlreadyExists } from "@/lib/arms";
@@ -643,6 +644,7 @@ function AdminDashboardInner() {
         {/* Billing enforcement banner */}
         <div className="px-4 pt-4">
           <BillingBanner isSuperAdmin={isSuper} />
+          {isSuper && <StudentLimitBanner />}
         </div>
         {/* Topbar */}
         <header className="sticky top-0 z-30 flex h-16 items-center justify-between border-b border-navy-200/70 bg-white/80 px-5 backdrop-blur-lg">

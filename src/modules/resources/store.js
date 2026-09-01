@@ -5,10 +5,14 @@
  */
 import { schemesOfWork, classResources, assignmentSubmissions, nid, clone, nowIso, persist } from "@/modules/shared/store-state";
 
-export async function createSchemeOfWork({ schoolId, subject, classArm, session, term, topics, createdBy }) {
+export async function createSchemeOfWork({ schoolId, subject, classArm, session, term, topics, fileUrl, fileName, fileType, fileSize, uploadedBy, createdBy }) {
   const existing = schemesOfWork.find((s) => s.schoolId === schoolId && s.subject === subject && s.classArm === classArm && s.session === session && s.term === term);
-  if (existing) { existing.topics = topics || []; existing.updatedBy = createdBy; existing.updatedAt = nowIso(); persist(); return clone(existing); }
-  const scheme = { id: nid("sch"), schoolId, subject, classArm, session, term, topics: topics || [], createdBy, updatedBy: createdBy, createdAt: nowIso(), updatedAt: nowIso() };
+  if (existing) {
+    existing.topics = topics || existing.topics;
+    if (fileUrl !== undefined) { existing.fileUrl = fileUrl; existing.fileName = fileName || ""; existing.fileType = fileType || ""; existing.fileSize = fileSize || 0; existing.uploadedBy = uploadedBy || createdBy; }
+    existing.updatedBy = createdBy; existing.updatedAt = nowIso(); persist(); return clone(existing);
+  }
+  const scheme = { id: nid("sch"), schoolId, subject, classArm, session, term, topics: topics || [], fileUrl: fileUrl || "", fileName: fileName || "", fileType: fileType || "", fileSize: fileSize || 0, uploadedBy: uploadedBy || createdBy, createdBy, updatedBy: createdBy, createdAt: nowIso(), updatedAt: nowIso() };
   schemesOfWork.push(scheme); persist(); return clone(scheme);
 }
 

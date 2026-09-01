@@ -9,6 +9,10 @@ import {
   Users,
   GraduationCap,
   Filter,
+  Trash2,
+  RotateCcw,
+  CheckSquare,
+  Square,
 } from "lucide-react";
 
 /**
@@ -20,6 +24,8 @@ export default function SchoolsPage() {
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState("all");
+  const [selectedIds, setSelectedIds] = useState(new Set());
+  const [bulkDeleting, setBulkDeleting] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -44,6 +50,96 @@ export default function SchoolsPage() {
     const matchesFilter = filter === "all" || s.status === filter;
     return matchesSearch && matchesFilter;
   });
+  function toggleSelect(id) {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  function toggleSelectAll() {
+    const filteredIds = filtered.map((s) => s.id);
+    setSelectedIds((prev) => {
+      const allSelected = filteredIds.every((id) => prev.has(id));
+      if (allSelected) return new Set();
+      return new Set(filteredIds);
+    });
+  }
+
+  async function handleBulkDelete() {
+    const ids = [...selectedIds];
+    const count = ids.length;
+    if (!window.confirm(`Delete ${count} school(s)? They will be recoverable for 30 days.`)) return;
+    setBulkDeleting(true);
+    try {
+      const res = await fetch("/api/platform/schools/bulk", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ schoolIds: ids }),
+      });
+      if (!res.ok) {
+        const data = await res.json();
+        throw new Error(data.error || "Bulk delete failed");
+      }
+      const result = await res.json();
+      setSchools((prev) => prev.filter((s) => !ids.includes(s.id)));
+      setSelectedIds(new Set());
+      if (result.skipped.length > 0) {
+        alert(`Deleted ${result.deleted} school(s). ${result.skipped.length} were skipped.`);
+      }
+    } catch (err) {
+      alert(err.message);
+    } finally {
+      setBulkDeleting(false);
+    }
+  }
+
+  const allFilteredSelected = filtered.length > 0 && filtered.every((s) => selectedIds.has(s.id));
+  const someSelected = selectedIds.size > 0;
+
+
+
+  async function handleQuickDelete(schoolId, schoolName, e) {
+    e.preventDefault(); // prevent card navigation
+    e.stopPropagation();
+    if (!window.confirm(`Delete "${schoolName}"? This will mark it for deletion (recoverable for 30 days).`)) return;
+    try {
+      const res = await fetch(`/api/platform/schools/${schoolId}`, {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "soft" }),
+      });
+      if (!res.ok) {
+        const data = await res.json();
+        throw new Error(data.error || "Failed to delete school");
+      }
+      setSchools((prev) => prev.filter((s) => s.id !== schoolId));
+    } catch (err) {
+      alert(err.message);
+    }
+  }
+
+  async function handleRestore(schoolId, schoolName, e) {
+    e.preventDefault();
+    e.stopPropagation();
+    if (!window.confirm(`Restore "${schoolName}"? All logins will resume immediately.`)) return;
+    try {
+      const res = await fetch(`/api/platform/schools/${schoolId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "restore" }),
+      });
+      if (!res.ok) {
+        const data = await res.json();
+        throw new Error(data.error || "Failed to restore school");
+      }
+      setSchools((prev) => prev.map((s) => s.id === schoolId ? { ...s, status: "active" } : s));
+    } catch (err) {
+      alert(err.message);
+    }
+  }
 
   if (loading) {
     return (
@@ -61,6 +157,19 @@ export default function SchoolsPage() {
           <h1 className="text-2xl font-bold text-white">Tenant Management</h1>
           <p className="mt-1 text-sm text-gray-400">{schools.length} registered tenants</p>
         </div>
+        {filtered.length > 0 && (
+          <button
+            onClick={toggleSelectAll}
+            className="flex items-center gap-2 rounded-lg bg-white/5 px-3 py-2 text-xs font-semibold text-gray-400 transition hover:bg-white/10 hover:text-white"
+          >
+            {allFilteredSelected ? (
+              <CheckSquare className="h-4 w-4 text-cyan-400" />
+            ) : (
+              <Square className="h-4 w-4" />
+            )}
+            {allFilteredSelected ? "Deselect All" : "Select All"}
+          </button>
+        )}
       </div>
 
       {/* Filters — Dark pill design */}
@@ -110,6 +219,18 @@ export default function SchoolsPage() {
                 className="absolute left-0 top-0 h-0.5 w-full opacity-50 transition-opacity group-hover:opacity-100"
                 style={{ background: `linear-gradient(to right, ${school.brandColor || "#2563EB"}, transparent)` }}
               />
+
+              {/* Selection checkbox */}
+              <button
+                onClick={(e) => { e.preventDefault(); e.stopPropagation(); toggleSelect(school.id); }}
+                className="absolute left-3 top-3 z-10 rounded-md p-0.5 transition hover:bg-white/10"
+              >
+                {selectedIds.has(school.id) ? (
+                  <CheckSquare className="h-4 w-4 text-cyan-400" />
+                ) : (
+                  <Square className="h-4 w-4 text-gray-600" />
+                )}
+              </button>
 
               <div className="flex items-start gap-4">
                 <div
@@ -163,10 +284,57 @@ export default function SchoolsPage() {
                 <span className="text-[10px] text-gray-600">
                   Created {new Date(school.createdAt).toLocaleDateString()}
                 </span>
-                <ArrowRight className="h-4 w-4 text-gray-600 transition group-hover:text-cyan-400" />
+                <div className="flex items-center gap-2">
+                  {school.status === "deleted" ? (
+                    <button
+                      onClick={(e) => handleRestore(school.id, school.name, e)}
+                      className="rounded-md p-1.5 text-gray-600 transition hover:bg-emerald-500/10 hover:text-emerald-400 opacity-0 group-hover:opacity-100"
+                      title="Restore school"
+                    >
+                      <RotateCcw className="h-3.5 w-3.5" />
+                    </button>
+                  ) : (
+                    <button
+                      onClick={(e) => handleQuickDelete(school.id, school.name, e)}
+                      className="rounded-md p-1.5 text-gray-600 transition hover:bg-red-500/10 hover:text-red-400 opacity-0 group-hover:opacity-100"
+                      title="Delete school"
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </button>
+                  )}
+                  <ArrowRight className="h-4 w-4 text-gray-600 transition group-hover:text-cyan-400" />
+                </div>
               </div>
             </Link>
           ))}
+        </div>
+      )}
+      {/* Bulk Action Bar */}
+      {someSelected && (
+        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 flex items-center gap-4 rounded-2xl border border-white/10 bg-[#111827] px-6 py-4 shadow-2xl">
+          <div className="flex items-center gap-2">
+            <CheckSquare className="h-4 w-4 text-cyan-400" />
+            <span className="text-sm font-semibold text-white">{selectedIds.size} selected</span>
+          </div>
+          <div className="h-6 w-px bg-white/10" />
+          <button
+            onClick={() => setSelectedIds(new Set())}
+            className="rounded-lg bg-white/5 px-3 py-1.5 text-xs font-semibold text-gray-400 transition hover:bg-white/10"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={handleBulkDelete}
+            disabled={bulkDeleting}
+            className="inline-flex items-center gap-1.5 rounded-lg bg-red-600 px-4 py-1.5 text-xs font-bold text-white transition hover:bg-red-500 disabled:opacity-50"
+          >
+            {bulkDeleting ? (
+              <div className="h-3 w-3 animate-spin rounded-full border-2 border-white border-t-transparent" />
+            ) : (
+              <Trash2 className="h-3.5 w-3.5" />
+            )}
+            {bulkDeleting ? "Deleting..." : `Delete ${selectedIds.size} School${selectedIds.size > 1 ? "s" : ""}`}
+          </button>
         </div>
       )}
     </div>
