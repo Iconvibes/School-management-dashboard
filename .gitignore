@@ -28,6 +28,8 @@ png export.zip
 .claude/
 .freebuff/
 .agents/
+AGENTS.md
+CLAUDE.md
 
 # demo-mode persisted state (see src/lib/demo-store.js)
 .demo-data/
