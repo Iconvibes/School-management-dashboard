@@ -4,7 +4,7 @@
  */
 import { readFileSync, writeFileSync } from "node:fs";
 
-const FILE = "src/app/admin/dashboard/page.js";
+const FILE = "src/app/admin/dashboard/page.jsx";
 const src = readFileSync(FILE, "utf8");
 const lines = src.split("\n");
 

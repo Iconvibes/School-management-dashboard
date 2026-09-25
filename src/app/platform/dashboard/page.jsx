@@ -16,6 +16,7 @@ import {
   Clock,
 } from "lucide-react";
 import ActivityHeatmap from "@/components/platform/ActivityHeatmap";
+import PendingApprovals from "@/components/platform/PendingApprovals";
 
 /** Simple sparkline using SVG */
 function Sparkline({ data, color = "#22d3ee", height = 48, width = 120 }) {
@@ -91,6 +92,7 @@ function Donut({ value, max = 100, size = 80, strokeWidth = 6, color = "#22d3ee"
 export default function PlatformDashboard() {
   const [overview, setOverview] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [pendingSchools, setPendingSchools] = useState([]);
 
   useEffect(() => {
     let cancelled = false;
@@ -109,6 +111,87 @@ export default function PlatformDashboard() {
     load();
     return () => { cancelled = true; };
   }, []);
+
+  // Fetch pending approvals
+  useEffect(() => {
+    async function loadPending() {
+      try {
+        const res = await fetch("/api/platform/approvals");
+        if (res.ok) {
+          const data = await res.json();
+          setPendingSchools(data.schools || []);
+        }
+      } catch {
+        // Non-fatal
+      }
+    }
+    loadPending();
+  }, []);
+
+  async function handleApprove(schoolId) {
+    try {
+      const res = await fetch("/api/platform/approvals", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ schoolId, action: "approve" }),
+      });
+      if (res.ok) {
+        setPendingSchools((prev) => prev.filter((s) => s.id !== schoolId));
+        // Refresh overview to update stats
+        const ov = await fetch("/api/platform/overview").then((r) => r.json());
+        setOverview(ov);
+      }
+    } catch {
+      // Non-fatal
+    }
+  }
+
+  async function handleReject(schoolId, reason) {
+    try {
+      const res = await fetch("/api/platform/approvals", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ schoolId, action: "reject", reason }),
+      });
+      if (res.ok) {
+        setPendingSchools((prev) => prev.filter((s) => s.id !== schoolId));
+      }
+    } catch {
+      // Non-fatal
+    }
+  }
+
+  async function handleBulkApprove(schoolIds) {
+    try {
+      const res = await fetch("/api/platform/approvals/bulk", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ schoolIds, action: "approve" }),
+      });
+      if (res.ok) {
+        setPendingSchools((prev) => prev.filter((s) => !schoolIds.includes(s.id)));
+        const ov = await fetch("/api/platform/overview").then((r) => r.json());
+        setOverview(ov);
+      }
+    } catch {
+      // Non-fatal
+    }
+  }
+
+  async function handleBulkReject(schoolIds, reason) {
+    try {
+      const res = await fetch("/api/platform/approvals/bulk", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ schoolIds, action: "reject", reason }),
+      });
+      if (res.ok) {
+        setPendingSchools((prev) => prev.filter((s) => !schoolIds.includes(s.id)));
+      }
+    } catch {
+      // Non-fatal
+    }
+  }
 
   if (loading) {
     return (
@@ -156,6 +239,15 @@ export default function PlatformDashboard() {
         </div>
       </div>
 
+      {/* Pending Approvals — rich review panel */}
+      <PendingApprovals
+        schools={pendingSchools}
+        onApprove={handleApprove}
+        onReject={handleReject}
+        onBulkApprove={handleBulkApprove}
+        onBulkReject={handleBulkReject}
+      />
+
       {/* Primary Metrics — Large stat cards with sparklines */}
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
         {/* Tenants */}
@@ -166,7 +258,7 @@ export default function PlatformDashboard() {
           </div>
           <div className="mt-3 flex items-end justify-between">
             <div>
-              <p className="metric-value">{stats.totalSchools || 0}</p>
+              <p className="platform-metric-value">{stats.totalSchools || 0}</p>
               <div className="mt-1 flex items-center gap-1 text-xs">
                 <ArrowUpRight className="h-3 w-3 text-emerald-400" />
                 <span className="text-emerald-400 font-medium">{activeSchools} active</span>
@@ -184,7 +276,7 @@ export default function PlatformDashboard() {
           </div>
           <div className="mt-3 flex items-end justify-between">
             <div>
-              <p className="metric-value">{totalStudents.toLocaleString()}</p>
+              <p className="platform-metric-value">{totalStudents.toLocaleString()}</p>
               <div className="mt-1 flex items-center gap-1 text-xs">
                 <ArrowUpRight className="h-3 w-3 text-emerald-400" />
                 <span className="text-emerald-400 font-medium">+14% this term</span>
@@ -202,7 +294,7 @@ export default function PlatformDashboard() {
           </div>
           <div className="mt-3 flex items-end justify-between">
             <div>
-              <p className="metric-value">{totalTeachers}</p>
+              <p className="platform-metric-value">{totalTeachers}</p>
               <div className="mt-1 flex items-center gap-1 text-xs">
                 <span className="text-zinc-500">{totalStudents > 0 ? Math.round(totalStudents / totalTeachers) : 0}:1 student ratio</span>
               </div>
@@ -219,7 +311,7 @@ export default function PlatformDashboard() {
           </div>
           <div className="mt-3 flex items-end justify-between">
             <div>
-              <p className="metric-value">{"\u20A6"}1.8M</p>
+              <p className="platform-metric-value">{"\u20A6"}1.8M</p>
               <div className="mt-1 flex items-center gap-1 text-xs">
                 <ArrowUpRight className="h-3 w-3 text-emerald-400" />
                 <span className="text-emerald-400 font-medium">77% collected</span>

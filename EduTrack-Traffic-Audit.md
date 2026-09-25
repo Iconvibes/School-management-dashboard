@@ -13,7 +13,7 @@
 |---|---|
 | Database | **MongoDB via Mongoose** (`src/lib/db.js`, `src/lib/store.js`). Demo mode = in-memory JSON-file store (`src/lib/demo-store.js`, `persist()` does `fs.writeFileSync`) — **dev-only; never production**. No Postgres/MySQL/SQLite. |
 | Framework | Next.js 16.3 App Router, Node runtime, API route handlers. |
-| Sessions | **Stateless JWTs** (7-day, httpOnly cookie, `src/lib/token.js`), **re-validated against Mongo on every request** (`requireAuth` → `findAuthSnapshot`, a lean `select("role schoolId assignedClass")` read that never decrypts PII, `src/lib/policy.js`). Revocation via `tokenVersion` counter. |
+| Sessions | **Stateless JWTs** (7-day, httpOnly cookie, `src/lib/token.ts`), **re-validated against Mongo on every request** (`requireAuth` → `findAuthSnapshot`, a lean `select("role schoolId assignedClass")` read that never decrypts PII, `src/lib/policy.ts`). Revocation via `tokenVersion` counter. |
 | Rate limiting | **In-memory per-process `Map`** (`src/lib/rate-limit.js`). Explicitly documented as single-instance. |
 | Caching | **None.** No Redis, no in-memory cache, no CDN config in-repo. |
 | Queue | **None.** No BullMQ, no workers. |
@@ -189,9 +189,9 @@ checkRateLimit({ request, windowMs: 15 * 60 * 1000, max: 5000, prefix: "auth-log
 ```
 `5000 failed logins / 15 min / school` — one school's scripted attack can no longer burn the shared budget or exhaust Mongo on other tenants.
 
-### 6.2 Auth snapshot cache — `src/lib/policy.js` / `src/lib/mongo-store.js`
+### 6.2 Auth snapshot cache — `src/lib/policy.ts` / `src/lib/mongo/users.js`
 ```js
-// policy.js requireAuth — wrap the store revalidation:
+// policy.ts requireAuth — wrap the store revalidation:
 const cached = await redisGet(`auth:${session.userId}`);      // TTL 60s
 const user = cached ?? await store.findAuthSnapshot(session.userId);
 if (user && !cached) await redisSet(`auth:${session.userId}`, user, 60);

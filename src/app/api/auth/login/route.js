@@ -212,6 +212,19 @@ export async function POST(request) {
       );
       const result = await job.waitUntilFinished(queue.events, 10_000);
       if (!result.ok) {
+        // Pending approval — redirect to waiting page instead of denying
+        if (result.pendingApproval) {
+          const school = await store.getSchoolById(schoolId);
+          const res = NextResponse.json({
+            success: true,
+            user: { id: user.id, name: user.name, email: user.email, role: user.role, schoolId: user.schoolId },
+            school: { id: school?.id || schoolId, name: school?.name || "", brandColor: school?.brandColor || "#2563EB" },
+            redirect: "/pending-approval",
+            pendingApproval: true,
+          });
+          setAuthCookie(res, { userId: user.id, role: user.role, schoolId: user.schoolId, tokenVersion: user.tokenVersion || 0 });
+          return res;
+        }
         return deny(result.status || 401, result.error);
       }
       ok = true;
@@ -248,6 +261,24 @@ export async function POST(request) {
   // The queue worker also checks this, but we re-check here for the inline
   // path and as a safety net.
   const schoolRec = await store.getSchoolById(user.schoolId);
+  // Pending approval — ALL school users get redirected to waiting page
+  if (schoolRec?.status === "pending_approval") {
+    const res = NextResponse.json({
+      success: true,
+      user: { id: user.id, name: user.name, email: user.email, role: user.role, schoolId: user.schoolId },
+      school: { id: schoolRec?.id || schoolId, name: schoolRec?.name || "", brandColor: schoolRec?.brandColor || "#2563EB" },
+      redirect: "/pending-approval",
+      pendingApproval: true,
+    });
+    setAuthCookie(res, { userId: user.id, role: user.role, schoolId: user.schoolId, tokenVersion: user.tokenVersion || 0 });
+    return res;
+  }
+  if (schoolRec?.status === "rejected") {
+    return deny(
+      403,
+      "This school's registration was not approved. Please contact support for details."
+    );
+  }
   if (schoolRec?.status === "frozen" && user.role !== "SUPER_ADMIN") {
     return deny(
       403,

@@ -13,7 +13,7 @@
  *   if (isDenied(session)) return session;
  */
 
-import { getSession, jsonError } from "@/lib/auth";
+import { getSession, jsonError, type SessionClaims } from "@/lib/auth";
 import { IMPERSONATION_TIMEOUT_MS } from "@/lib/token";
 import { store } from "@/lib/store";
 import { cacheDel, cacheDelMany, cacheGetOrSet } from "@/lib/cache";
@@ -28,6 +28,23 @@ import {
 
 export { can, mayEditUser, mayResetPassword, ROLES, ROLE_PERMISSIONS, STAFF_ROLES };
 
+/** A validated session: the JWT claims plus the store-revalidated identity. */
+export interface Session extends SessionClaims {
+  role: string;
+  schoolId: string;
+}
+
+/** Shape of the lean auth snapshot the store returns for the guard. */
+interface AuthSnapshot {
+  role?: string;
+  schoolId?: string | { toString(): string };
+  assignedClass?: string;
+  assignedClasses?: string[];
+  subjects?: string[];
+  tokenVersion?: number;
+  schoolStatus?: string;
+}
+
 /** Shared policy copy — one message instead of the four that drifted apart. */
 const MSG = Object.freeze({
   unassigned: "You have not been assigned a class arm yet. Contact your school admin.",
@@ -36,7 +53,7 @@ const MSG = Object.freeze({
 });
 
 /** True when a guard returned a Response the route should return. */
-export function isDenied(result) {
+export function isDenied(result: unknown): result is Response {
   return result instanceof Response;
 }
 
@@ -50,7 +67,7 @@ export function isDenied(result) {
 // below make password changes, role re-rolls and school freezes take effect
 // instantly; the version check + TTL are the safety net.
 const AUTH_SNAPSHOT_TTL_SECONDS = 60;
-const authSnapshotKey = (userId) => `auth:${userId}`;
+const authSnapshotKey = (userId: string) => `auth:${userId}`;
 
 /**
  * The user row for the auth guard, cached when a cache driver is active.
@@ -64,24 +81,27 @@ const authSnapshotKey = (userId) => `auth:${userId}`;
  * jittered TTL in cacheSet, this prevents thundering-herd stampedes at 100k
  * concurrent users.
  */
-async function loadAuthSnapshot(userId, tokenVersion) {
+async function loadAuthSnapshot(
+  userId: string,
+  tokenVersion?: number
+): Promise<AuthSnapshot | null> {
   const key = authSnapshotKey(userId);
 
   // cacheGetOrSet coalesces concurrent fetches for the same key into one DB
   // call. The fetcher only runs on cache miss — on hit, the cached value is
   // returned immediately.
-  const user = await cacheGetOrSet(
+  const user = (await cacheGetOrSet(
     key,
     () => store.findAuthSnapshot(userId),
     AUTH_SNAPSHOT_TTL_SECONDS
-  );
+  )) as AuthSnapshot | null;
 
   // TokenVersion safety net: if the cached snapshot was populated by a request
   // with a different tokenVersion (e.g. a password change raced with a cache
   // write), invalidate and re-fetch directly (no coalescing — this is rare).
   if (user && (user.tokenVersion || 0) !== (tokenVersion || 0)) {
     await cacheDel(key);
-    return store.findAuthSnapshot(userId);
+    return (await store.findAuthSnapshot(userId)) as AuthSnapshot | null;
   }
 
   return user;
@@ -91,7 +111,7 @@ async function loadAuthSnapshot(userId, tokenVersion) {
  * Drop one account's cached snapshot — call after any change that alters
  * what the snapshot carries (password change, role re-roll, scope edits).
  */
-export async function invalidateAuthSnapshot(userId) {
+export async function invalidateAuthSnapshot(userId: string): Promise<void> {
   await cacheDel(authSnapshotKey(userId));
 }
 
@@ -101,7 +121,7 @@ export async function invalidateAuthSnapshot(userId) {
  * never outlive the flip. Runs on the rare admin status route, so the
  * per-user id list is a one-off cost.
  */
-export async function invalidateSchoolAuthSnapshots(schoolId) {
+export async function invalidateSchoolAuthSnapshots(schoolId: string): Promise<void> {
   const ids = await store.getSchoolUserIds(schoolId);
   if (ids.length) await cacheDelMany(ids.map(authSnapshotKey));
 }
@@ -116,17 +136,20 @@ export async function invalidateSchoolAuthSnapshots(schoolId) {
  * 7-day token expiry. A mismatch invalidates the session (401) and the user
  * must sign in again.
  *
- * @param {string[]} [roles]  allowed roles; omit for "any authenticated user"
- * @param {Object} [session]  session to validate. Normally read from the
- *   cookie via getSession(); tests inject a fake one to skip cookie plumbing.
- * @returns {Promise<Object|Response>} the session, or a 401/403 Response
+ * @param roles   allowed roles; omit for "any authenticated user"
+ * @param session session to validate. Normally read from the cookie via
+ *   getSession(); tests inject a fake one to skip cookie plumbing.
+ * @returns the session, or a 401/403 Response
  */
-export async function requireAuth(roles, session) {
+export async function requireAuth(
+  roles?: string[],
+  session?: SessionClaims
+): Promise<Session | Response> {
   // Only read the cookie when the caller didn't supply a session. A cookie
   // read that fails (e.g. outside a request scope) means "not authenticated"
   // and must never become a 500.
   if (session === undefined) {
-    session = await getSession().catch(() => null);
+    session = (await getSession().catch(() => null)) ?? undefined;
   }
   if (!session) return jsonError("Not authenticated", 401);
 
@@ -138,14 +161,17 @@ export async function requireAuth(roles, session) {
   // findAuthSnapshot returns ONLY role/schoolId/assignedClass (select + lean
   // in Mongo, no PII decrypt) — this guard runs on EVERY authed request, so
   // at 10k concurrent users it must not pay for the full user shape.
-  let user;
+  let user: AuthSnapshot | null;
   try {
     user = await loadAuthSnapshot(session.userId, session.tokenVersion);
   } catch {
     return jsonError(MSG.sessionInvalid, 401);
   }
   if (!user) return jsonError(MSG.sessionInvalid, 401);
-  if (String(user.schoolId) !== String(session.schoolId) || user.role !== session.role) {
+  if (
+    String(user.schoolId) !== String(session.schoolId) ||
+    user.role !== session.role
+  ) {
     return jsonError(MSG.sessionInvalid, 401);
   }
   // Session revocation: a password change bumps the account's tokenVersion,
@@ -171,7 +197,7 @@ export async function requireAuth(roles, session) {
   }
 
   // Gate on the FRESH role from the store, never the token claim.
-  if (roles && !roles.includes(user.role)) return jsonError("Forbidden", 403);
+  if (roles && !roles.includes(user.role as string)) return jsonError("Forbidden", 403);
 
   // A frozen (soft-deactivated) or deleted (grace-period) school rejects
   // every request from non-super admins — already-issued sessions die on
@@ -179,7 +205,11 @@ export async function requireAuth(roles, session) {
   // account can be reactivated or restored from the dashboard. (An expired
   // deleted school is purged, so its users no longer exist and this session
   // lookup fails closed with a 401.)
-  if (user.schoolStatus !== "active" && user.role !== "SUPER_ADMIN" && user.role !== "PLATFORM_ADMIN") {
+  if (
+    user.schoolStatus !== "active" &&
+    user.role !== "SUPER_ADMIN" &&
+    user.role !== "PLATFORM_ADMIN"
+  ) {
     return jsonError(
       user.schoolStatus === "frozen"
         ? "This school's account has been deactivated. Please contact your school administrator."
@@ -192,7 +222,7 @@ export async function requireAuth(roles, session) {
   // non-admin users. SUPER_ADMINs and PLATFORM_ADMINs are exempt so they
   // can still access the school to manage billing.
   if (user.role !== "SUPER_ADMIN" && user.role !== "PLATFORM_ADMIN") {
-    const schoolRec = await store.getSchoolById(user.schoolId);
+    const schoolRec = await store.getSchoolById(user.schoolId as string);
     if (schoolRec) {
       const billingStatus = schoolRec.subscriptionStatus || "trial";
       let billingExpired = false;
@@ -202,15 +232,15 @@ export async function requireAuth(roles, session) {
         billingPaused = billingStatus === "paused";
       } else if (billingStatus === "trial" && schoolRec.trialEnd) {
         billingExpired = Date.now() > Date.parse(schoolRec.trialEnd);
-      } else if (billingStatus === 'active' && schoolRec.currentPeriodEnd) {
+      } else if (billingStatus === "active" && schoolRec.currentPeriodEnd) {
         const overdue = Date.now() - Date.parse(schoolRec.currentPeriodEnd);
         billingExpired = overdue > 3 * 24 * 60 * 60 * 1000; // 3-day grace
       }
       if (billingExpired) {
         return jsonError(
           billingPaused
-            ? 'Your school subscription has been paused due to failed payments. Please update your payment method.'
-            : 'Your school subscription has expired. Please contact the school administrator to renew.',
+            ? "Your school subscription has been paused due to failed payments. Please update your payment method."
+            : "Your school subscription has expired. Please contact the school administrator to renew.",
           403,
           { billingExpired: true }
         );
@@ -218,7 +248,7 @@ export async function requireAuth(roles, session) {
     }
   }
 
-  return { ...session, role: user.role, schoolId: user.schoolId };
+  return { ...session, role: user.role as string, schoolId: user.schoolId as string };
 }
 
 /**
@@ -232,10 +262,14 @@ export async function requireAuth(roles, session) {
  * session re-validation from requireAuth, so the action check always runs
  * against the fresh store role.
  *
- * @param {Object} [session]  optional injected session (tests)
+ * @param session optional injected session (tests)
  */
-export async function requirePermission(roles, action, session) {
-  session = await requireAuth(roles, session);
+export async function requirePermission(
+  roles: string[],
+  action?: string,
+  session?: SessionClaims
+): Promise<Session | Response> {
+  session = (await requireAuth(roles, session)) as SessionClaims;
   if (isDenied(session)) return session;
   if (!can(session.role, action)) return jsonError("Forbidden", 403);
   return session;
@@ -251,29 +285,21 @@ export async function requirePermission(roles, action, session) {
  *
  * Legacy single-arm teachers (only `assignedClass`, no arrays) keep working
  * through a [assignedClass] fallback, so no existing deployment breaks.
- *
- * @param {Object} session
- * @param {Object} opts
- * @param {string} [opts.classArm]  the arm the request asks to operate on
- * @param {string} [opts.subject]   the subject the request asks to grade.
- *   Enforced ONLY when the teacher HAS subjects — a legacy teacher without
- *   subject assignments stays unrestricted (they were generalists).
- * @param {"validate"|"resolve"|"force"} [opts.mode="validate"]
- *   - "validate": the target arm must be IN the teacher's arms (including
- *     `undefined` — an arm-less student never matches). Used where the arm is
- *     the request's own claim (attendance registers) or the target's own
- *     attribute (report cards).
- *   - "resolve": compute the effective arm. A teacher with arms is locked to
- *     them (a requested arm outside the set is denied); the unassigned
- *     outcome depends on `unassigned`. Used where the route needs the arm back.
- *   - "force": the requested arm wins IF it is in the teacher's set, else the
- *     teacher's first arm. Used when the request's arm is untrusted (creating
- *     users).
- * @param {"deny"|"require-arm"|"allow"} [opts.unassigned="deny"]
- *   What an arm-less teacher may do (same semantics as before).
- * @returns {Promise<{classArm?: string, teacher: Object|null}|Response>}
  */
-export async function requireClassScope(session, { classArm, subject, mode = "validate", unassigned = "deny" } = {}) {
+export async function requireClassScope(
+  session: Session,
+  {
+    classArm,
+    subject,
+    mode = "validate",
+    unassigned = "deny",
+  }: {
+    classArm?: string;
+    subject?: string;
+    mode?: "validate" | "resolve" | "force";
+    unassigned?: "deny" | "require-arm" | "allow";
+  } = {}
+): Promise<{ classArm?: string; teacher: AuthSnapshot | null } | Response> {
   if (session.role !== ROLES.TEACHER) return { classArm, teacher: null };
 
   // Snapshot (not the full row): only the scope fields are needed here.
@@ -315,12 +341,16 @@ export async function requireClassScope(session, { classArm, subject, mode = "va
  * non-PARENT session (admin, teacher) it returns null — the rule simply does
  * not apply to them, so callers may invoke it without a role check.
  *
- * @param {string} [message]  custom 403 copy for the specific screen
+ * @param message custom 403 copy for the specific screen
  */
-export async function requireOwnChild(session, studentId, message) {
+export async function requireOwnChild(
+  session: Session,
+  studentId: string,
+  message?: string
+): Promise<{ id: string } | null | Response> {
   if (session.role !== ROLES.PARENT) return null;
   const children = await store.getChildren(session.userId);
-  const child = children.find((c) => c.id === studentId);
+  const child = (children as Array<{ id: string }> | null)?.find((c) => c.id === studentId);
   if (!child) return jsonError(message || "You can only access your own children's records", 403);
   return child;
 }
@@ -330,7 +360,10 @@ export async function requireOwnChild(session, studentId, message) {
  * Returns null on success, or a Response. (Callers keep their own 404 handling
  * for a missing target, so "not found" stays distinct from "forbidden".)
  */
-export function assertSameTenant(target, session) {
+export function assertSameTenant(
+  target: { schoolId?: unknown } | null | undefined,
+  session: Session
+): Response | null {
   // String() like the requireAuth re-validation: Mongo returns ObjectIds (a
   // `!==` on two ObjectId references is always true), demo returns strings.
   if (!target || String(target.schoolId) !== String(session.schoolId)) {

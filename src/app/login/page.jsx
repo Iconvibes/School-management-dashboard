@@ -423,6 +423,14 @@ export default function LoginPage() {
                         modal, Login Details exports, and in person). A hint
                         like "your child's name" or "your school's name" would
                         let anyone try guessed names against those passwords. */}
+                    <div className="mt-2 text-right">
+                      <Link
+                        href="/forgot-password"
+                        className="text-xs font-medium text-brand-600 hover:text-brand-700"
+                      >
+                        Forgot password?
+                      </Link>
+                    </div>
                   </label>
                   {/* Frozen / deleted-school notice — shares the spot above
                       the sign-in button with the submit error, so every

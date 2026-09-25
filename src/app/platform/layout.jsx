@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { useRouter, usePathname } from "next/navigation";
 import Link from "next/link";
 import { useSession } from "@/hooks/useSession";
+import useSwipeToClose from "@/hooks/useSwipeToClose";
 import "./platform.css";
 import {
   LayoutDashboard,
@@ -31,8 +32,21 @@ export default function PlatformLayout({ children }) {
   const pathname = usePathname();
   const { meData: session, loading } = useSession();
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [mobileOpen, setMobileOpen] = useState(false);
   const [unreadAlerts, setUnreadAlerts] = useState(0);
+  const swipeHandlers = useSwipeToClose(() => setMobileOpen(false));
   const [quickStats, setQuickStats] = useState({ tenants: 0, users: 0 });
+
+  // Escape key closes the mobile sidebar
+  useEffect(() => {
+    function onKeyDown(e) {
+      if (e.key === "Escape" && mobileOpen) {
+        setMobileOpen(false);
+      }
+    }
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [mobileOpen]);
 
   useEffect(() => {
     if (loading) return;
@@ -101,13 +115,20 @@ export default function PlatformLayout({ children }) {
   const isActive = (href) => pathname === href || pathname?.startsWith(href + "/");
 
   return (
-    <div className="flex min-h-screen bg-[#0a0a0f] text-gray-100">
+    <div className="platform-root flex min-h-screen bg-[#0a0a0f] text-gray-100">
+      {/* Mobile backdrop overlay */}
+      {mobileOpen && (
+        <div
+          className="fixed inset-0 z-40 bg-black/60 backdrop-blur-sm lg:hidden"
+          onClick={() => setMobileOpen(false)}
+        />
+      )}
       {/* Sidebar — solid dark panel with gradient accents */}
       <aside
-        className={`fixed inset-y-0 left-0 z-50 flex flex-col transition-all duration-300 ${
-          sidebarCollapsed ? "w-[72px]" : "w-[260px]"
-        }`}
+        {...swipeHandlers}
+        className={`platform-sidebar fixed inset-y-0 left-0 z-50 flex flex-col ${mobileOpen ? "is-open" : ""}`}
         style={{
+          width: sidebarCollapsed ? 72 : 260,
           background: "linear-gradient(180deg, #111827 0%, #0c1222 50%, #080d19 100%)",
           borderRight: "1px solid rgba(34, 211, 238, 0.08)",
           boxShadow: "4px 0 24px rgba(0, 0, 0, 0.4)",
@@ -147,6 +168,7 @@ export default function PlatformLayout({ children }) {
               <Link
                 key={item.href}
                 href={item.href}
+                onClick={() => setMobileOpen(false)}
                 className={`group relative flex items-center gap-3 rounded-xl px-3.5 py-3 text-sm font-semibold transition-all duration-200 ${
                   active
                     ? "bg-cyan-500/15 text-cyan-300 shadow-inner"
@@ -219,6 +241,7 @@ export default function PlatformLayout({ children }) {
           )}
           <button
             onClick={async () => {
+              setMobileOpen(false);
               await fetch("/api/auth/logout", { method: "POST" });
               router.push("/platform/login");
             }}
@@ -243,15 +266,23 @@ export default function PlatformLayout({ children }) {
         >
           <div className="flex items-center gap-4">
             <button
-              onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
+              onClick={() => {
+                // Mobile: open/close sidebar overlay
+                // Desktop: collapse sidebar
+                if (window.innerWidth < 1024) {
+                  setMobileOpen(!mobileOpen);
+                } else {
+                  setSidebarCollapsed(!sidebarCollapsed);
+                }
+              }}
               className="rounded-lg p-2 text-gray-400 transition hover:bg-white/5 hover:text-white"
             >
               <svg className="h-4.5 w-4.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
               </svg>
             </button>
-            <div className="h-6 w-px bg-white/10" />
-            <span className="text-xs font-medium text-gray-500">
+            <div className="hidden h-6 w-px bg-white/10 sm:block" />
+            <span className="hidden text-xs font-medium text-gray-500 sm:block">
               {new Date().toLocaleDateString("en-US", { weekday: "long", year: "numeric", month: "long", day: "numeric" })}
             </span>
           </div>
@@ -266,17 +297,17 @@ export default function PlatformLayout({ children }) {
                 </span>
               )}
             </Link>
-            <div className="h-6 w-px bg-white/10" />
-            <div className="flex items-center gap-2 rounded-full bg-emerald-500/10 px-3.5 py-1.5 ring-1 ring-emerald-500/20">
+            <div className="hidden h-6 w-px bg-white/10 sm:block" />
+            <div className="hidden items-center gap-2 rounded-full bg-emerald-500/10 px-3.5 py-1.5 ring-1 ring-emerald-500/20 sm:flex">
               <div className="h-1.5 w-1.5 rounded-full bg-emerald-400 animate-pulse" />
               <span className="text-[11px] font-bold text-emerald-400">LIVE</span>
             </div>
-            <div className="h-6 w-px bg-white/10" />
+            <div className="hidden h-6 w-px bg-white/10 sm:block" />
             <div className="flex items-center gap-2.5">
               <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-gradient-to-br from-cyan-500 to-blue-600 text-[10px] font-extrabold text-white shadow-lg shadow-cyan-500/20">
                 PA
               </div>
-              <div>
+              <div className="hidden sm:block">
                 <p className="text-xs font-bold text-gray-200">Platform Admin</p>
                 <p className="text-[10px] text-gray-600">Full access</p>
               </div>
@@ -285,7 +316,7 @@ export default function PlatformLayout({ children }) {
         </header>
 
         {/* Page Content */}
-        <div className="p-6">{children}</div>
+        <div className="p-4 sm:p-6">{children}</div>
       </main>
     </div>
   );

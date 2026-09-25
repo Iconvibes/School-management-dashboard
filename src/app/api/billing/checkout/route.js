@@ -87,10 +87,12 @@ export async function POST(req) {
       paystackPlanCode: `demo_plan_${planId}_${cycle}`,
     });
 
-    // Log audit entry
+    // Log audit entry (JWT sessions carry userId only — load the actor's
+    // identity from the store, never trust a `session.user` object).
+    const actor = await store.findUserById(session.userId);
     await store.createAuditLog({
       action: "subscription_activate",
-      actor: session.user?.name || "School Admin",
+      actor: actor?.name || "School Admin",
       schoolId,
       schoolName: school.name,
       description: `Activated ${plan.name} plan (${cycle}) for ${school.name} — ₦${totalAmount.toLocaleString()}`,

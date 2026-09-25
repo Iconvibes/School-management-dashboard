@@ -122,11 +122,17 @@ npm test                          # all tests
 node --test tests/permissions.test.js  # single file
 ```
 
+Key suites: `tests/tenant-isolation.test.js` (cross-school negative cases — school A's
+actors reading/writing school B's records by id must get 403/404) and
+`tests/security-fixes.test.js` (billing-verify gate, impersonation audit identity,
+impersonation session close on logout). `tests/tenant-scope.test.js` needs a live
+MongoDB (`MONGODB_URI`) and skips without one — run it in CI against Mongo.
+
 **Lint:**
 
 ```
 npm run lint                      # full project
-npx eslint src/lib/permissions.js # single file
+npx eslint src/lib/permissions.ts # single file
 ```
 
 **E2E tests** (Playwright):
@@ -212,11 +218,13 @@ src/
   lib/                     # Core libraries
     store.js               # Unified data-access layer (demo ⇄ Mongo)
     demo-store.js          # In-memory store (thin facade over modules/)
-    mongo-store.js         # Mongoose-backed store
+    mongo-store.js         # Mongoose store (re-export hub)
+    mongo/                 # mongo-store implementations, by domain (17 modules + shared.js)
     db.js                  # MongoDB connection + instrumentation
-    auth.js / token.js     # JWT signing, verification, session management
-    policy.js              # requireAuth, requirePermission, scope guards
-    permissions.js         # Role → action matrix, can()
+    auth.ts / token.ts     # JWT signing, verification, session management (TypeScript)
+    policy.ts              # requireAuth, requirePermission, scope guards (TypeScript)
+    tenant-scope.ts        # Fail-closed multi-tenant query guard (TypeScript)
+    permissions.ts         # Role → action matrix, can() (TypeScript)
     portal-guard.js        # Role → portal mapping, ROLE_HOME
     field-crypto.js        # AES-256-GCM PII encryption + blind indexes
     mailer.js              # SMTP email delivery (optional)
@@ -244,7 +252,7 @@ weak alone and strong together.
 | Layer | Where | What it checks | Why it's not enough alone |
 | ----- | ----- | -------------- | ------------------------- |
 | **1. Proxy render guard** | `src/proxy.js` | JWT signature + expiry, and the token's role claim against the portal's allowed roles | Optimistic — never touches the database, so a stale role claim still renders |
-| **2. API revalidation** | `src/lib/policy.js` + `src/lib/permissions.js` | Re-fetches the acting user from the store on **every** request; token role/schoolId must match the live record | Authoritative, but fires per request — a page's HTML would already be sent |
+| **2. API revalidation** | `src/lib/policy.ts` + `src/lib/permissions.ts` | Re-fetches the acting user from the store on **every** request; token role/schoolId must match the live record | Authoritative, but fires per request — a page's HTML would already be sent |
 | **3. Client me-gate** | each dashboard page | Re-checks `/api/auth/me` on mount and bounces mismatches to `/login` | Runs in the browser only — never a security boundary on its own |
 
 **Layer 1 — Proxy render guard** (`src/proxy.js`). The platform admin portal (`/platform/*`) uses a completely separate login at `/platform/login` — it is not visible on the school login page and shares no UI with school portals. The Next 16 `proxy`
@@ -272,7 +280,7 @@ re-checks `school.onboardingComplete` against the store and skips to
 `/admin/dashboard` once the wizard is done. A demoted user's old token still
 passes this layer **by design** — layer 2 is the real boundary.
 
-**Layer 2 — API revalidation** (`src/lib/policy.js`) — the authoritative
+**Layer 2 — API revalidation** (`src/lib/policy.ts`) — the authoritative
 boundary. Every route gate goes through `requireAuth([...roles])` or
 `requirePermission([...roles], "action")` and re-reads the user from the store:
 
@@ -282,7 +290,7 @@ boundary. Every route gate goes through `requireAuth([...roles])` or
   token expiry. Password changes bump a `tokenVersion` counter on the account
   that is stamped into every token at sign-in, so a stolen pre-change token
   dies on its very next use.
-- **The permission matrix** (`src/lib/permissions.js`): `ROLE_PERMISSIONS` maps
+- **The permission matrix** (`src/lib/permissions.ts`): `ROLE_PERMISSIONS` maps
   every role to the actions it may perform (e.g. `fees.record`, `scores.enter`,
   `school.edit`), and `can(role, action)` reads it. Every multi-role gate is a
   `requirePermission` call; single-role self-service routes use
@@ -302,11 +310,11 @@ into a visible sign-out, not just a 401 deep in some API call.
 
 ### Adding a new role
 
-The checklist below mirrors the header comment in `src/lib/permissions.js` — a
+The checklist below mirrors the header comment in `src/lib/permissions.ts` — a
 new role needs all of these or the app will misbehave somewhere:
 
 1. **`src/models/User.js`** — add the role to the schema `enum` (Mongo mode).
-2. **`src/lib/permissions.js`** — add it to `ROLES`; give it a
+2. **`src/lib/permissions.ts`** — add it to `ROLES`; give it a
    `ROLE_PERMISSIONS` entry (the actions it may perform); add it to
    `STAFF_ROLES` if it opens the shared admin console. A staff role (any
    role with consequential power in a school) also goes into `MANAGED_ROLES`

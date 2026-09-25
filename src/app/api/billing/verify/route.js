@@ -1,3 +1,5 @@
+import { jsonError } from "@/lib/auth";
+import { isDenied, requirePermission } from "@/lib/policy";
 import { store } from "@/lib/store";
 import { verifyTransaction, isPaystackConfigured } from "@/lib/paystack";
 
@@ -5,19 +7,43 @@ import { verifyTransaction, isPaystackConfigured } from "@/lib/paystack";
  * GET /api/billing/verify?ref=SUB-xxx&sid=sch_xxx
  * Verify a Paystack payment and activate the school's subscription.
  *
- * In demo mode (no PAYSTACK_SECRET_KEY), always succeeds.
- * Redirects to the admin dashboard billing tab after processing.
+ * This is the Paystack callback_url target: the payer's browser lands here
+ * right after checkout, so the SUPER_ADMIN session cookie is present and the
+ * gate below passes for the admin who started the flow.
+ *
+ * TENANT ISOLATION: the school whose subscription is activated is derived
+ * from the SERVER-VALIDATED session, never from the `sid` query parameter.
+ * A mismatch between `sid` and the session's school is a 403 — the query
+ * param is only a consistency check, not an authority. (Without this, any
+ * unauthenticated caller could activate ANY school's subscription by hitting
+ * the URL with an arbitrary `sid`.)
+ *
+ * In demo mode (no PAYSTACK_SECRET_KEY), activation already happened in
+ * POST /api/billing/checkout — this endpoint just bounces back to the
+ * dashboard after the gate.
  */
 export async function GET(req) {
+  // Same gate as the checkout that created this flow — the browser arriving
+  // here is the admin who paid, so the session cookie is present.
+  const session = await requirePermission(["SUPER_ADMIN"], "school.edit");
+  if (isDenied(session)) return session;
+
   const { searchParams } = new URL(req.url);
   const reference = searchParams.get("ref");
-  const schoolId = searchParams.get("sid");
+  const schoolIdParam = searchParams.get("sid");
 
-  if (!reference || !schoolId) {
-    return new Response("Missing reference or school ID", { status: 400 });
+  if (!reference || !schoolIdParam) {
+    return jsonError("Missing reference or school ID");
   }
 
-  // Demo mode — always succeed
+  // The query param must AGREE with the session — it never authorizes on
+  // its own. A mismatch is someone replaying another school's callback.
+  if (String(schoolIdParam) !== String(session.schoolId)) {
+    return jsonError("Forbidden", 403);
+  }
+  const schoolId = session.schoolId;
+
+  // Demo mode — activation happened at checkout; just bounce back.
   if (!isPaystackConfigured()) {
     return new Response(null, {
       status: 302,
@@ -35,8 +61,15 @@ export async function GET(req) {
     });
   }
 
-  // Extract subscription details from metadata
+  // Defense in depth: the transaction must carry THIS school's id in its
+  // metadata (stamped server-side at checkout), not just any successful
+  // reference the caller pasted into the URL.
   const meta = result.metadata || {};
+  if (meta.school_id && String(meta.school_id) !== String(schoolId)) {
+    return jsonError("Payment reference does not belong to this school", 403);
+  }
+
+  // Extract subscription details from metadata
   const planId = meta.plan_id || "standard";
   const cycle = meta.cycle || "monthly";
 

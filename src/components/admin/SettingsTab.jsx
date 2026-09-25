@@ -2,7 +2,7 @@
 
 import { useRef, useState } from "react";
 import {
-  ArrowLeft, BadgeCheck, CheckCircle2, ImagePlus, Loader2, Save, School, Upload, X,
+  ArrowLeft, BadgeCheck, CheckCircle2, Download, FileDown, ImagePlus, Loader2, Save, School, Upload, X,
 } from "lucide-react";
 import { useAdminShell } from "./context/AdminContext";
 import { useTabFetch } from "@/hooks/useTabFetch";
@@ -482,6 +482,72 @@ export default function SettingsTab({ setTab }) {
         </div>
       </div>
     </div>
+
+      {/* Data Export / GDPR */}
+      <div className="rounded-2xl border border-navy-200/70 bg-white p-6 shadow-sm">
+        <div className="flex items-center gap-3 mb-4">
+          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-emerald-100">
+            <FileDown className="h-5 w-5 text-emerald-600" />
+          </div>
+          <div>
+            <h2 className="text-lg font-bold text-navy-800">Data Export</h2>
+            <p className="text-sm text-navy-400">Download all your school data for backup or GDPR compliance</p>
+          </div>
+        </div>
+
+        <div className="space-y-3">
+          {/* Full export buttons */}
+          <div className="flex flex-wrap gap-3">
+            <a
+              href="/api/admin/export?format=csv"
+              className="inline-flex items-center gap-2 rounded-xl border border-navy-200 bg-white px-4 py-2.5 text-sm font-semibold text-navy-700 transition hover:bg-navy-50"
+            >
+              <Download className="h-4 w-4" />
+              Download Full CSV
+            </a>
+            <a
+              href="/api/admin/export?format=json"
+              className="inline-flex items-center gap-2 rounded-xl border border-navy-200 bg-white px-4 py-2.5 text-sm font-semibold text-navy-700 transition hover:bg-navy-50"
+            >
+              <Download className="h-4 w-4" />
+              Download Full JSON
+            </a>
+          </div>
+
+          {/* Individual dataset exports */}
+          <div>
+            <p className="text-xs font-semibold uppercase tracking-wider text-navy-400 mb-2">
+              Download Individual Datasets
+            </p>
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4">
+              {[
+                { key: "students", label: "Students" },
+                { key: "teachers", label: "Teachers" },
+                { key: "parents", label: "Parents" },
+                { key: "scores", label: "Scores" },
+                { key: "attendance", label: "Attendance" },
+                { key: "feeLedger", label: "Fee Ledger" },
+                { key: "feePayments", label: "Fee Payments" },
+                { key: "feeStructures", label: "Fee Structures" },
+                { key: "timetable", label: "Timetable" },
+              ].map(({ key, label }) => (
+                <a
+                  key={key}
+                  href={`/api/admin/export?format=individual&dataset=${key}`}
+                  className="flex items-center gap-2 rounded-lg border border-navy-100 bg-navy-50/50 px-3 py-2 text-xs font-medium text-navy-600 transition hover:bg-navy-100 hover:text-navy-800"
+                >
+                  <Download className="h-3 w-3" />
+                  {label}
+                </a>
+              ))}
+            </div>
+          </div>
+
+          <p className="text-xs text-navy-400">
+            Exports include all data for the current academic session. CSV files can be opened in Excel or Google Sheets.
+          </p>
+        </div>
+      </div>
     </>
   );
 }

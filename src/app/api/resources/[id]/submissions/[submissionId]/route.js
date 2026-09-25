@@ -1,4 +1,6 @@
-import { NextResponse } from "next/server";
+// `next/server.js` (not `next/server`): same alias rule as lib/auth.js —
+// plain `node --test` resolves only the explicit extension.
+import { NextResponse } from "next/server.js";
 import { store } from "@/lib/store";
 import { isDenied, requirePermission, requireClassScope } from "@/lib/policy";
 

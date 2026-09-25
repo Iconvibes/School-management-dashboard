@@ -3,10 +3,10 @@
 This guide is written for **you** — so you can find, understand, and safely edit anything in this codebase yourself. It maps every folder, explains the patterns the app uses, and gives you a "how do I change X?" cookbook for the most common edits.
 
 > **Golden rules before you edit anything:**
-> 1. **Primarily JavaScript** — files are `.js` / `.jsx`. TypeScript is available (`tsconfig.json`) and new library modules in `src/lib/` should be written as `.ts` with full type annotations (see `grading.ts`, `ranking.ts` for the pattern).
+> 1. **Primarily JavaScript** — files are `.js` / `.jsx`. TypeScript is available (`tsconfig.json`) and new library modules in `src/lib/` should be written as `.ts` with full type annotations (see `grading.ts`, `ranking.ts`, and now `policy.ts` / `auth.ts` / `token.ts` / `tenant-scope.ts` / `permissions.ts`). All JSX-rendering files are named `.jsx`; pure logic stays `.js`. Import migrated modules extensionlessly (`@/lib/policy`) — explicit `.js` imports of renamed files break.
 > 2. **The two stores must stay identical.** The app has TWO data layers (`demo-store.js` and `mongo-store.js`) with the *exact same function names and signatures*. If you change a function in one, change it in the other — or you'll get confusing "works in demo but not with a real database" bugs.
 > 3. **Roles are UPPERCASE** — `SUPER_ADMIN`, `TEACHER`, `STUDENT`, `PARENT`. The API normalizes input but always stores/compares uppercase.
-> 4. **Every query is scoped by `schoolId`** — multi-tenant isolation is the product's #1 promise. Never write a query that ignores it. In Mongo mode this is now ENFORCED: `src/lib/tenant-scope.js` (applied globally from `src/lib/db.js`) makes any unscoped query on a tenant model throw; by-_id / site-wide reads must call `bypassTenantScope(query)`.
+> 4. **Every query is scoped by `schoolId`** — multi-tenant isolation is the product's #1 promise. Never write a query that ignores it. In Mongo mode this is now ENFORCED: `src/lib/tenant-scope.ts` (applied globally from `src/lib/db.js`) makes any unscoped query on a tenant model throw; by-_id / site-wide reads must call `bypassTenantScope(query)`. Route-level coverage is pinned by `tests/tenant-isolation.test.js` (cross-school negatives) and `tests/tenant-scope.test.js` (plugin mechanics, needs MONGODB_URI).
 > 5. Run `npm run build` and `npm run lint` after changes (see [Validation](#-validation) at the end).
 > 6. **Security headers live in `src/proxy.js`** — a per-request nonce CSP in production (no `'unsafe-inline'` in `script-src`), stamped on every response AND forwarded on the request so Next 16 can nonce its inline flight scripts. The root layout (`src/app/layout.js`) forces dynamic rendering — that's required for per-request nonces. Don't add a CSP in `next.config.mjs`; the proxy is the single source.
 
@@ -97,6 +97,7 @@ Every API route does `import { store } from "@/lib/store"` and calls functions o
 
 ### `mongo-store.js` — the real database
 - Same function names/signatures as `demo-store.js`, but uses Mongoose models.
+- **Structure (split September 2026):** `mongo-store.js` itself is now a ~26-line re-export hub; the implementations live in 17 domain modules under `src/lib/mongo/` (schools, users, scores, fees, attendance, timetable, leads, billing, platform, notifications, teaching, alumni, push, analytics, messages, compliance, auth-tokens) plus `shared.js` (model imports, the `ready()` connection gate, `safe()`, field-crypto helpers). Add new store functions to the relevant domain module — never to the hub. Cross-domain calls are explicit imports (e.g. `notifications.js` imports `findUserById` from `schools.js`). The split mapping is reproducible via `scripts/split-mongo-store.py`.
 - Passwords hashed with bcrypt; `User.toJSON` strips the hash (see `src/models/User.js`).
 
 ### The function contract (both stores, 27 functions each)
@@ -120,11 +121,11 @@ Every API route does `import { store } from "@/lib/store"` and calls functions o
 - `src/instrumentation.js` — Next 16 boot hook: requires `REDIS_URL` + `DATA_ENC_KEY` in production (fail-fast), gates the background jobs (conflict scanner, deletion sweeper) behind `RUN_JOBS !== "none"`, and wires graceful shutdown.
 - `src/lib/shutdown.js` — the SIGTERM cleanup (`wireShutdown()`), in its OWN module on purpose: Next's dev Edge-compatibility check on `instrumentation.js` would warn on a bare `process.on` there (it flooded the dev log under load — 83k lines). instrumentation imports this only in its Node branch, so the Edge bundle never sees it.
 
-### `auth.js` — JWT sessions
+### `auth.ts` + `token.ts` — JWT sessions (both migrated to TypeScript)
 - Cookie: `edutrack_token` (httpOnly, 7-day expiry).
 - `getSession()` — read + verify the cookie (use in every API route / server component).
 - `signToken` / `verifyToken` / `setAuthCookie` / `clearAuthCookie` / `jsonError(message, status)`.
-- The JWT payload contains: `userId`, `schoolId`, `role`, `name`, `email`.
+- The JWT payload is the typed `SessionClaims` (in `token.ts`): `userId`, `role`, `schoolId`, `tokenVersion` (+ impersonation fields when present). Note it does **not** carry a `user` object — routes that need the actor's identity load it via `store.findUserById(session.userId)`.
 - **`jsonError()` is the standard error helper** — every route returns `jsonError("message", 400)` etc.
 
 ### `grading.ts` — business rules (edit these to change grading)
@@ -359,11 +360,11 @@ Every route: (1) reads the session, (2) rejects unauthenticated with 401, (3) ch
 - `onboarding/page.js` → pick class arms, session, term, brand color → PATCH `/api/school` → redirect to `/admin/dashboard`.
 - The dashboard's class-arm dropdowns all read `session.school.activeArms` — **configure arms here first**, or teachers/admins have nothing to select.
 
-### Admin dashboard — `src/app/admin/dashboard/page.js` (thin layout shell, ~998 lines)
-A thin layout shell: state declarations → data-fetch effects → `useAdminActions()` call → role gates → JSX. All 30+ action functions extracted to `useAdminActions.js` (1,302 lines).
+### Admin dashboard — `src/app/admin/dashboard/page.jsx` (thin layout shell, ~998 lines)
+A thin layout shell: state declarations → data-fetch effects → `useAdminActions()` call → role gates → JSX. The actions are further split by domain: `src/components/admin/useAdminActions.js` (~735 lines) orchestrates and delegates to `useFeeActions.js` (fee/reminder/reconcile) and `useTimetableActions.js` (timetable/bell/rollover + derived values).
 - Fetches: `/api/auth/me`, `/api/admin/stats`, `/api/users`, `/api/fees`, `/api/reports`.
 - 19 tabs with URL hash routing (`#fees`, `#timetable`, etc.).
-- **State lives in page.js; actions live in `src/components/admin/useAdminActions.js`.** Tab components consume state via `useAdminShell()` context.
+- **State lives in page.jsx; actions live in `src/components/admin/useAdminActions.js` + the `useFeeActions`/`useTimetableActions` sub-hooks.** Tab components consume state via `useAdminShell()` context.
 - **12 modals** extracted to `src/components/admin/modals/`, each wrapped in `<ErrorBoundary>`.
 - 
 
@@ -596,7 +597,7 @@ The app is a **Progressive Web App** — installable on Android (Chrome) and Win
 → Edit `DEFAULT_SUBJECTS` in `src/lib/grading.ts`, or set `EDUTRACK_SUBJECTS=Maths,English,...` in `.env.local` (comma-separated).
 
 **Add a field to students** (e.g. "Date of birth")
-→ 1) `src/models/User.js` (Mongo schema), 2) `src/lib/demo-store.js` seed + `createUser`, 3) `src/lib/mongo-store.js` `createUser`/queries, 4) the create/edit modal in `admin/dashboard/page.js`, 5) anywhere the field is displayed.
+→ 1) `src/models/User.js` (Mongo schema), 2) `src/lib/demo-store.js` seed + `createUser`, 3) `src/lib/mongo/users.js` `createUser`/queries, 4) the create/edit modal in `admin/dashboard/page.jsx`, 5) anywhere the field is displayed.
 
 **Change a school's branding color / logo**
 → In the admin dashboard's Overview tab (or onboarding). Stored on the School record (`brandColor`); the report card and dashboards read it via `session.school.brandColor`. Default blue is `#2563EB`.

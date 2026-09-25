@@ -48,6 +48,8 @@ export const healthMetrics = [];
 export const impersonationSessions = [];
 export const webhookConfigs = [];
 export const webhookDeliveries = [];
+export const passwordResetTokens = [];
+export const emailVerificationTokens = [];
 
 export let receiptSeq = 1000;
 export const incrementReceiptSeq = () => ++receiptSeq;
@@ -89,5 +91,5 @@ export const ALL_ARRAYS = [
   reminderBatches, schemesOfWork, classResources, alumniRecords,
   pushSubscriptions, messages, notificationPreferences,
   erasureRequests, dataAccessLog, assignmentSubmissions, platformAlerts, auditLogs, healthMetrics,
-  impersonationSessions, webhookConfigs, webhookDeliveries,
+  impersonationSessions, webhookConfigs, webhookDeliveries, passwordResetTokens, emailVerificationTokens,
 ];

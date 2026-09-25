@@ -25,9 +25,15 @@ const schoolSchema = new mongoose.Schema(
     // logins, reactivatable). "deleted" is the 30-day grace state after the
     // admin deletes the school: data is kept and recoverable via restore
     // until deletedAt + SCHOOL_DELETION_GRACE_MS, when the sweeper purges it.
-    status: { type: String, enum: ["active", "frozen", "deleted"], default: "active" },
+    status: { type: String, enum: ["active", "frozen", "deleted", "pending_approval", "rejected"], default: "pending_approval" },
     // When the school was deleted — the start of the recovery grace period.
     deletedAt: { type: Date, default: undefined },
+    // Approval/rejection tracking for new school registrations
+    approvedAt: { type: Date, default: undefined },
+    approvedBy: { type: String, default: "" },
+    rejectedAt: { type: Date, default: undefined },
+    rejectedBy: { type: String, default: "" },
+    rejectionReason: { type: String, default: "" },
     activeArms: { type: [String], default: [] },
     currentSession: { type: String, default: "2025/2026" },
     currentTerm: { type: String, default: "First Term" },
@@ -47,6 +53,8 @@ const schoolSchema = new mongoose.Schema(
     // onboarding steps (classes, session/term, branding). Once true, visiting
     // /onboarding sends them straight to the admin dashboard instead.
     onboardingComplete: { type: Boolean, default: false },
+    emailVerified: { type: Boolean, default: false },
+    emailVerifiedAt: { type: Date, default: undefined },
     // Per-school fee-reminder wording: { parent, student } templates with
     // {name}/{student}/{class}/{balance}/{school} placeholders. Blank = the
     // built-in copy (see src/lib/notifications.js). Set via

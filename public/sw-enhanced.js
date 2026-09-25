@@ -95,6 +95,18 @@ const PRE_CACHE_ALLOWLIST = [
 self.addEventListener("message", (event) => {
   const { type, urls } = event.data || {};
 
+  // Dev-mode cache busting — client sends this when it detects a waiting SW.
+  // The new SW activates immediately and clears stale caches so fresh JS is served.
+  if (type === "SKIP_WAITING") {
+    // Clear all caches to force fresh asset loading
+    caches.keys().then((keys) => {
+      Promise.all(keys.map((key) => caches.delete(key))).then(() => {
+        self.skipWaiting();
+      });
+    });
+    return;
+  }
+
   if (type === "PRE_CACHE_URLS" && Array.isArray(urls) && urls.length > 0) {
     // Only cache URLs that are in the allowlist
     const safeUrls = urls.filter((url) => PRE_CACHE_ALLOWLIST.includes(url));

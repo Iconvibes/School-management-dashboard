@@ -165,6 +165,23 @@ async function verifyLogin(store, data) {
 
   // Frozen or deleted school check
   const schoolRec = await store.getSchoolById(user.schoolId);
+  // Pending approval — ALL school users get redirected to waiting page
+  if (schoolRec?.status === "pending_approval") {
+    return {
+      ok: false,
+      status: 403,
+      error: "pending_approval",
+      pendingApproval: true,
+    };
+  }
+  if (schoolRec?.status === "rejected") {
+    return {
+      ok: false,
+      status: 403,
+      error: "rejected",
+      rejected: true,
+    };
+  }
   if (schoolRec?.status === "frozen" && user.role !== "SUPER_ADMIN") {
     return {
       ok: false,

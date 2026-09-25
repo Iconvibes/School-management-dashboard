@@ -1248,6 +1248,8 @@ export {
   purgeSchool,
   purgeExpiredDeletedSchools,
   setSchoolStatus,
+  approveSchool,
+  rejectSchool,
   getDashboardStats,
   createLead,
   listLeads,
@@ -1432,3 +1434,13 @@ import {
   restoreWebhookState,
   getWebhookSnapshot,
 } from "@/modules/platform/webhooks";
+
+// ── Auth tokens module (password reset + email verification) ─────────
+export {
+  createPasswordResetToken,
+  findPasswordResetToken,
+  consumePasswordResetToken,
+  createEmailVerificationToken,
+  findEmailVerificationToken,
+  consumeEmailVerificationToken,
+} from "@/modules/auth-tokens/store";

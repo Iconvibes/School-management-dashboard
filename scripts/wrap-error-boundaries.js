@@ -1,7 +1,7 @@
 const fs = require("fs");
 
 // === TEACHER DASHBOARD ===
-let t = fs.readFileSync("src/app/teacher/dashboard/page.js", "utf8");
+let t = fs.readFileSync("src/app/teacher/dashboard/page.jsx", "utf8");
 
 // Add ErrorBoundary import
 if (!t.includes('import ErrorBoundary')) {
@@ -105,12 +105,12 @@ t = t.replace(
   '$1<ErrorBoundary label="Grading Matrix">\n'
 );
 
-fs.writeFileSync("src/app/teacher/dashboard/page.js", t);
+fs.writeFileSync("src/app/teacher/dashboard/page.jsx", t);
 const teacherCount = (t.match(/ErrorBoundary/g) || []).length;
 console.log(`Teacher dashboard: ${teacherCount} ErrorBoundary refs`);
 
 // === STUDENT DASHBOARD ===
-let s = fs.readFileSync("src/app/student/dashboard/page.js", "utf8");
+let s = fs.readFileSync("src/app/student/dashboard/page.jsx", "utf8");
 
 // Add import
 if (!s.includes('import ErrorBoundary')) {
@@ -160,12 +160,12 @@ s = s.replace(
   '$1<ErrorBoundary label="Resources">\n'
 );
 
-fs.writeFileSync("src/app/student/dashboard/page.js", s);
+fs.writeFileSync("src/app/student/dashboard/page.jsx", s);
 const studentCount = (s.match(/ErrorBoundary/g) || []).length;
 console.log(`Student dashboard: ${studentCount} ErrorBoundary refs`);
 
 // === PARENT DASHBOARD ===
-let p = fs.readFileSync("src/app/parent/dashboard/page.js", "utf8");
+let p = fs.readFileSync("src/app/parent/dashboard/page.jsx", "utf8");
 
 // Add import
 if (!p.includes('import ErrorBoundary')) {
@@ -206,6 +206,6 @@ p = p.replace(
   '$1\n</ErrorBoundary>'
 );
 
-fs.writeFileSync("src/app/parent/dashboard/page.js", p);
+fs.writeFileSync("src/app/parent/dashboard/page.jsx", p);
 const parentCount = (p.match(/ErrorBoundary/g) || []).length;
 console.log(`Parent dashboard: ${parentCount} ErrorBoundary refs`);

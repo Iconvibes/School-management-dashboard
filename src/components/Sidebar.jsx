@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect } from "react";
 import Link from "next/link";
 import { useRouter, usePathname } from "next/navigation";
 import {
@@ -28,11 +29,22 @@ import {
 import Logo from "@/components/Logo";
 import NotificationsBell from "@/components/NotificationsBell";
 import { can } from "@/lib/permissions";
+import useSwipeToClose from "@/hooks/useSwipeToClose";
 
 export default function Sidebar({ role, open, onClose, activeTab, activePath }) {
   const router = useRouter();
   const pathname = usePathname();
   const currentPath = activePath || pathname || "";
+  const swipeHandlers = useSwipeToClose(onClose);
+
+  // Escape key closes the sidebar on mobile
+  useEffect(() => {
+    function onKeyDown(e) {
+      if (e.key === "Escape" && open) onClose();
+    }
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [open, onClose]);
 
   // The admin-console navigation is permission-driven — ROLE_PERMISSIONS is
   // the single source of truth, so the menu can never drift from what the
@@ -133,6 +145,7 @@ export default function Sidebar({ role, open, onClose, activeTab, activePath }) 
         />
       )}
       <aside
+        {...swipeHandlers}
         className={`fixed inset-y-0 left-0 z-50 flex w-64 flex-col bg-navy-900 text-navy-100 transition-transform duration-300 lg:translate-x-0 ${
           open ? "translate-x-0" : "-translate-x-full"
         }`}

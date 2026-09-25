@@ -1,11 +1,10 @@
 # Project Guidelines: Edutrack SaaS
 
 ## Tech Stack Rules
-- **Framework:** Next.js (App Router) using standard JavaScript (.js / .jsx).
-- **STRICT RULE:** NO TypeScript. Do NOT create .ts or .tsx files. Use pure React/JavaScript.
+- **Framework:** Next.js (App Router). JavaScript with a **gradual TypeScript migration** in `src/lib/` — the security-critical modules (`token.ts`, `auth.ts`, `tenant-scope.ts`, `policy.ts`, `permissions.ts`) plus `grading.ts`/`ranking.ts` are `.ts`. New `src/lib/` modules should be written as `.ts`; route/component code stays `.js`/`.jsx`. Import migrated modules extensionlessly (`@/lib/policy`) — explicit `.js` imports of renamed files break. Tests need `--import ./tests/register-aliases.js`.
 - **Styling:** Tailwind CSS with Lucide React for icons.
 - **Database:** MongoDB via Mongoose.
-- **Authentication:** JWT stored in HTTP-only cookies or localStorage.
+- **Authentication:** JWT stored in HTTP-only cookies (not localStorage — the cookie is the only session store).
 
 ## Design Tokens (Tailwind)
 - Primary Navy: `#1E293B` (e.g., bg-slate-800)

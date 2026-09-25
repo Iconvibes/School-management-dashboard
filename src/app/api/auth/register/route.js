@@ -78,7 +78,7 @@ export async function POST(request) {
       type: "school_signup",
       severity: "info",
       title: `New school registered: ${schoolName}`,
-      message: `${adminName} (${email}) registered ${schoolName} on the platform. They start a 14-day free trial.`,
+      message: `${adminName} (${email}) registered ${schoolName} on the platform. Pending platform approval before they can access the dashboard.`,
       meta: { adminName, email, plan: "trial" },
     });
   } catch {
@@ -88,10 +88,26 @@ export async function POST(request) {
   // Never leak the password hash back to the client
   const { password: _pw, ...safeUser } = user;
 
-  // The founding SUPER_ADMIN gets their session right away — the register
-  // page sends them straight to the /onboarding first-run wizard.
+  // Send verification email
+  try {
+    const { createEmailVerificationToken } = await import("@/lib/password-reset");
+    const { sendVerificationEmail } = await import("@/lib/password-reset");
+    await sendVerificationEmail({
+      userId: user.id,
+      schoolId: school.id,
+      email,
+      adminName,
+      schoolName,
+    });
+  } catch (err) {
+    // Email failure is non-fatal — account is still created
+    console.error("Failed to send verification email:", err);
+  }
+
+  // The founding SUPER_ADMIN gets their session right away but the school
+  // must be approved by platform admin before they can access the dashboard.
   const res = NextResponse.json(
-    { success: true, user: safeUser, school, redirect: "/onboarding" },
+    { success: true, user: safeUser, school, redirect: "/pending-approval", pendingApproval: true },
     { status: 201 }
   );
   // New accounts start at tokenVersion 0 (schema default / demo normalize).

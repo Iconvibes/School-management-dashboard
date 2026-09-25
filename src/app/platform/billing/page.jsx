@@ -92,7 +92,7 @@ export default function BillingPage() {
             <CreditCard className="h-4 w-4 text-zinc-600" />
           </div>
           <div className="mt-3">
-            <p className="metric-value">{"\u20A6"}{(totals.totalMRR || 0).toLocaleString()}</p>
+            <p className="platform-metric-value">{"\u20A6"}{(totals.totalMRR || 0).toLocaleString()}</p>
             <p className="mt-1 text-xs text-zinc-500">Monthly Recurring Revenue</p>
           </div>
         </div>
@@ -103,7 +103,7 @@ export default function BillingPage() {
             <TrendingUp className="h-4 w-4 text-zinc-600" />
           </div>
           <div className="mt-3">
-            <p className="metric-value">{"\u20A6"}{(totals.totalARR || 0).toLocaleString()}</p>
+            <p className="platform-metric-value">{"\u20A6"}{(totals.totalARR || 0).toLocaleString()}</p>
             <p className="mt-1 text-xs text-zinc-500">Annual Recurring Revenue</p>
           </div>
         </div>
@@ -114,7 +114,7 @@ export default function BillingPage() {
             <CheckCircle2 className="h-4 w-4 text-emerald-500/60" />
           </div>
           <div className="mt-3">
-            <p className="metric-value">{totals.activeSubscriptions || 0}</p>
+            <p className="platform-metric-value">{totals.activeSubscriptions || 0}</p>
             <p className="mt-1 text-xs text-zinc-500">Paying subscribers</p>
           </div>
         </div>
@@ -125,7 +125,7 @@ export default function BillingPage() {
             <Clock className="h-4 w-4 text-amber-500/60" />
           </div>
           <div className="mt-3">
-            <p className="metric-value">{totals.trialSchools || 0}</p>
+            <p className="platform-metric-value">{totals.trialSchools || 0}</p>
             <p className="mt-1 text-xs text-zinc-500">Schools on free trial</p>
           </div>
         </div>

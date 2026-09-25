@@ -2,7 +2,7 @@ import { store } from "@/lib/store";
 import { isDenied, requirePermission } from "@/lib/policy";
 import { setAuthCookie } from "@/lib/auth";
 import { IMPERSONATION_TIMEOUT_MS } from "@/lib/token";
-import { NextResponse } from "next/server";
+import { NextResponse } from "next/server.js";
 import { createPlatformAlert, createImpersonationSession } from "@/modules/platform/store";
 
 /**
@@ -49,12 +49,17 @@ export async function POST(req, { params }) {
   const schoolName = school?.name || id;
 
   // Log the impersonation event
-  const actorName = session.user?.name || session.user?.email || "Platform Admin";
+  // JWTs carry only {userId, role, schoolId, tokenVersion} — there is no
+  // `user` object on the session, so the actor's identity MUST be loaded
+  // from the store here. Falling back to a literal "Platform Admin" would
+  // make the audit trail unable to say WHICH platform admin impersonated.
+  const actor = await store.findUserById(session.userId);
+  const actorName = actor?.name || actor?.email || "Platform Admin";
   const ip = req.headers.get("x-forwarded-for") || req.headers.get("x-real-ip") || null;
   
   // Create a session record for detailed audit trail tracking
   const impersonationSessionId = createImpersonationSession({
-    impersonatorId: session.user?.id,
+    impersonatorId: session.userId,
     impersonatorName: actorName,
     schoolId: id,
     schoolName,
@@ -72,7 +77,7 @@ export async function POST(req, { params }) {
     description: `Impersonated ${targetUser.name} (${targetUser.role}) at ${schoolName} for support/troubleshooting`,
     meta: {
       sessionId: impersonationSessionId,
-      impersonatorId: session.user?.id,
+      impersonatorId: session.userId,
       impersonatorName: actorName,
       targetUserId: targetUser.id,
       targetUserName: targetUser.name,
@@ -111,8 +116,8 @@ export async function POST(req, { params }) {
     tokenVersion: authUser.tokenVersion || 0,
     // Impersonation tracking — used by policy.js to enforce timeout
     impersonatedAt: Date.now(),
-    impersonatorId: session.user?.id || null,
-    impersonatorName: session.user?.name || "Platform Admin",
+    impersonatorId: session.userId || null,
+    impersonatorName: actorName,
     impersonationSessionId: impersonationSessionId,
   });
 

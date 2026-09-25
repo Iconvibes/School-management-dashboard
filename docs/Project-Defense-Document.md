@@ -68,7 +68,7 @@ Store layer (src/lib/store.js — one seam)
 ## 2. Problems Encountered & How I Solved Them
 
 **Problem: School A could accidentally see School B's data.**
-*Solution:* I made multi-tenant isolation a *data-layer* rule, not a UI rule. Every document is scoped by `schoolId`, and every API route enforces it server-side through a central authorization policy (`src/lib/policy.js`). Dedicated tests prove one tenant can never read or write another's rows.
+*Solution:* I made multi-tenant isolation a *data-layer* rule, not a UI rule. Every document is scoped by `schoolId`, and every API route enforces it server-side through a central authorization policy (`src/lib/policy.ts`). Dedicated tests prove one tenant can never read or write another's rows.
 
 **Problem: Password hashing blocked the whole app.**
 *Solution:* bcryptjs is pure JavaScript, so a cost-10 compare locks the single Node thread for ~60–100 ms — roughly 10–16 logins/s per instance, the #1 crash risk at 08:00. I swapped to the native `bcrypt` binding (same call signatures, cost 10 unchanged): compares now run on libuv worker threads off the main thread, lifting login throughput per instance several-fold without lowering security. The demo store still hashes at cost 4 (documented) so demo imports stay snappy.
@@ -97,7 +97,7 @@ Store layer (src/lib/store.js — one seam)
 
 ### Authentication & Roles (the front door)
 - **What it does:** Six portal types sign in (admins and students by email, parents and teachers by full name). A central permission matrix decides who may do what, and every API call is re-checked server-side.
-- **Files:** `src/lib/token.js`, `src/lib/auth.js`, `src/lib/policy.js`, `src/lib/permissions.js`, `src/app/api/auth/*`
+- **Files:** `src/lib/token.ts`, `src/lib/auth.ts`, `src/lib/policy.ts`, `src/lib/permissions.ts`, `src/app/api/auth/*`
 - **Plain English:** When you log in, the server checks the credentials against the school's users, then hands your browser a signed cookie that says "this is who you are." Every request after that re-verifies the cookie and re-checks your role against the permission matrix — so even if someone guesses a URL, the server refuses anything your role can't do.
 
 ### Report Cards (the headline feature)
@@ -156,7 +156,7 @@ Store layer (src/lib/store.js — one seam)
 
 ## 5. Code Walkthrough — Three Most Important Files
 
-### 1) `src/lib/token.js` + `src/lib/auth.js` — "How a login becomes a session"
+### 1) `src/lib/token.ts` + `src/lib/auth.ts` — "How a login becomes a session"
 This pair signs and verifies the session cookie. `signToken` wraps the user's id, role and school id into a JWT signed with the server secret, and the cookie is set httpOnly (the browser can't read it via JavaScript — that's an XSS defense). On every request, `getSession` reads the cookie and `verifyToken` checks the signature and expiry. The clever part: because the token is self-contained and signed, **any server in a fleet can verify it without talking to any other server** — that's the entire horizontal-scaling story in one cookie.
 
 ### 2) `src/lib/store.js` — "One door to the data"
@@ -170,8 +170,8 @@ This route moves the whole school to a new term. It archives scores and attendan
 ## 6. Potential Interview Questions + Answers
 
 1. **How did you handle authentication?** JWT in an httpOnly cookie, signed server-side. Every request re-validates the token against a lean user snapshot so password changes and role demotions take effect immediately, via a `tokenVersion` counter.
-2. **How do you handle authorization?** A central permission matrix (`src/lib/permissions.js`) maps every role to the actions it may perform; every API route calls `requirePermission` and is re-checked server-side — the UI menu and the API can't drift.
-3. **How do you stop School A seeing School B's data?** Every document carries `schoolId`, every query is school-scoped, and there are dedicated isolation tests proving one tenant can't touch another's rows. Beyond the convention, a fail-closed Mongoose plugin (applied to every tenant model) throws if any query ever runs without a `schoolId` filter — forgetting to scope is a crash in staging, not a leak in production. The few legitimately by-_id lookups go through an explicit `bypassTenantScope()` escape hatch.
+2. **How do you handle authorization?** A central permission matrix (`src/lib/permissions.ts`) maps every role to the actions it may perform; every API route calls `requirePermission` and is re-checked server-side — the UI menu and the API can't drift.
+3. **How do you stop School A seeing School B's data?** Every document carries `schoolId`, every query is school-scoped, and there are dedicated isolation tests proving one tenant can't touch another's rows. Beyond the convention, a fail-closed Mongoose plugin (applied to every tenant model) throws if any query ever runs without a `schoolId` filter — forgetting to scope is a crash in staging, not a leak in production. The few legitimately by-_id lookups go through an explicit `bypassTenantScope()` escape hatch. Cross-school negative cases (school A's admin/teacher/parent addressing school B's records by id → 403/404) are pinned in `tests/tenant-isolation.test.js`.
 4. **How do you deploy?** `next build` + `next start` (Docker standalone image), with `npm run ensure-indexes` run against Mongo before each deploy. Demo mode runs with no `MONGODB_URI`.
 5. **What would you scale first?** The login path — and the big three are already shipped: native `bcrypt` (compares off the main thread), Redis-backed rate limits (shared budgets across instances), and Redis caching of the auth snapshot (60s, tokenVersion-aware) and dashboard stats (45s). The day-one hardening batch is shipped too: a 1-hour account lockout after 10 failed logins (checked before bcrypt, so locked accounts cost nothing), per-school rate buckets, a fail-closed tenant-scope plugin, security headers on every response (production CSP is strict — per-request nonces, no `'unsafe-inline'` in script-src), zod validation on every body-accepting route, Cloudflare Turnstile bot protection, and `/api/health/db` for orchestrators. Next: a login queue for the worst case, then a load test against the real Mongo tier.
 6. **Why MongoDB and not Postgres?** Document-shaped data, tenant-scoped isolation as a first-class pattern, horizontal scaling. Honest trade-off: I'd reach for Postgres if the app were deeply relational.

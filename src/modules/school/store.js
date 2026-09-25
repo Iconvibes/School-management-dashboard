@@ -61,7 +61,7 @@ export async function createSchoolAndAdmin({ schoolName, adminName, email, passw
     brandColor: "#2563EB",
     notificationRetentionDays: 90,
     reconcileDeletedReminders: false,
-    status: "active",
+    status: "pending_approval",
     activeArms: [],
     currentSession: "2025/2026",
     currentTerm: "First Term",
@@ -409,8 +409,38 @@ export async function purgeExpiredDeletedSchools({ now = Date.now(), graceMs = S
 export async function setSchoolStatus(schoolId, status) {
   const school = schools.find((s) => s.id === schoolId);
   if (!school) return null;
-  school.status = status === "frozen" ? "frozen" : "active";
+  // Allow all valid status transitions
+  const validStatuses = ["active", "frozen", "pending_approval", "rejected"];
+  school.status = validStatuses.includes(status) ? status : "active";
   if (school.status === "active") school.deletedAt = null;
+  if (school.status === "active" || school.status === "rejected") school.approvedAt = new Date().toISOString();
+  persist();
+  return clone(school);
+}
+
+/**
+ * Approve a pending school — sets status to active and records approval time.
+ */
+export async function approveSchool(schoolId, approvedBy) {
+  const school = schools.find((s) => s.id === schoolId);
+  if (!school || school.status !== "pending_approval") return null;
+  school.status = "active";
+  school.approvedAt = new Date().toISOString();
+  school.approvedBy = approvedBy || "platform";
+  persist();
+  return clone(school);
+}
+
+/**
+ * Reject a pending school — sets status to rejected with a reason.
+ */
+export async function rejectSchool(schoolId, reason, rejectedBy) {
+  const school = schools.find((s) => s.id === schoolId);
+  if (!school || school.status !== "pending_approval") return null;
+  school.status = "rejected";
+  school.rejectionReason = reason || "";
+  school.rejectedAt = new Date().toISOString();
+  school.rejectedBy = rejectedBy || "platform";
   persist();
   return clone(school);
 }

@@ -1,10 +1,11 @@
-// Token sign/verify, the cookie name and expiry live in ./token.js (pure, no
+// Token sign/verify, the cookie name and expiry live in ./token (pure, no
 // Next imports) so the page-route proxy shares one source of truth.
 import {
   COOKIE_NAME,
   MAX_AGE,
   signToken,
   verifyToken,
+  type SessionClaims,
 } from "@/lib/token";
 // `next/headers.js` (not `next/headers`): Next aliases the extensionless form
 // internally, but plain `node --test` resolves this file's imports too, so the
@@ -16,9 +17,10 @@ import { cookies } from "next/headers.js";
 import { NextResponse } from "next/server.js";
 
 export { COOKIE_NAME, signToken, verifyToken };
+export type { SessionClaims };
 
 /** Read and verify the session cookie in a Route Handler / Server Component. */
-export async function getSession() {
+export async function getSession(): Promise<SessionClaims | null> {
   const store = await cookies();
   const token = store.get(COOKIE_NAME)?.value;
   if (!token) return null;
@@ -26,7 +28,7 @@ export async function getSession() {
 }
 
 /** Attach the JWT as an HTTP-only cookie to a NextResponse. */
-export function setAuthCookie(res, payload) {
+export function setAuthCookie(res: NextResponse, payload: SessionClaims): NextResponse {
   res.cookies.set(COOKIE_NAME, signToken(payload), {
     httpOnly: true,
     sameSite: "lax",
@@ -37,7 +39,7 @@ export function setAuthCookie(res, payload) {
   return res;
 }
 
-export function clearAuthCookie(res) {
+export function clearAuthCookie(res: NextResponse): NextResponse {
   res.cookies.set(COOKIE_NAME, "", {
     httpOnly: true,
     sameSite: "lax",
@@ -47,7 +49,11 @@ export function clearAuthCookie(res) {
   return res;
 }
 
-export function jsonError(message, status = 400, extra = {}) {
+export function jsonError(
+  message: string,
+  status: number = 400,
+  extra: Record<string, unknown> = {}
+): NextResponse {
   // NextResponse (not Response): some callers pass the result to
   // setAuthCookie/clearAuthCookie, which need res.cookies.
   return NextResponse.json({ error: message, ...extra }, { status });

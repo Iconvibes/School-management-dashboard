@@ -21,5 +21,6 @@ export async function GET() {
     currentPeriodEnd: school.currentPeriodEnd || null,
     trialStart: school.trialStart || null,
     trialEnd: school.trialEnd || null,
+    emailVerified: school.emailVerified === true,
   });
 }

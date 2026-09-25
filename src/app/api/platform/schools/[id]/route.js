@@ -83,7 +83,7 @@ export async function GET(req, { params }) {
 
 /**
  * DELETE /api/platform/schools/[id]
- * Delete a school — platform admin only.
+ * Delete a school â€” platform admin only.
  *
  * Body: { action?: "soft" | "purge" }
  *   - "soft" (default): marks the school deleted with a 30-day recovery window

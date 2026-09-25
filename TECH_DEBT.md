@@ -42,25 +42,25 @@ implement.
 aliases. TypeScript is now available (`tsconfig.json`, `typescript` in devDeps).
 
 **Why:** Faster prototyping. The team moves faster without a build-step type
-system, and JSDoc annotations on key functions (policy.js, grading.js,
+system, and JSDoc annotations on key functions (policy.ts, grading.ts,
 permissions.js) provide the most important type documentation.
 
-**Progress (August 2026):**
+**Progress (September 2026):**
 - `src/lib/grading.js` → `grading.ts` — full type annotations, 128 lines
 - `src/lib/ranking.js` → `ranking.ts` — 5 interfaces + 4 typed functions, 93 lines
 - `tests/register-aliases.js` handles `.js` → `.ts` remapping for test suite
-- `src/lib/permissions.js` → `permissions.ts` — 3 typed interfaces + 10 typed functions, 378 lines
+- `src/lib/permissions.js` → `permissions.ts` — 3 typed interfaces + 10 typed functions, 378 lines *(note: an earlier entry here claimed this was done in August 2026 — it was not; completed September 2026)*
+- **Security-critical core migrated (September 2026):** `token.ts` (SessionClaims interface + ambient jsonwebtoken declaration in `src/types/`), `auth.ts`, `tenant-scope.ts`, `policy.ts` (Session/AuthSnapshot interfaces). All API routes import these extensionlessly (`@/lib/policy`) — explicit `.js` imports of renamed files break; use extensionless.
+- **JSX hygiene (September 2026):** all 126 JSX-rendering `.js` files under `src/app`/`src/components` renamed to `.jsx` (pure logic stays `.js`); route files keep `.js` per convention; tests/scripts that read files by path updated.
 - Build compiles clean with Turbopack
 
 **Cost:**
 - No compile-time catches for prop-drilling mismatches, wrong API shapes, or
   misspelled store function names.
 - The dual-store contract is enforced only by a test, not by a shared type.
-- New contributors can't rely on IDE autocomplete for the full request flow.
+- New contributors can't rely on IDE autocomplete for the full request flow.**When to revisit:** Continue gradual migration of `src/lib/` modules. The grading → ranking import chain is the proof-of-concept; follow the same pattern for `timetable.js`, `permissions.js`, `policy.js`.
 
-**When to revisit:** Continue gradual migration of `src/lib/` modules. The
-grading → ranking import chain is the proof-of-concept; follow the same
-pattern for `timetable.js`, `permissions.js`, `policy.js`.
+**Files:** `src/lib/token.ts`, `auth.ts`, `tenant-scope.ts`, `policy.ts`, `permissions.ts`, `grading.ts`, `ranking.ts`
 
 ---
 
@@ -72,7 +72,7 @@ and is threaded to 19 tab components via React Context.
 **Resolution (August 2026):** The page was broken into:
 - **page.js** (~998 lines) — thin layout shell: state declarations, data-fetch
   effects, `useAdminActions()` call, role gates, and JSX.
-- **useAdminActions.js** (1,302 lines) — all 30+ action functions extracted
+- **useAdminActions.js** (~735 lines after the September 2026 fee/timetable sub-hook split) — all 30+ action functions extracted
   into a custom hook, organized by domain (fee, user CRUD, timetable, bell
   schedule, term rollover).
 - **19 tab components** in `src/components/admin/` — presentational, consuming
@@ -142,6 +142,17 @@ environment. Production ships a clean slate (`SEED_DEMO_SCHOOL` is off by
 default), so this infrastructure exists solely for dev convenience.
 
 **Files:** `src/lib/demo-store.js` (lines 40–160)
+
+---
+
+### 6. Big-file splits (September 2026) — DONE for the four largest
+
+- **`src/lib/mongo-store.js` (2,690 → 26-line hub):** split by model/entity into 17 domain modules under `src/lib/mongo/` (schools, users, scores, fees, attendance, timetable, leads, billing, platform, notifications, teaching, alumni, push, analytics, messages, compliance, auth-tokens) + `shared.js` (models, `ready()`, `safe()`, field-crypto). `mongo-store.js` is a pure `export *` hub, so `@/lib/mongo-store` import paths are unchanged. Cross-domain calls (schools→`getFeeLedger`, notifications→`findUserById`) are explicit imports. Mapping codemod: `scripts/split-mongo-store.py` (anchor-based, idempotent).
+- **`src/lib/demo-store.js` (1,484 → 1,446):** confirmed already a facade over `src/modules/[domain]/store.js`; only the password-reset/email-verification token sections remained inline — extracted to `src/modules/auth-tokens/store.js`.
+- **`src/app/platform/schools/[id]/page.jsx` (1,439 → 998):** SVG charts + SectionCard → `charts.jsx`, format helpers → `format.js` (codemod: `scripts/split-school-detail.py`).
+- **`src/components/admin/useAdminActions.js` (1,326 → 735):** fee/reminder/reconcile actions → `useFeeActions.js`; timetable/bell/rollover actions + derived values → `useTimetableActions.js`. The parent hook's return contract is unchanged, so page.jsx and all 19 tabs/modals are untouched.
+- **`tests/tenant-isolation.test.js` + `tests/security-fixes.test.js` (new):** the tenant-scope suites covered plugin mechanics + same-school scope only; these add the cross-school negatives (school A's admin/teacher/parent reading/writing school B's records by id → 403/404, no silent success, no partial writes) and pin the three security fixes below.
+- **Security fixes from the audit:** `/api/billing/verify` now requires a SUPER_ADMIN session and derives schoolId from it (was unauthenticated + query-param driven); impersonation start loads the real impersonator identity (JWTs carry `userId` only — `session.user` never exists); logout ends the impersonation session record + writes an `impersonation_end` audit entry (sessions were never closed).
 
 ---
 
@@ -223,7 +234,7 @@ separate functions or a `src/lib/timetable-generator.js` module.
 
 19 tab components were extracted from the admin dashboard page. The context
 was expanded to eliminate prop drilling. All 30+ action functions were
-extracted into `useAdminActions.js` (1,302 lines). 12 modals were moved
+extracted into `useAdminActions.js` (~735 lines after the sub-hook split). 12 modals were moved
 to `src/components/admin/modals/`. page.js is now ~998 lines.
 
 **Remaining:** Split into domain-specific contexts or a `useReducer` pattern
@@ -383,7 +394,7 @@ configurable timeout, countdown banner, auto-redirect, full audit logging.
 Known issue: client-side me-gate timing during cookie propagation.
 
 **Files:** `src/app/api/platform/schools/[id]/impersonate/route.js`,
-`src/components/ImpersonationBanner.js`, `src/lib/token.js`
+`src/components/ImpersonationBanner.jsx`, `src/lib/token.ts`
 
 ---
 

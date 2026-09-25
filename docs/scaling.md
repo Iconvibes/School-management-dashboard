@@ -92,7 +92,7 @@ cache stampede, and the login storm — addressed by the infrastructure in §3.
 - `src/lib/demo-store.js` / `mongo-store.js` — `findAuthSnapshot`,
   `getScoresByClassArm`, `getFeeLedger({ studentIds })`, `listUsers` paging +
   `countUsers`.
-- `src/lib/policy.js` — `requireAuth` / `requireClassScope` on the snapshot.
+- `src/lib/policy.ts` — `requireAuth` / `requireClassScope` on the snapshot.
 - Routes — `reports`, `scores/student`, `reports/[studentId]` load arm-scoped
   scores; `parent/children` loads per-arm + per-child data; `users` GET
   supports `?limit`/`?offset` (cap 500) and returns `total`.
@@ -102,7 +102,7 @@ cache stampede, and the login storm — addressed by the infrastructure in §3.
 - **Cache stampede protection** (`src/lib/cache.js`) — `cacheGetOrSet(key, fetchFn, ttl)`
   coalesces concurrent cache misses into a single DB fetch. Jittered TTLs (±15%)
   spread expirations across a ~12s window instead of clustering at one instant.
-- **Coalesced auth snapshots** (`src/lib/policy.js`) — `loadAuthSnapshot` uses
+- **Coalesced auth snapshots** (`src/lib/policy.ts`) — `loadAuthSnapshot` uses
   `cacheGetOrSet` so 1,000 concurrent requests for the same user fire ONE
   Mongo query; the others await its Promise.
 - **SSE notifications** (`src/app/api/sse/notifications/route.js`) — real-time

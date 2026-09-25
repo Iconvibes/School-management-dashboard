@@ -80,7 +80,9 @@ export async function PATCH(req, { params }) {
   }
 
   const ip = req.headers.get("x-forwarded-for") || req.headers.get("x-real-ip") || null;
-  const actorName = session.user?.name || session.user?.email || "Platform Admin";
+  // JWT sessions carry userId only — load the actor's identity from the store.
+  const actor = await store.findUserById(session.userId);
+  const actorName = actor?.name || actor?.email || "Platform Admin";
 
   switch (action) {
     case "activate": {

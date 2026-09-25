@@ -29,10 +29,10 @@
  * `save()` is guarded too: a tenant document created without a schoolId fails
  * validation.
  */
-import mongoose from "mongoose";
+import mongoose, { type Schema, type Model, type HydratedDocument } from "mongoose";
 
 /** Operations whose filter must carry (or be granted) a schoolId. */
-const QUERY_OPS = [
+const QUERY_OPS: readonly string[] = [
   "find",
   "findOne",
   "countDocuments",
@@ -47,7 +47,12 @@ const QUERY_OPS = [
   "deleteMany",
 ];
 
-function violation(modelName, op, detail) {
+/** Options bag Mongoose carries on queries/aggregates — bypass lives here. */
+interface BypassOptions {
+  bypassTenantScope?: boolean;
+}
+
+function violation(modelName: string, op: string, detail: string): Error {
   return new Error(
     `Tenant-scope violation: ${modelName}.${op} ran ${detail}. ` +
       "Every tenant-model query must be scoped by schoolId — add it to the " +
@@ -57,12 +62,18 @@ function violation(modelName, op, detail) {
 }
 
 /** Best-effort model name for error messages, resolved at hook time. */
-function modelNameOf(context, fallback) {
+function modelNameOf(context: unknown, fallback?: string): string {
+  const ctx = context as {
+    model?: { modelName?: string };
+    _model?: { modelName?: string };
+    constructor?: { modelName?: string };
+    baseModelName?: string;
+  } | null;
   return (
-    context?.model?.modelName ||
-    context?._model?.modelName || // Aggregate carries the model privately
-    context?.constructor?.modelName ||
-    context?.baseModelName ||
+    ctx?.model?.modelName ||
+    ctx?._model?.modelName || // Aggregate carries the model privately
+    ctx?.constructor?.modelName ||
+    ctx?.baseModelName ||
     fallback ||
     "tenant-model"
   );
@@ -72,15 +83,22 @@ function modelNameOf(context, fallback) {
  * Mongoose plugin — self-selecting on the schoolId path. Works both as the
  * global plugin (installTenantScope) and as a per-schema schema.plugin call.
  */
-export function applyTenantScope(schema, opts = {}) {
+export function applyTenantScope(
+  schema: Schema,
+  opts: { modelName?: string } = {}
+): void {
   // Only multi-tenant models are guarded (School, Lead and any other schema
   // without a schoolId path are skipped).
   if (!schema.path("schoolId")) return;
 
   for (const op of QUERY_OPS) {
-    schema.pre(op, async function () {
-      const filter = this.getFilter ? this.getFilter() : {};
-      const options = this.getOptions ? this.getOptions() : {};
+    schema.pre(op as Parameters<Schema["pre"]>[0], async function () {
+      const q = this as unknown as {
+        getFilter?: () => Record<string, unknown>;
+        getOptions?: () => BypassOptions;
+      };
+      const filter = q.getFilter ? q.getFilter() : {};
+      const options = q.getOptions ? q.getOptions() : {};
       if (options.bypassTenantScope) return;
       if (filter && Object.prototype.hasOwnProperty.call(filter, "schoolId")) {
         return;
@@ -91,10 +109,14 @@ export function applyTenantScope(schema, opts = {}) {
 
   // Aggregate pipelines: the first $match must scope by schoolId.
   schema.pre("aggregate", async function () {
-    if (this.options?.bypassTenantScope) return;
-    const pipeline = this.pipeline();
+    const agg = this as unknown as {
+      options?: BypassOptions;
+      pipeline: () => Array<Record<string, unknown>>;
+    };
+    if (agg.options?.bypassTenantScope) return;
+    const pipeline = agg.pipeline();
     const first = pipeline[0];
-    if (first?.$match && first.$match.schoolId) return;
+    if (first?.$match && (first.$match as Record<string, unknown>).schoolId) return;
     throw violation(
       modelNameOf(this, opts.modelName),
       "aggregate",
@@ -105,7 +127,8 @@ export function applyTenantScope(schema, opts = {}) {
   // Save-path guard: a tenant document with no schoolId is a cross-tenant
   // leak waiting to happen, so reject it at the door.
   schema.pre("validate", async function () {
-    if (!this.schoolId) {
+    const doc = this as unknown as HydratedDocument<{ schoolId?: unknown }>;
+    if (!doc.schoolId) {
       throw new Error(
         `Tenant-scope violation: ${modelNameOf(this, opts.modelName)} document created without schoolId.`
       );
@@ -120,7 +143,7 @@ let installed = false;
  * afterwards; the schoolId self-check decides which are tenant models).
  * Idempotent — safe to call from several modules.
  */
-export function installTenantScope() {
+export function installTenantScope(): void {
   if (installed) return;
   installed = true;
   mongoose.plugin(applyTenantScope);
@@ -133,6 +156,10 @@ export function installTenantScope() {
  *
  *   const user = await bypassTenantScope(User.findById(id));
  */
-export function bypassTenantScope(query) {
+export function bypassTenantScope<T extends { setOptions: (o: object) => T }>(query: T): T {
   return query.setOptions({ bypassTenantScope: true });
 }
+
+// Model typing helper re-exported for store modules that want it; importing
+// Model/HydratedDocument here keeps the plugin signatures self-contained.
+export type { Model };

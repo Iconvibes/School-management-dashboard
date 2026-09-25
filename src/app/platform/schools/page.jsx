@@ -13,6 +13,10 @@ import {
   RotateCcw,
   CheckSquare,
   Square,
+  Snowflake,
+  Sun,
+  CreditCard,
+  ChevronDown,
 } from "lucide-react";
 
 /**
@@ -25,7 +29,8 @@ export default function SchoolsPage() {
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState("all");
   const [selectedIds, setSelectedIds] = useState(new Set());
-  const [bulkDeleting, setBulkDeleting] = useState(false);
+  const [bulkProcessing, setBulkProcessing] = useState(false);
+  const [planDropdown, setPlanDropdown] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -68,31 +73,49 @@ export default function SchoolsPage() {
     });
   }
 
-  async function handleBulkDelete() {
+  async function handleBulkAction(action, opts = {}) {
     const ids = [...selectedIds];
     const count = ids.length;
-    if (!window.confirm(`Delete ${count} school(s)? They will be recoverable for 30 days.`)) return;
-    setBulkDeleting(true);
+    const labels = {
+      delete: `Delete ${count} school(s)? They will be recoverable for 30 days.`,
+      freeze: `Freeze ${count} school(s)? Their teachers, students, and parents will be blocked from logging in.`,
+      unfreeze: `Unfreeze ${count} school(s)? All logins will resume immediately.`,
+      restore: `Restore ${count} school(s)? All logins will resume immediately.`,
+      "change-plan": `Change plan for ${count} school(s) to "${opts.plan}"?`,
+    };
+    if (!window.confirm(labels[action])) return;
+
+    setBulkProcessing(true);
     try {
       const res = await fetch("/api/platform/schools/bulk", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ schoolIds: ids }),
+        body: JSON.stringify({ schoolIds: ids, action, plan: opts.plan }),
       });
       if (!res.ok) {
         const data = await res.json();
-        throw new Error(data.error || "Bulk delete failed");
+        throw new Error(data.error || `Bulk ${action} failed`);
       }
       const result = await res.json();
-      setSchools((prev) => prev.filter((s) => !ids.includes(s.id)));
+      // Update local state based on action
+      if (action === "delete") {
+        setSchools((prev) => prev.filter((s) => !ids.includes(s.id)));
+      } else if (action === "freeze") {
+        setSchools((prev) => prev.map((s) => ids.includes(s.id) ? { ...s, status: "frozen" } : s));
+      } else if (action === "unfreeze" || action === "restore") {
+        setSchools((prev) => prev.map((s) => ids.includes(s.id) ? { ...s, status: "active" } : s));
+      } else if (action === "change-plan") {
+        setSchools((prev) => prev.map((s) => ids.includes(s.id) ? { ...s, billingPlan: opts.plan } : s));
+      }
       setSelectedIds(new Set());
+      setPlanDropdown(false);
       if (result.skipped.length > 0) {
-        alert(`Deleted ${result.deleted} school(s). ${result.skipped.length} were skipped.`);
+        alert(`Processed ${result.success} school(s). ${result.skipped.length} were skipped.`);
       }
     } catch (err) {
       alert(err.message);
     } finally {
-      setBulkDeleting(false);
+      setBulkProcessing(false);
     }
   }
 
@@ -184,7 +207,7 @@ export default function SchoolsPage() {
           />
         </div>
         <div className="flex gap-1 rounded-xl bg-[#12161f] p-1">
-          {["all", "active", "frozen", "deleted"].map((f) => (
+          {["all", "active", "pending_approval", "frozen", "deleted"].map((f) => (
             <button
               key={f}
               onClick={() => setFilter(f)}
@@ -194,7 +217,7 @@ export default function SchoolsPage() {
                   : "text-gray-500 hover:text-gray-300"
               }`}
             >
-              {f.charAt(0).toUpperCase() + f.slice(1)}
+              {f === "pending_approval" ? "Pending" : f.charAt(0).toUpperCase() + f.slice(1)}
             </button>
           ))}
         </div>
@@ -251,8 +274,10 @@ export default function SchoolsPage() {
                       className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-bold ${
                         school.status === "active"
                           ? "bg-emerald-500/10 text-emerald-400"
-                          : school.status === "frozen"
+                          : school.status === "pending_approval"
                           ? "bg-amber-500/10 text-amber-400"
+                          : school.status === "frozen"
+                          ? "bg-orange-500/10 text-orange-400"
                           : "bg-red-500/10 text-red-400"
                       }`}
                     >
@@ -311,29 +336,90 @@ export default function SchoolsPage() {
       )}
       {/* Bulk Action Bar */}
       {someSelected && (
-        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 flex items-center gap-4 rounded-2xl border border-white/10 bg-[#111827] px-6 py-4 shadow-2xl">
+        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 flex items-center gap-3 rounded-2xl border border-white/10 bg-[#111827] px-5 py-3 shadow-2xl">
           <div className="flex items-center gap-2">
             <CheckSquare className="h-4 w-4 text-cyan-400" />
-            <span className="text-sm font-semibold text-white">{selectedIds.size} selected</span>
+            <span className="text-sm font-semibold text-white">{selectedIds.size}</span>
           </div>
           <div className="h-6 w-px bg-white/10" />
           <button
             onClick={() => setSelectedIds(new Set())}
-            className="rounded-lg bg-white/5 px-3 py-1.5 text-xs font-semibold text-gray-400 transition hover:bg-white/10"
+            className="rounded-lg bg-white/5 px-2.5 py-1.5 text-[11px] font-semibold text-gray-400 transition hover:bg-white/10"
           >
             Cancel
           </button>
+
+          {/* Freeze */}
           <button
-            onClick={handleBulkDelete}
-            disabled={bulkDeleting}
-            className="inline-flex items-center gap-1.5 rounded-lg bg-red-600 px-4 py-1.5 text-xs font-bold text-white transition hover:bg-red-500 disabled:opacity-50"
+            onClick={() => handleBulkAction("freeze")}
+            disabled={bulkProcessing}
+            className="inline-flex items-center gap-1 rounded-lg bg-amber-500/20 px-3 py-1.5 text-[11px] font-bold text-amber-300 transition hover:bg-amber-500/30 disabled:opacity-50"
           >
-            {bulkDeleting ? (
+            <Snowflake className="h-3 w-3" />
+            Freeze
+          </button>
+
+          {/* Unfreeze */}
+          <button
+            onClick={() => handleBulkAction("unfreeze")}
+            disabled={bulkProcessing}
+            className="inline-flex items-center gap-1 rounded-lg bg-emerald-500/20 px-3 py-1.5 text-[11px] font-bold text-emerald-300 transition hover:bg-emerald-500/30 disabled:opacity-50"
+          >
+            <Sun className="h-3 w-3" />
+            Unfreeze
+          </button>
+
+          {/* Restore */}
+          <button
+            onClick={() => handleBulkAction("restore")}
+            disabled={bulkProcessing}
+            className="inline-flex items-center gap-1 rounded-lg bg-blue-500/20 px-3 py-1.5 text-[11px] font-bold text-blue-300 transition hover:bg-blue-500/30 disabled:opacity-50"
+          >
+            <RotateCcw className="h-3 w-3" />
+            Restore
+          </button>
+
+          {/* Change Plan dropdown */}
+          <div className="relative">
+            <button
+              onClick={() => setPlanDropdown(!planDropdown)}
+              disabled={bulkProcessing}
+              className="inline-flex items-center gap-1 rounded-lg bg-purple-500/20 px-3 py-1.5 text-[11px] font-bold text-purple-300 transition hover:bg-purple-500/30 disabled:opacity-50"
+            >
+              <CreditCard className="h-3 w-3" />
+              Plan
+              <ChevronDown className="h-3 w-3" />
+            </button>
+            {planDropdown && (
+              <div className="absolute bottom-full left-0 mb-2 w-44 overflow-hidden rounded-xl border border-white/10 bg-[#1a1f2e] shadow-2xl">
+                {["trial", "starter", "professional", "enterprise"].map((p) => (
+                  <button
+                    key={p}
+                    onClick={() => handleBulkAction("change-plan", { plan: p })}
+                    className="flex w-full items-center gap-2 px-4 py-2.5 text-left text-xs font-medium text-gray-300 transition hover:bg-white/5 hover:text-white"
+                  >
+                    <CreditCard className="h-3 w-3 text-purple-400" />
+                    {p.charAt(0).toUpperCase() + p.slice(1)}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <div className="h-6 w-px bg-white/10" />
+
+          {/* Delete */}
+          <button
+            onClick={() => handleBulkAction("delete")}
+            disabled={bulkProcessing}
+            className="inline-flex items-center gap-1 rounded-lg bg-red-600 px-3 py-1.5 text-[11px] font-bold text-white transition hover:bg-red-500 disabled:opacity-50"
+          >
+            {bulkProcessing ? (
               <div className="h-3 w-3 animate-spin rounded-full border-2 border-white border-t-transparent" />
             ) : (
-              <Trash2 className="h-3.5 w-3.5" />
+              <Trash2 className="h-3 w-3" />
             )}
-            {bulkDeleting ? "Deleting..." : `Delete ${selectedIds.size} School${selectedIds.size > 1 ? "s" : ""}`}
+            Delete
           </button>
         </div>
       )}
