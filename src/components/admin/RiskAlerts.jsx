@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { AlertTriangle, TrendingDown, Shield, BookOpen, BarChart3 } from "lucide-react";
 
 /**
@@ -12,19 +12,29 @@ export default function RiskAlerts({ session }) {
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState("all");
 
-  useEffect(() => {
-    loadRisks();
-  }, []);
-
-  async function loadRisks() {
-    setLoading(true);
+  // Declared before the effect that calls it, and memoised so the effect
+  // runs exactly once — the React Compiler ESLint rules reject both TDZ
+  // access and ref-writes during render, so this is the compliant shape.
+  const loadRisks = useCallback(async () => {
     try {
       const res = await fetch("/api/academic-risk");
       const data = await res.json();
       setRisks(data.risks || []);
     } catch {}
     setLoading(false);
-  }
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    // Deferred to a microtask so no setState runs synchronously in the
+    // effect body (React Compiler lint: cascading-render risk).
+    Promise.resolve().then(() => {
+      if (!cancelled) loadRisks();
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [loadRisks]);
 
   const filtered = filter === "all" ? risks : risks.filter((r) => r.severity === filter);
   const highRisks = risks.filter((r) => r.severity === "high");

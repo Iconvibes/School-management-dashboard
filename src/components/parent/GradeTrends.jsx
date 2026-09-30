@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { TrendingUp, TrendingDown, Minus } from "lucide-react";
 
 /**
@@ -11,13 +11,11 @@ export default function GradeTrends({ studentId, studentName }) {
   const [trends, setTrends] = useState([]);
   const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
-    loadTrends();
-  }, [studentId]);
-
-  async function loadTrends() {
+  // Declared before the effect that calls it, and memoised on studentId —
+  // the React Compiler ESLint rules reject both TDZ access and synchronous
+  // setState in the effect body.
+  const loadTrends = useCallback(async () => {
     if (!studentId) return;
-    setLoading(true);
     try {
       const res = await fetch(`/api/reports/${studentId}`);
       const data = await res.json();
@@ -56,7 +54,17 @@ export default function GradeTrends({ studentId, studentName }) {
       setTrends(trendList);
     } catch {}
     setLoading(false);
-  }
+  }, [studentId]);
+
+  useEffect(() => {
+    let cancelled = false;
+    Promise.resolve().then(() => {
+      if (!cancelled) loadTrends();
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [loadTrends]);
 
   if (loading) {
     return <div className="flex items-center justify-center py-8 text-navy-400">Loading trends...</div>;

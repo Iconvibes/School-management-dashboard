@@ -94,16 +94,29 @@ export async function findUserByEmailInSchool(schoolId, email) {
   );
 }
 
+/**
+ * Resolve a PARENT by full name for name-based login — with duplicate
+ * detection (TECH_DEBT L2). The name is a login identifier within a school:
+ * if two parent accounts ever share it (legacy rows, a guarded create path
+ * raced, or a bulk import), find() would return one arbitrarily and the
+ * other would be SHADOWED — same credentials, wrong account, wrong children.
+ * Fail closed: return the canonical marker instead of guessing, so the login
+ * route can refuse the ambiguous name outright.
+ */
+export { PARENT_NAME_AMBIGUOUS } from "./markers.js";
+import { PARENT_NAME_AMBIGUOUS } from "./markers.js";
+
 export async function findParentByNameInSchool(schoolId, name) {
   const norm = String(name || "").trim().toLowerCase();
   if (!norm) return null;
-  const found = users.find(
+  const matches = users.filter(
     (u) =>
       u.schoolId === schoolId &&
       u.role === "PARENT" &&
       String(u.name || "").trim().toLowerCase() === norm
   );
-  return found ? clone(found) : null;
+  if (matches.length > 1) return PARENT_NAME_AMBIGUOUS;
+  return matches.length === 1 ? clone(matches[0]) : null;
 }
 
 export async function findTeacherByNameInSchool(schoolId, name) {

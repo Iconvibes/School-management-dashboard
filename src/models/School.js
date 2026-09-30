@@ -79,6 +79,15 @@ const schoolSchema = new mongoose.Schema(
       sortCode: { type: String, default: "" },
       otherInstructions: { type: String, default: "" },
     },
+    // ── Platform pseudo-school ────────────────────────────────────────
+    // True ONLY for the "EduTrack Platform" identity/billing shell — not a
+    // real tenant. Must mirror the demo seed's flag: the login-page school
+    // directory (searchSchools) filters it out, the daily conflict-scan job
+    // skips it, and the platform routes (overview/revenue/billing/approvals/
+    // digests) all read it via getSchoolById to exclude the shell from
+    // per-tenant metrics. Demo mode reads this from the seed object; Mongo
+    // mode needs the declared field so toJSON() surfaces it the same way.
+    isPlatformSchool: { type: Boolean, default: false },
     // ── SaaS Billing / Subscription ──────────────────────────────────
     // Which EduTrack plan the school is on. Free trial until first payment.
     billingPlan: {

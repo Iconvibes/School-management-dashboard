@@ -169,7 +169,7 @@ creates orphaned score records. The API doesn't cascade-delete or warn.
 **Mitigation:** The scope editor shows a warning that changes take effect
 instantly. The timetable conflict scanner flags scope violations after the fact.
 
-### L2. Parent login is name-based, not email-based
+### L2. Parent login is name-based, not email-based — **duplicate-name hardening landed (28 September 2026)**
 
 Parents sign in with their full name (case-insensitive) and their child's name
 as the password. This works for small schools but creates collision risk at
@@ -177,6 +177,16 @@ scale — two parents named "Mrs. Adebayo" would shadow each other.
 
 **Mitigation:** The link-parent modal has duplicate detection (name + phone).
 The `findParentByName` helper in the dashboard enforces uniqueness.
+
+**Hardening (verified 28 September 2026):** `findParentByNameInSchool` in BOTH
+stores now fails closed on duplicates — >1 parent with the same name in a
+school returns the shared `PARENT_NAME_AMBIGUOUS` marker (canonical Symbol in
+`src/modules/users/markers.js`, re-exported by `src/lib/demo-store.js` and
+`src/lib/mongo/schools.js` so `===` comparison works in both modes), and the
+login route refuses with a vague 401 instead of silently picking one account.
+Create/rename routes already returned 409. Pinned by
+`tests/parent-name-ambiguity.test.js` (3 cases) and the dual-store contract
+test (both stores export the marker).
 
 ### L3. Fee structures are per-class-arm, not per-student
 
@@ -240,10 +250,13 @@ to `src/components/admin/modals/`. page.js is now ~998 lines.
 **Remaining:** Split into domain-specific contexts or a `useReducer` pattern
 when a new tab is added or an existing tab needs complex local state.
 
-### S4. No E2E tests — IN PROGRESS
+### S4. No E2E tests — IN PROGRESS (first execution 28 September 2026: 10/10 pass)
 
 Playwright infrastructure is set up (`playwright.config.js`, `tests/e2e/`).
 Login flow tests exist for admin, teacher, student, and parent dashboards.
+The suite ran for the first time on 28 September 2026 and immediately caught a
+real bug (P2 above) — treat it as a required pre-release gate from now on.
+Requires the dev server running on :3000 with `SEED_DEMO_SCHOOL=1`.
 
 **Remaining:**
 - Admin: add student → grade → report card → PDF
@@ -297,6 +310,65 @@ Options:
   drift in IDEs.
 - **Migrate to TypeScript** — full compile-time safety. Gradual migration of
   for the remaining library files.
+
+---
+
+## New Entries (September 2026 — pre-presentation hardening)
+
+### P1. Timetable test flake — ROOT-CAUSED AND FIXED (28 September 2026)
+
+The "a STALE health read does NOT scan — the daily background job does" test in
+`tests/timetable.test.js` (~L1310) failed with `run.scanned: 2 !== 1`. Root
+cause: NOT time-of-day. `runDueScans()` iterates every school id from
+`listSchoolIds()`, and the demo seed's second school — the "EduTrack Platform"
+billing shell — is never scanned, so `isScanDue()` ("never scanned → due")
+reported it due on every run. The test was written before the platform school
+entered the seed; it "passed" in some environments only because the shell's
+scan happened to throw first.
+
+**Fix (runtime, not test-only):** `runDueScans()` in
+`src/lib/conflict-scheduler.js` now skips schools with `isPlatformSchool` set
+(the shell has no timetable, no arms, no admins — scanning it was pointless
+work on every boot/day and a latent source of junk notifications). Test
+expectations updated to the honest post-fix counts (`skipped: 1`).
+
+**Residual debt (resolved same day — see P5):** the Mongo `School` model now
+declares `isPlatformSchool`, so `getSchoolById()` surfaces the flag in Mongo
+mode too and the skip guard is store-agnostic.
+
+### P2. Student dashboard showed "No scores" despite scores existing — FIXED (28 September 2026)
+
+`src/app/student/dashboard/page.jsx` assigned the un-awaited `Response.json()`
+**Promise** to state (`setData(scoresRes.json())`), so every field read as
+undefined and the report card permanently rendered "No scores have been
+recorded yet" — even though `/api/scores/student` returned 5 subjects and a
+78.6 average. Both fetches now resolve before setState. Caught by the
+previously-never-run E2E suite; 10/10 e2e now pass.
+
+### P3. Demo snapshot carried junk test schools — CLEANED (28 September 2026)
+
+The persisted `.demo-data/store.json` (gitignored, local-only) accumulated
+"Test Academy", "Fake Academy", "Email Test Academy" etc. from earlier manual
+API experiments, and they appeared on the login page's school list. Snapshot
+deleted; server reseeded from scratch (Greenfield only). Recurrence is
+operator error, not a code path — documented in PRESENTATION_READINESS.md.
+
+### P4. README demo-seed claim was wrong — FIXED (28 September 2026)
+
+README said the demo seed is "on by default" in dev; `demoSeedEnabled()`
+actually requires an explicit `SEED_DEMO_SCHOOL=1|true|yes`. A fresh clone
+without the env var boots an empty demo store ("No school found" on login).
+README + `.env.example` now state the requirement.
+
+### P5. Platform school's `isPlatformSchool` missing from the Mongo schema — RESOLVED (28 September 2026)
+
+`src/models/School.js` now declares `isPlatformSchool: { type: Boolean,
+default: false }` (so `getSchoolById`/`toJSON` surface it exactly like the demo
+seed object), and mongo `searchSchools` filters `isPlatformSchool: { $ne: true }`
+and returns `sealUrl` — both mirroring `src/modules/school/store.js`. All
+`getSchoolById`-derived guards (conflict-scheduler skip, platform
+overview/revenue/billing/approvals/digests) now behave identically in both
+stores. See the P1 residual note.
 
 ---
 

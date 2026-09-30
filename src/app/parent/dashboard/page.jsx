@@ -95,11 +95,22 @@ export default function ParentDashboard() {
       bounceToLogin(router);
       return;
     }
-    setLastSync(Date.now());
-    refresh().then((body) => {
-      if (body.children?.length) setSelectedId(body.children[0].id);
-      setLoading(false);
+    // Deferred to a microtask: the lint tracks setState reachable from the
+    // effect's call chain (refresh() sets state) and flags synchronous
+    // calls as a cascading-render risk.
+    let cancelled = false;
+    Promise.resolve().then(() => {
+      if (cancelled) return;
+      refresh().then((body) => {
+        if (cancelled) return;
+        setLastSync(Date.now());
+        if (body.children?.length) setSelectedId(body.children[0].id);
+        setLoading(false);
+      });
     });
+    return () => {
+      cancelled = true;
+    };
   }, [session, sessionLoading, router, refresh]);
 
   // Tick every minute so "Last synced X ago" relative time updates

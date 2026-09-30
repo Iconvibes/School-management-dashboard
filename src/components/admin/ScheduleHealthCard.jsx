@@ -12,6 +12,7 @@ import {
 } from "lucide-react";
 import { useAdminShell } from "@/components/admin/context/AdminContext";
 import { sparklinePoints } from "@/lib/conflict-scan";
+import { useNow } from "@/hooks/useNow";
 
 /**
  * Schedule Health — the daily timetable integrity scan card.
@@ -34,11 +35,11 @@ export default function ScheduleHealthCard() {
 
   const fmtHour = (h) => `${String(h ?? 2).padStart(2, "0")}:00`;
 
-  function timeAgo(iso) {
-    if (!iso) return "never";
+  function timeAgo(iso, now) {
+    if (!iso || now === null) return "scanning";
     const secs = Math.max(
       1,
-      Math.floor((Date.now() - new Date(iso).getTime()) / 1000)
+      Math.floor((now - new Date(iso).getTime()) / 1000)
     );
     if (secs < 60) return "just now";
     const mins = Math.floor(secs / 60);
@@ -50,6 +51,8 @@ export default function ScheduleHealthCard() {
   }
 
   const ttSpark = sparklinePoints(ttHealth?.history);
+  const now = useNow(30_000);
+  const scannedLabel = ttHealth?.scannedAt ? timeAgo(ttHealth.scannedAt, now) : "never";
 
   return (
     <div
@@ -83,7 +86,7 @@ export default function ScheduleHealthCard() {
             {ttHealth
               ? ttHealth.neverScanned
                 ? `First scan scheduled ${fmtHour(ttHealth.scanHour)}`
-                : `Scanned ${timeAgo(ttHealth.scannedAt)} · daily scan ${fmtHour(ttHealth.scanHour)}`
+                : `Scanned ${scannedLabel} · daily scan ${fmtHour(ttHealth.scanHour)}`
               : "Scanning…"}
           </p>
         </div>

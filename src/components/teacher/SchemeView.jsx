@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import {
   BookOpen,
   Check,
@@ -34,13 +34,11 @@ export default function SchemeView({ classArm, subject }) {
   const [creatingError, setCreatingError] = useState("");
   const fileInputRef = useRef(null);
 
-  useEffect(() => {
-    loadSchemes();
-  }, [classArm, subject]);
-
-  async function loadSchemes() {
+  // Declared before the effect that calls it, and memoised on its inputs —
+  // the React Compiler ESLint rules reject both TDZ access and synchronous
+  // setState in the effect body.
+  const loadSchemes = useCallback(async () => {
     if (!classArm || !subject) return;
-    setLoading(true);
     try {
       const res = await fetch(
         `/api/scheme?classArm=${encodeURIComponent(classArm)}&subject=${encodeURIComponent(subject)}`
@@ -49,7 +47,17 @@ export default function SchemeView({ classArm, subject }) {
       setSchemes(data.schemes || []);
     } catch {}
     setLoading(false);
-  }
+  }, [classArm, subject]);
+
+  useEffect(() => {
+    let cancelled = false;
+    Promise.resolve().then(() => {
+      if (!cancelled) loadSchemes();
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [loadSchemes]);
 
   async function toggleTopicStatus(schemeId, topicId, currentStatus) {
     const nextStatus = currentStatus === "completed" ? "planned" : "completed";

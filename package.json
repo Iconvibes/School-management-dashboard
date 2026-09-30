@@ -8,6 +8,7 @@
     "start": "next start",
     "lint": "eslint",
     "test": "node --test --import ./tests/register-aliases.js \"tests/*.test.js\"",
+    "reset-demo": "node --import ./tests/register-aliases.js scripts/reset-demo.mjs",
     "backup": "node scripts/backup.mjs",
     "restore": "node scripts/restore.mjs",
     "verify-backup": "node scripts/verify-backup.mjs",

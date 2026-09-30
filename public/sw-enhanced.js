@@ -12,7 +12,16 @@
  *   - Message listener for client-triggered pre-caching after login
  */
 
-const VERSION = "edutrack-v4";
+// v5: the shell cache no longer stores redirected (auth-bounced) HTML, and
+// the static cache is skipped on localhost where Turbopack chunks churn per
+// dev run. Bumping the version deletes every v4 cache on activate — which
+// purges shell entries cached by earlier versions while signed out (login
+// pages stored under dashboard routes, i.e. poisoned offline fallbacks).
+const VERSION = "edutrack-v5";
+
+// Dev-server detection: the SW is served from the app's own origin, so its
+// hostname is a reliable signal.
+const IS_DEV_ORIGIN = ["localhost", "127.0.0.1"].includes(self.location.hostname);
 const STATIC_CACHE = `${VERSION}-static`;
 const DATA_CACHE = `${VERSION}-data`;
 const SHELL_CACHE = `${VERSION}-shell`;
@@ -52,12 +61,36 @@ const NEVER_CACHE_PATTERNS = [
 // API routes that are safe to cache briefly (read-only dashboard data)
 const CACHEABLE_API = /^\/api\/(student|parent|teacher|admin|grades|attendance|fees)\//;
 
-// Install — pre-cache app shell
+// Install — best-effort warm of the app shell. Unlike cache.addAll, a route
+// that redirects (the proxy bounces unauthenticated visitors off the
+// dashboards to /login?next=…) is NOT cached: only clean, direct 200 HTML
+// responses are kept, so an install while signed out can never poison the
+// shell cache with login pages stored under dashboard routes.
 self.addEventListener("install", (event) => {
   event.waitUntil(
     caches
       .open(SHELL_CACHE)
-      .then((cache) => cache.addAll(APP_SHELL))
+      .then((cache) =>
+        Promise.allSettled(
+          APP_SHELL.map((route) =>
+            fetch(route, { redirect: "follow", credentials: "same-origin" }).then(
+              (response) => {
+                if (
+                  response &&
+                  response.status === 200 &&
+                  response.type === "basic" &&
+                  !response.redirected
+                ) {
+                  return cache.put(route, response);
+                }
+                // Redirected or non-200 — skip. The route warms on the first
+                // authenticated visit instead.
+                return undefined;
+              }
+            )
+          )
+        )
+      )
       .then(() => self.skipWaiting())
   );
 });
@@ -186,18 +219,31 @@ self.addEventListener("fetch", (event) => {
   // Other API routes — network only, no caching
   if (url.pathname.startsWith("/api/")) return;
 
-  // Static assets — cache-first (fast, never changes mid-session)
+  // Static assets — cache-first (fast, never changes mid-session). Skipped
+  // on localhost: Turbopack emits new content-hashed chunks per dev run, so
+  // cache-first there serves stale JS after a server restart.
   if (STATIC_EXTENSIONS.test(url.pathname)) {
-    event.respondWith(cacheFirst(request, STATIC_CACHE));
+    if (!IS_DEV_ORIGIN) {
+      event.respondWith(cacheFirst(request, STATIC_CACHE));
+    }
     return;
   }
 
-  // HTML navigations — network-first, cache-while-you-go, offline fallback
+  // HTML navigations — always network-first while online. Only a clean,
+  // direct 200 is cached: a proxied redirect to /login?next=… (auth bounce)
+  // must never enter the shell cache, and while online a cached shell must
+  // never mask the live response (an entry cached while signed out would
+  // otherwise pin the bounce). The cache is the OFFLINE fallback only.
   event.respondWith(
     fetch(request)
       .then((response) => {
         // Cache successful navigations for offline use
-        if (response && response.status === 200 && response.type === "basic") {
+        if (
+          response &&
+          response.status === 200 &&
+          response.type === "basic" &&
+          !response.redirected
+        ) {
           const clone = response.clone();
           caches.open(SHELL_CACHE).then((cache) => cache.put(request, clone));
         }

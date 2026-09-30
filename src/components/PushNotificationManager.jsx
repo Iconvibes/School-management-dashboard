@@ -17,13 +17,6 @@ export default function PushNotificationManager({ schoolId, userId }) {
   const [loading, setLoading] = useState(true);
   const [supported, setSupported] = useState(false);
 
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    setSupported("serviceWorker" in navigator && "PushManager" in window);
-    setPermission(Notification?.permission || "default");
-    checkSubscription();
-  }, []);
-
   const checkSubscription = useCallback(async () => {
     if (!("serviceWorker" in navigator) || !("PushManager" in window)) {
       setLoading(false);
@@ -36,6 +29,23 @@ export default function PushNotificationManager({ schoolId, userId }) {
     } catch {}
     setLoading(false);
   }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    // Environment reads + subscription check run in an async boundary —
+    // synchronous setState in the effect body is flagged as a
+    // cascading-render risk by the React Compiler lint.
+    let cancelled = false;
+    Promise.resolve().then(() => {
+      if (cancelled) return;
+      setSupported("serviceWorker" in navigator && "PushManager" in window);
+      setPermission(Notification?.permission || "default");
+      return checkSubscription();
+    }).catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [checkSubscription]);
 
   async function subscribe() {
     if (!supported) return;

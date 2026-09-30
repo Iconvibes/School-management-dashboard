@@ -1279,6 +1279,9 @@ export {
   logRoleAudit,
   listRoleAudit,
 } from "@/modules/users/store";
+// Canonical ambiguous-name marker shared by both stores (same Symbol object
+// identity in demo and mongo, so the login route's `===` guard works in both).
+export { PARENT_NAME_AMBIGUOUS } from "@/modules/users/markers.js";
 
 // Communications module
 export {

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Rebuild edutrack-pitch-deck.pdf from edutrack-pitch-deck.html.
+# Rebuild docs/presentation/edutrack-pitch-deck.pdf from
+# docs/presentation/edutrack-pitch-deck.html.
 #
 # Why screenshots + Pillow instead of Chrome --print-to-pdf?
 #   Headless Chrome's print pagination is unreliable for exact-size slides;
@@ -12,8 +13,8 @@ set -e
 cd "$(dirname "$0")/.."
 
 CHROME="${CHROME:-/c/Program Files/Google/Chrome/Application/chrome.exe}"
-DECK="$(pwd)/edutrack-pitch-deck.html"
-OUT="$(pwd)/edutrack-pitch-deck.pdf"
+DECK="$(pwd)/docs/presentation/edutrack-pitch-deck.html"
+OUT="$(pwd)/docs/presentation/edutrack-pitch-deck.pdf"
 SHOTS="$(pwd)/.deck-shots"
 
 mkdir -p "$SHOTS"

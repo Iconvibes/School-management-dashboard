@@ -41,10 +41,13 @@ async function demoLogin(page, { roleButtonLabel, expectedUrl }) {
   const demoBtn = page.locator("button").filter({ hasText: roleButtonLabel });
   await demoBtn.click();
 
-  // Step 3: Submit the sign-in form.
+  // Step 3: Submit the sign-in form. Target the real submit control — a
+  // bare /Sign in/ text filter also matches the per-role demo buttons
+  // ("Sign in as Super Admin") and can click one instead of submitting.
+  // Scoped to the form because the page keeps hidden per-role variants of
+  // the same button in the DOM (only the active role's is visible).
   const submitBtn = page
-    .locator("button")
-    .filter({ hasText: /Sign in/ })
+    .locator("form button[type='submit']:visible")
     .first();
   await submitBtn.click();
 

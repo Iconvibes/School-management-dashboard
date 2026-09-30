@@ -5,7 +5,8 @@
  *
  *   npm run audit-html
  *
- * Output: EduTrack-Traffic-Audit.html (project root, next to the .md).
+ * Output: docs/presentation/EduTrack-Traffic-Audit.html (next to the
+ * presentation exports it belongs with).
  *
  * No external dependencies: a tiny markdown block parser (headings, tables,
  * code fences, lists, blockquotes, rules, paragraphs) plus inline **bold**
@@ -19,7 +20,7 @@ import { fileURLToPath } from "node:url";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const MD = path.join(ROOT, "EduTrack-Traffic-Audit.md");
-const OUT = path.join(ROOT, "EduTrack-Traffic-Audit.html");
+const OUT = path.join(ROOT, "docs", "presentation", "EduTrack-Traffic-Audit.html");
 
 if (!fs.existsSync(MD)) {
   console.error(`Source not found: ${MD}`);

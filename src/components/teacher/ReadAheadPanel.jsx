@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { BellRing, Send, BookOpen } from "lucide-react";
 
 /**
@@ -17,20 +17,28 @@ export default function ReadAheadPanel({ classArm, subject }) {
   const [toast, setToast] = useState("");
   const [customMode, setCustomMode] = useState(false);
 
-  useEffect(() => {
-    loadSchemes();
-  }, [classArm, subject]);
-
-  async function loadSchemes() {
+  // Declared before the effect that calls it, and memoised on its inputs —
+  // the React Compiler ESLint rules reject both TDZ access and synchronous
+  // setState in the effect body.
+  const loadSchemes = useCallback(async () => {
     if (!classArm || !subject) return;
-    setLoading(true);
     try {
       const res = await fetch(`/api/scheme?classArm=${encodeURIComponent(classArm)}&subject=${encodeURIComponent(subject)}`);
       const data = await res.json();
       setSchemes(data.schemes || []);
     } catch {}
     setLoading(false);
-  }
+  }, [classArm, subject]);
+
+  useEffect(() => {
+    let cancelled = false;
+    Promise.resolve().then(() => {
+      if (!cancelled) loadSchemes();
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [loadSchemes]);
 
   async function handleSend() {
     if (!message.trim()) {

@@ -86,14 +86,19 @@ export default function StudentDashboard() {
       bounceToLogin(router);
       return;
     }
-    setLastSync(Date.now());
 
     Promise.all([
-      fetch("/api/scores/student"),
-      fetch("/api/student/reminders"),
-    ]).then(([scoresRes, remindersRes]) => {
-      setData(scoresRes.json());
-      setReminders(remindersRes.json().reminders || []);
+      fetch("/api/scores/student").then((r) => r.json()),
+      fetch("/api/student/reminders")
+        .then((r) => r.json())
+        .catch(() => ({ reminders: [] })),
+    ]).then(([scoresData, remindersData]) => {
+      // The API itself is the data — assigning the un-awaited .json() Promise
+      // here made every field read as undefined and the dashboard rendered
+      // "No scores have been recorded yet" even when results existed.
+      setLastSync(Date.now());
+      setData(scoresData);
+      setReminders(remindersData?.reminders || []);
       setLoading(false);
     });
   }, [session, sessionLoading, router]);

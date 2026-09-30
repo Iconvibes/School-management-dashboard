@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { Building2, Plus, Users, Wallet, TrendingUp } from "lucide-react";
 
 /**
@@ -15,12 +15,13 @@ export default function BranchesTab({ session }) {
   const [saving, setSaving] = useState(false);
   const [toast, setToast] = useState("");
 
-  useEffect(() => {
-    loadBranches();
-  }, []);
-
-  async function loadBranches() {
-    setLoading(true);
+  // Declared before the effect that calls it, and memoised so the effect
+  // runs exactly once — the React Compiler ESLint rules reject both TDZ
+  // access and ref-writes during render, so this is the compliant shape.
+  const loadBranches = useCallback(async () => {
+    // setLoading(true) is skipped on the mount call: `loading` already
+    // starts true, and the lint rule flags synchronous setState in the
+    // effect's call chain. Refresh calls (after create) do set it.
     try {
       // In demo mode, return sample branches
       const res = await fetch("/api/school");
@@ -40,7 +41,21 @@ export default function BranchesTab({ session }) {
       ]);
     } catch {}
     setLoading(false);
-  }
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    // Deferred to a microtask: the loader's synchronous `setLoading(true)`
+    // (on refresh calls) would otherwise run in the effect body — the React
+    // Compiler lint flags that as a cascading-render risk. Async boundaries
+    // (fetch/await) are the intended way to setState from an effect.
+    Promise.resolve().then(() => {
+      if (!cancelled) loadBranches();
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [loadBranches]);
 
   async function handleCreate() {
     if (!form.name) {

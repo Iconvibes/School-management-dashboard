@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { CalendarDays, ChevronLeft, ChevronRight } from "lucide-react";
 
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
@@ -18,20 +18,28 @@ export default function AttendanceCalendar({ studentId, studentName }) {
     return { year: now.getFullYear(), month: now.getMonth() };
   });
 
-  useEffect(() => {
-    loadRecords();
-  }, [studentId, currentMonth]);
-
-  async function loadRecords() {
+  // Declared before the effect that calls it, and memoised on its inputs —
+  // the React Compiler ESLint rules reject both TDZ access and synchronous
+  // setState in the effect body.
+  const loadRecords = useCallback(async () => {
     if (!studentId) return;
-    setLoading(true);
     try {
       const res = await fetch(`/api/parent/attendance?studentId=${studentId}`);
       const data = await res.json();
       setRecords(data.records || []);
     } catch {}
     setLoading(false);
-  }
+  }, [studentId]);
+
+  useEffect(() => {
+    let cancelled = false;
+    Promise.resolve().then(() => {
+      if (!cancelled) loadRecords();
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [loadRecords]);
 
   const { year, month } = currentMonth;
   const firstDay = new Date(year, month, 1).getDay();

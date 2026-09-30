@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { Trash2, Loader2, Clock, CheckCircle2, XCircle, Info } from "lucide-react";
 
 /**
@@ -15,11 +15,10 @@ export default function RequestErasureButton({ className = "" }) {
   const [reason, setReason] = useState("");
   const [toast, setToast] = useState("");
 
-  useEffect(() => {
-    checkStatus();
-  }, []);
-
-  async function checkStatus() {
+  // Declared before the effect that calls it — the React Compiler lint
+  // rejects TDZ access, and the microtask deferral avoids synchronous
+  // setState in the effect body.
+  const checkStatus = useCallback(async () => {
     try {
       const res = await fetch("/api/me/erasure-request");
       const data = await res.json();
@@ -28,7 +27,17 @@ export default function RequestErasureButton({ className = "" }) {
       // Silently ignore — button just stays in default state
     }
     setLoading(false);
-  }
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    Promise.resolve().then(() => {
+      if (!cancelled) checkStatus();
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [checkStatus]);
 
   async function submitRequest() {
     setSubmitting(true);

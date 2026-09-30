@@ -52,7 +52,10 @@ If `MONGODB_URI` is **not** set, the app runs in demo mode with in-memory storag
 **Production ships a clean slate.** The demo school (and its demo accounts below) is only
 seeded when `SEED_DEMO_SCHOOL` is enabled — off by default when `NODE_ENV=production`.
 On a production boot there are **no pre-existing schools**: the first person to register
-becomes the first school's admin. In dev/test the demo seed is on by default:
+becomes the first school's admin.
+
+**The demo seed requires `SEED_DEMO_SCHOOL=1` in `.env.local`** (also `true`/`yes` are
+accepted). It is NOT on by default — without it the login page shows "No school found":
 
 | Portal       | Email                  | Password    |
 | ------------ | ---------------------- | ----------- |
@@ -62,8 +65,8 @@ becomes the first school's admin. In dev/test the demo seed is on by default:
 | Student      | `k.adebayo@edutrack.app`| `student123`|
 | Parent       | linked via admin dashboard | student's name as password |
 
-Set `SEED_DEMO_SCHOOL=0` to disable the demo seed even in dev; `SEED_DEMO_SCHOOL=1` to
-force it even in production.
+Set `SEED_DEMO_SCHOOL=0` (or unset it) to disable the demo seed; `SEED_DEMO_SCHOOL=1`
+to force it even in production.
 
 ### Connect MongoDB
 

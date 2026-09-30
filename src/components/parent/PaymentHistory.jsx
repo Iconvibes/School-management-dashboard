@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { ReceiptText, Clock, CheckCircle2, AlertCircle } from "lucide-react";
 
 const METHOD_COLORS = {
@@ -26,20 +26,28 @@ export default function PaymentHistory({ studentId, studentName }) {
       maximumFractionDigits: 0,
     }).format(Number(n) || 0);
 
-  useEffect(() => {
-    loadPayments();
-  }, [studentId]);
-
-  async function loadPayments() {
+  // Declared before the effect that calls it, and memoised on studentId —
+  // the React Compiler ESLint rules reject both TDZ access and synchronous
+  // setState in the effect body.
+  const loadPayments = useCallback(async () => {
     if (!studentId) return;
-    setLoading(true);
     try {
       const res = await fetch(`/api/fees/payments?studentId=${studentId}`);
       const data = await res.json();
       setPayments(data.payments || data.entries || []);
     } catch {}
     setLoading(false);
-  }
+  }, [studentId]);
+
+  useEffect(() => {
+    let cancelled = false;
+    Promise.resolve().then(() => {
+      if (!cancelled) loadPayments();
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [loadPayments]);
 
   if (loading) {
     return <div className="flex items-center justify-center py-8 text-navy-400">Loading payment history...</div>;

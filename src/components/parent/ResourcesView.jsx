@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { BookOpen, FileText, Clock } from "lucide-react";
 
 /**
@@ -10,20 +10,28 @@ export default function ResourcesView({ childClassArm, childName }) {
   const [resources, setResources] = useState([]);
   const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
-    loadResources();
-  }, [childClassArm]);
-
-  async function loadResources() {
+  // Declared before the effect that calls it, and memoised on its input —
+  // the React Compiler ESLint rules reject both TDZ access and synchronous
+  // setState in the effect body.
+  const loadResources = useCallback(async () => {
     if (!childClassArm) return;
-    setLoading(true);
     try {
       const res = await fetch(`/api/resources?classArm=${encodeURIComponent(childClassArm)}`);
       const data = await res.json();
       setResources(data.resources || []);
     } catch {}
     setLoading(false);
-  }
+  }, [childClassArm]);
+
+  useEffect(() => {
+    let cancelled = false;
+    Promise.resolve().then(() => {
+      if (!cancelled) loadResources();
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [loadResources]);
 
   if (loading) {
     return <div className="flex items-center justify-center py-6 text-navy-400">Loading...</div>;

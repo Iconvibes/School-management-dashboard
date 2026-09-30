@@ -17,6 +17,7 @@ import {
 } from "lucide-react";
 import ActivityHeatmap from "@/components/platform/ActivityHeatmap";
 import PendingApprovals from "@/components/platform/PendingApprovals";
+import { useNow } from "@/hooks/useNow";
 
 /** Simple sparkline using SVG */
 function Sparkline({ data, color = "#22d3ee", height = 48, width = 120 }) {
@@ -193,6 +194,8 @@ export default function PlatformDashboard() {
     }
   }
 
+  const now = useNow(); // purity-safe clock for the grace-period countdown
+
   if (loading) {
     return (
       <div className="flex items-center justify-center py-40">
@@ -207,13 +210,13 @@ export default function PlatformDashboard() {
   const totalTeachers = schools.reduce((acc, s) => acc + (s.teacherCount || 0), 0);
   const activeSchools = schools.filter((s) => s.status === "active").length;
 
-  // Deleted schools in grace period
+  // Deleted schools in grace period (now captured in an effect — react-hooks/purity)
   const GRACE_MS = 30 * 24 * 60 * 60 * 1000;
   const deletedSchools = schools
     .filter((s) => s.status === "deleted" && s.deletedAt)
     .map((s) => {
       const deletedAt = new Date(s.deletedAt).getTime();
-      const elapsed = Date.now() - deletedAt;
+      const elapsed = (now ?? deletedAt) - deletedAt;
       const remaining = Math.max(0, GRACE_MS - elapsed);
       const daysLeft = Math.ceil(remaining / (24 * 60 * 60 * 1000));
       return { ...s, daysLeft, deletedAt };

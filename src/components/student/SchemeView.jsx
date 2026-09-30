@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { BookOpen, FileText, Download, ExternalLink, ChevronDown, ChevronRight, Check, Clock } from "lucide-react";
 
 /**
@@ -12,20 +12,28 @@ export default function StudentSchemeView({ classArm }) {
   const [loading, setLoading] = useState(true);
   const [expandedSubject, setExpandedSubject] = useState(null);
 
-  useEffect(() => {
+  // Declared before the effect that calls it, and memoised on classArm —
+  // the React Compiler ESLint rules reject both TDZ access and synchronous
+  // setState in the effect body.
+  const loadSchemes = useCallback(async () => {
     if (!classArm) return;
-    loadSchemes();
-  }, [classArm]);
-
-  async function loadSchemes() {
-    setLoading(true);
     try {
       const res = await fetch(`/api/scheme?classArm=${encodeURIComponent(classArm)}`);
       const data = await res.json();
       setSchemes(data.schemes || []);
     } catch {}
     setLoading(false);
-  }
+  }, [classArm]);
+
+  useEffect(() => {
+    let cancelled = false;
+    Promise.resolve().then(() => {
+      if (!cancelled) loadSchemes();
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [loadSchemes]);
 
   if (loading) {
     return (

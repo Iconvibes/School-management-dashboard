@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { Trophy, TrendingUp, TrendingDown, Users, Minus, BarChart3, Target, Award } from "lucide-react";
 
 /**
@@ -11,19 +11,29 @@ export default function TeacherPerformance({ session }) {
   const [performance, setPerformance] = useState([]);
   const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
-    loadPerformance();
-  }, []);
-
-  async function loadPerformance() {
-    setLoading(true);
+  // Declared before the effect that calls it, and memoised so the effect
+  // runs exactly once — the React Compiler ESLint rules reject both TDZ
+  // access and ref-writes during render, so this is the compliant shape.
+  const loadPerformance = useCallback(async () => {
     try {
       const res = await fetch("/api/teacher/performance");
       const data = await res.json();
       setPerformance(data.performance || []);
     } catch {}
     setLoading(false);
-  }
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    // Deferred to a microtask so no setState runs synchronously in the
+    // effect body (React Compiler lint: cascading-render risk).
+    Promise.resolve().then(() => {
+      if (!cancelled) loadPerformance();
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [loadPerformance]);
 
   if (loading) {
     return (

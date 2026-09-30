@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { FileText, BookOpen, Download, Clock, Send, CheckCircle, AlertCircle } from "lucide-react";
 
 /**
@@ -17,12 +17,10 @@ export default function ResourcesView({ classArm, subject }) {
   const [submitContent, setSubmitContent] = useState({});
   const [toast, setToast] = useState("");
 
-  useEffect(() => {
-    loadResources();
-  }, [classArm, subject]);
-
-  async function loadResources() {
-    setLoading(true);
+  // Declared before the effect that calls it, and memoised on its inputs —
+  // the React Compiler ESLint rules reject both TDZ access and synchronous
+  // setState in the effect body.
+  const loadResources = useCallback(async () => {
     try {
       const url = new URL("/api/resources", window.location.origin);
       if (classArm) url.searchParams.set("classArm", classArm);
@@ -53,7 +51,17 @@ export default function ResourcesView({ classArm, subject }) {
       setSubmissions(submissionsMap);
     } catch {}
     setLoading(false);
-  }
+  }, [classArm, subject, filter]);
+
+  useEffect(() => {
+    let cancelled = false;
+    Promise.resolve().then(() => {
+      if (!cancelled) loadResources();
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [loadResources]);
 
   async function handleSubmit(resourceId) {
     const content = submitContent[resourceId];

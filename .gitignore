@@ -43,13 +43,13 @@ CLAUDE.md
 *.pptx
 *.zip
 *.excalidraw
-deck-qa.html
-edutrack-flyer.html
-edutrack-flyer.pdf
-edutrack-pitch-deck.html
-edutrack-pitch-deck.pdf
-edutrack-pitch-deck.pptx
-edutrack-architecture.excalidraw
+docs/presentation/deck-qa.html
+docs/presentation/edutrack-flyer.html
+docs/presentation/edutrack-flyer.pdf
+docs/presentation/edutrack-pitch-deck.html
+docs/presentation/edutrack-pitch-deck.pdf
+docs/presentation/edutrack-pitch-deck.pptx
+docs/presentation/edutrack-architecture.excalidraw
 
 # debug
 npm-debug.log*

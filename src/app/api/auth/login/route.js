@@ -10,6 +10,7 @@ import * as log from "@/lib/log";
 import { verifyTurnstile } from "@/lib/turnstile";
 import { resolvePostLoginRedirect } from "@/lib/portal-guard";
 import { matchesChildName, matchesSchoolName } from "@/lib/passwords";
+import { PARENT_NAME_AMBIGUOUS } from "@/modules/users/store";
 
 // Failures-only, multi-bucket brute-force guard (checked at each FAILURE
 // path, never on success):
@@ -158,6 +159,16 @@ export async function POST(request) {
       ? await store.findTeacherByNameInSchool(schoolId, name)
       : await store.findParentByNameInSchool(schoolId, name)
     : await store.findUserByEmailInSchool(schoolId, email);
+  // Duplicate-name guard (TECH_DEBT L2): if two parent accounts in this
+  // school share the typed name, refuse the login instead of silently
+  // resolving one of them (same credentials, wrong account, wrong children).
+  // Deliberately vague — the wording must not reveal WHICH name collided.
+  if (user === PARENT_NAME_AMBIGUOUS) {
+    return deny(
+      401,
+      "This parent name matches more than one account in this school. Please sign in with your email, or ask the school office to fix the duplicate."
+    );
+  }
   if (!user) {
     // A teacher signs in by NAME — so a name that isn't in the school is
     // almost always "the admin never added me", not a typo'd credential.

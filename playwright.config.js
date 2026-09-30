@@ -11,6 +11,10 @@ export default defineConfig({
     trace: "retain-on-failure",
     // Clear cookies/storage between tests so each starts unauthenticated
     storageState: { cookies: [], origins: [] },
+    // The PWA service worker is registered in dev too; its shell cache must
+    // never decide what an E2E test sees (auth bounces cached as HTML,
+    // stale dev chunks). Tests exercise the network, not the offline layer.
+    serviceWorkers: "block",
   },
   projects: [
     { name: "chromium", use: { browserName: "chromium" } },

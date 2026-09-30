@@ -146,22 +146,38 @@ export async function findUserByIdWithAuth(id) {
 }
 
 /**
+ * Marker returned by findParentByNameInSchool when MORE THAN ONE parent
+ * account in the school matches the typed name (TECH_DEBT L2). The name is a
+ * login identifier within a school: findOne() would resolve one arbitrarily
+ * and shadow the other — same credentials, wrong account, wrong children.
+ * The login route fails closed on this marker and refuses the login.
+ * Exported so route code can distinguish "no such parent" from "ambiguous".
+ */
+export { PARENT_NAME_AMBIGUOUS } from "@/modules/users/markers.js";
+import { PARENT_NAME_AMBIGUOUS } from "@/modules/users/markers.js";
+
+/**
  * Find a PARENT by their full name — the name the admin typed when creating
  * or linking them. Case-insensitive (names are plaintext in Mongo; only
  * email/phone are encrypted), tenant-scoped, role-filtered so a student
  * sharing a parent's name can never be found here. Returns the auth shape
  * (password hash included) exactly like findUserByEmailInSchool.
+ * Mirrors the demo store's duplicate detection: >1 match returns
+ * PARENT_NAME_AMBIGUOUS instead of guessing.
  */
 export async function findParentByNameInSchool(schoolId, name) {
   await ready();
   const norm = String(name || "").trim();
   if (!norm) return null;
-  const user = await User.findOne({
+  const matches = await User.find({
     schoolId,
     role: "PARENT",
     name: { $regex: `^${norm.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, $options: "i" },
-  });
-  return user ? userToLoginShape(user) : null;
+  })
+    .limit(2)
+    .toArray();
+  if (matches.length > 1) return PARENT_NAME_AMBIGUOUS;
+  return matches.length === 1 ? userToLoginShape(matches[0]) : null;
 }
 
 /**
@@ -185,14 +201,26 @@ export async function findTeacherByNameInSchool(schoolId, name) {
 export async function searchSchools(search, limit = 8) {
   await ready();
   const q = (search || "").trim();
-  const query = q
-    ? { name: { $regex: q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), $options: "i" } }
-    : {};
+  // Mirror the demo store's filter (src/modules/school/store.js): the
+  // "EduTrack Platform" pseudo-school is an internal identity/billing shell
+  // and must never appear in the public school directory — otherwise the
+  // login page offers it as a pickable tenant and platform rows leak into
+  // tenant counts built on top of search results.
+  const query = {
+    isPlatformSchool: { $ne: true },
+    // Deliberate (mirrors demo store): pending/frozen/deleted schools stay
+    // searchable so their users can pick their school card and read the
+    // login route's specific status message.
+    ...(q
+      ? { name: { $regex: q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), $options: "i" } }
+      : {}),
+  };
   const docs = await School.find(query).limit(limit);
   return docs.map((s) => ({
     id: s._id.toString(),
     name: s.name,
     logoUrl: s.logoUrl || "",
+    sealUrl: s.sealUrl || "",
     brandColor: s.brandColor || "#2563EB",
     // "active" | "frozen" — the login page shows a notice when someone
     // picks a deactivated school, before they type credentials.

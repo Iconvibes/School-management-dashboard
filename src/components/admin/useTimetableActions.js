@@ -3,6 +3,7 @@
 import { useMemo } from "react";
 import {
   DEFAULT_PERIOD_TIMES,
+  DAYS,
   getBreakTime,
   getDayTimeline,
   getPeriodTimes,
@@ -83,8 +84,11 @@ export default function useTimetableActions({
 
   const ttSpark = useMemo(() => sparklinePoints(ttHealth?.history), [ttHealth?.history]);
 
+  // Keyed by the SAME day names the grid (DAYS) and the timetable data use —
+  // abbreviated keys ("Mon") previously derived empty timelines here, which
+  // rendered every grid column as "0 periods / not scheduled".
   const dayTimelines = useMemo(
-    () => Object.fromEntries(["Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map((d) => [d, getDayTimeline(session?.school, d)])),
+    () => Object.fromEntries([...DAYS, "Saturday"].map((d) => [d, getDayTimeline(session?.school, d)])),
     [session?.school]
   );
 

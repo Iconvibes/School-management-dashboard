@@ -169,7 +169,17 @@ function AdminDashboardInner() {
   const offlineSync = useOfflineSync();
   const { meData: initialSession, loading: sessionLoading } = useSession();
   const [session, setSession] = useState(null);
-  useEffect(() => { if (initialSession) setSession(initialSession); }, [initialSession]);
+  useEffect(() => {
+    if (!initialSession) return;
+    const t = setTimeout(() => setSession(initialSession), 0);
+    return () => clearTimeout(t);
+  }, [initialSession]);
+  // The gate below must not trust the `session` copy alone: when meData and
+  // loading land in the same commit, this effect runs BEFORE the copy
+  // effect's setSession re-renders, so `session` is still null here — a
+  // valid session would be bounced as signed-out. Coalescing with
+  // initialSession (the hook's own state) closes that race.
+  const currentSession = session ?? initialSession;
   const [lastSync, setLastSync] = useState(null);
   const [tick, setTick] = useState(0);
   const [stats, setStats] = useState(null);
@@ -337,7 +347,11 @@ function AdminDashboardInner() {
     deps: [reportClass],
     transform: (d) => d.students || [],
   });
-  useEffect(() => { if (reportsResult) setReportStudents(reportsResult); }, [reportsResult]);
+  useEffect(() => {
+    if (!reportsResult) return;
+    const t = setTimeout(() => setReportStudents(reportsResult), 0);
+    return () => clearTimeout(t);
+  }, [reportsResult]);
 
   useTabFetch("/api/fees/structures", {
     enabled: tab === "fees",
@@ -363,7 +377,11 @@ function AdminDashboardInner() {
     tab === "timetable" && ttArm ? "/api/timetable?classArm=" + encodeURIComponent(ttArm) : null,
     { enabled: tab === "timetable" && !!ttArm, deps: [ttArm], transform: (d) => d.entries || [] }
   );
-  useEffect(() => { if (ttEntriesResult) setTtEntries(ttEntriesResult); }, [ttEntriesResult]);
+  useEffect(() => {
+    if (!ttEntriesResult) return;
+    const t = setTimeout(() => setTtEntries(ttEntriesResult), 0);
+    return () => clearTimeout(t);
+  }, [ttEntriesResult]);
 
   // Timetable: load the school's bell schedule for the period-times editor.
   const ttSchoolResult = useTabFetch("/api/school", {
@@ -397,35 +415,45 @@ function AdminDashboardInner() {
     enabled: tab === "fees",
     transform: (d) => d.pending || [],
   });
-  useEffect(() => { if (reconcileData) setPendingReconciles(reconcileData); }, [reconcileData, setPendingReconciles]);
+  useEffect(() => {
+    if (!reconcileData) return;
+    const t = setTimeout(() => setPendingReconciles(reconcileData), 0);
+    return () => clearTimeout(t);
+  }, [reconcileData, setPendingReconciles]);
 
   // Roles & Access: role-change audit trail via useTabFetch
   const { data: roleAuditData } = useTabFetch("/api/users/roles/audit", {
     enabled: tab === "roles",
     transform: (d) => d.entries || [],
   });
-  useEffect(() => { if (roleAuditData) setRoleAudit(roleAuditData); }, [roleAuditData]);
+  useEffect(() => {
+    if (!roleAuditData) return;
+    const t = setTimeout(() => setRoleAudit(roleAuditData), 0);
+    return () => clearTimeout(t);
+  }, [roleAuditData]);
 
   useEffect(() => {
     if (sessionLoading) return;
-    if (!session?.user || !STAFF_ROLES.includes(session.user.role)) {
+    if (!currentSession?.user || !STAFF_ROLES.includes(currentSession.user.role)) {
       bounceToLogin(router);
       return;
     }
-    setLastSync(Date.now());
-    setTtArm(session.school?.activeArms?.[0] || "");
-
+    // The sync state updates move inside the async boundary below —
+    // synchronous setState in the effect body is flagged as a
+    // cascading-render risk by the React Compiler lint.
     Promise.all([
       fetch("/api/admin/stats"),
       fetch("/api/users?role=TEACHER"),
       fetch("/api/users?role=STUDENT"),
       fetch("/api/users?role=PARENT"),
     ]).then(async ([statsRes, teachersRes, studentsRes, parentsRes]) => {
+      setLastSync(Date.now());
+      setTtArm(currentSession.school?.activeArms?.[0] || "");
       setStats((await statsRes.json()).stats);
       setTeachers((await teachersRes.json()).users);
       setStudents((await studentsRes.json()).users);
       setParents((await parentsRes.json()).users);
-      if (session.user?.role === "SUPER_ADMIN") {
+      if (currentSession.user?.role === "SUPER_ADMIN") {
         fetch("/api/timetable/health")
           .then((r) => r.json())
           .then((d) => setTtHealth(d))
@@ -433,7 +461,7 @@ function AdminDashboardInner() {
       }
       setLoading(false);
     });
-  }, [session, sessionLoading, router]);
+  }, [currentSession, sessionLoading, router]);
 
   // Tick every minute so "Last synced X ago" relative time updates
   useEffect(() => {

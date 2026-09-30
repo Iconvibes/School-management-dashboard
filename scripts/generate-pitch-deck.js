@@ -641,8 +641,8 @@ function lead(s, runs, { x = 0.55, y = 6.1, w = 12.2, size = 13, align = "left" 
 }
 
 // ============================================================================
-pptx.writeFile({ fileName: "edutrack-pitch-deck.pptx" }).then(() => {
-  console.log("Wrote edutrack-pitch-deck.pptx");
+pptx.writeFile({ fileName: "docs/presentation/edutrack-pitch-deck.pptx" }).then(() => {
+  console.log("Wrote docs/presentation/edutrack-pitch-deck.pptx");
   if (warnings.length) {
     console.log("\n--- text-fit warnings ---");
     warnings.forEach((w) => console.log(w));

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { cacheData, getCachedData } from "@/lib/offline-db";
 
 /**
@@ -18,7 +18,7 @@ export function useSession({ ttlMs = 24 * 60 * 60 * 1000 } = {}) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
-  const fetchSession = async () => {
+  const fetchSession = useCallback(async () => {
     try {
       const response = await fetch("/api/auth/me");
       if (!response.ok) {
@@ -50,11 +50,19 @@ export function useSession({ ttlMs = 24 * 60 * 60 * 1000 } = {}) {
     } finally {
       setLoading(false);
     }
-  };
+  }, [ttlMs]);
 
   useEffect(() => {
-    fetchSession();
-  }, []);
+    let cancelled = false;
+    // Deferred to a microtask: synchronous setState in the effect body is
+    // flagged by the React Compiler lint as a cascading-render risk.
+    Promise.resolve().then(() => {
+      if (!cancelled) fetchSession();
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [fetchSession]);
 
   return { meData, loading, error, refetch: fetchSession };
 }

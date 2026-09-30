@@ -111,6 +111,17 @@ export async function runDueScans({
       skipped += 1;
       continue;
     }
+    // The "EduTrack Platform" pseudo-school is a billing/identity shell, not
+    // a tenant: no timetable, no arms, no admins. A never-scanned school is
+    // always "due", so without this guard the job pointlessly scanned it on
+    // every boot/day — and would email platform-wide junk notifications if
+    // its empty shell ever flagged an issue. Only due schools reach this
+    // lookup, so the per-tick cost is one extra read per due school per day.
+    const school = await store.getSchoolById(schoolId).catch(() => null);
+    if (school?.isPlatformSchool) {
+      skipped += 1;
+      continue;
+    }
     try {
       const result = await runConflictScan({ store, schoolId, now });
       // New collisions since the last scan → tell every admin (the job's

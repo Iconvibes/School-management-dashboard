@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { Bell, BellOff, Save } from "lucide-react";
 
 const NOTIFICATION_TYPES = [
@@ -31,19 +31,27 @@ export default function NotificationPreferences() {
   const [saving, setSaving] = useState(false);
   const [toast, setToast] = useState("");
 
-  useEffect(() => {
-    loadPrefs();
-  }, []);
-
-  async function loadPrefs() {
-    setLoading(true);
+  // Declared before the effect that calls it, and memoised so the effect
+  // runs exactly once — the React Compiler ESLint rules reject both TDZ
+  // access and synchronous setState in the effect body.
+  const loadPrefs = useCallback(async () => {
     try {
       const res = await fetch("/api/notifications/preferences");
       const data = await res.json();
       setPrefs(data.preferences || {});
     } catch {}
     setLoading(false);
-  }
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    Promise.resolve().then(() => {
+      if (!cancelled) loadPrefs();
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [loadPrefs]);
 
   async function handleSave() {
     setSaving(true);

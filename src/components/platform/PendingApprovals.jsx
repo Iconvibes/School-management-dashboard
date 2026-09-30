@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useCallback } from "react";
+import { useNow } from "@/hooks/useNow";
 import {
   Clock,
   CheckCircle2,
@@ -28,6 +29,7 @@ export default function PendingApprovals({ schools, onApprove, onReject, onBulkA
   const [confirmApprove, setConfirmApprove] = useState(null); // school id
   const [rejectModal, setRejectModal] = useState(null); // school id
   const [rejectReason, setRejectReason] = useState("");
+  const now = useNow(60_000); // for "Xh ago" labels, kept fresh per minute
   const [rejectDetail, setRejectDetail] = useState("");
   const [processing, setProcessing] = useState(null); // school id being processed
   const [selected, setSelected] = useState(new Set()); // bulk selection
@@ -277,7 +279,10 @@ export default function PendingApprovals({ schools, onApprove, onReject, onBulkA
           const isProcessing = processing === s.id;
           const isSelected = selected.has(s.id);
           const created = new Date(s.createdAt);
-          const hoursAgo = Math.round((Date.now() - created.getTime()) / (1000 * 60 * 60));
+          const hoursAgo =
+            now === null
+              ? null
+              : Math.round((now - created.getTime()) / (1000 * 60 * 60));
 
           return (
             <div

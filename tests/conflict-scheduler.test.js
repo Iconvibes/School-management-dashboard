@@ -173,7 +173,11 @@ describe("runDueScans — the job against the real store", () => {
       scanHour: 2,
     });
     assert.ok(first.scanned >= 1, "scanned at least the test school");
-    assert.equal(first.skipped, 0);
+    // The demo seed also contains the "EduTrack Platform" pseudo-school — a
+    // billing/identity shell with no timetable and no admins. The job skips
+    // it via the isPlatformSchool guard, so on a fresh seed exactly that one
+    // school is skipped while every real tenant school is scanned.
+    assert.equal(first.skipped, 1, "only the platform pseudo-school is skipped");
     assert.ok(await demoStore.getConflictScan(school.id), "record persisted");
 
     const second = await runDueScans({

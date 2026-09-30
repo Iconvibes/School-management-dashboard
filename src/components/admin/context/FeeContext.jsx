@@ -1,6 +1,6 @@
 "use client";
 
-import { createContext, useContext, useReducer } from "react";
+import { createContext, useContext, useMemo, useReducer } from "react";
 
 /**
  * Fee management state — extracted from the admin dashboard to isolate fee
@@ -136,11 +136,45 @@ export function FeeProvider({ initialState: initOverrides, children }) {
       ? { ...initialState, ...initOverrides }
       : initialState
   );
-  return (
-    <FeeContext.Provider value={{ state, dispatch }}>
-      {children}
-    </FeeContext.Provider>
-  );
+
+  // useState-style setter adapters. The fee tabs/modals were extracted from
+  // the dashboard page with the old "state + setters" API surface, so the
+  // context must expose the setters alongside the state — without them every
+  // `setPayForm`-style destructure from the fee state is undefined and typing
+  // in the fee modals silently no-ops (controlled inputs keep their old
+  // value, e.g. the full prefill balance gets recorded as the payment).
+  // Built inside useMemo against the latest state (the adapters capture the
+  // current slice so functional updates like setPayForm(f => …) still work).
+  const value = useMemo(() => {
+    const adapted = (type, current) => (v) =>
+      dispatch({ type, value: typeof v === "function" ? v(current) : v });
+    const setters = {
+      setFeeStructures: adapted(FEE_ACTIONS.SET_STRUCTURES, state.feeStructures),
+      setFeeLedger: adapted(FEE_ACTIONS.SET_LEDGER, state.feeLedger),
+      setFeeTotals: adapted(FEE_ACTIONS.SET_TOTALS, state.feeTotals),
+      setPendingPayments: adapted(FEE_ACTIONS.SET_PENDING_PAYMENTS, state.pendingPayments),
+      setConfirmingId: adapted(FEE_ACTIONS.SET_CONFIRMING_ID, state.confirmingId),
+      setFeeClass: adapted(FEE_ACTIONS.SET_CLASS, state.feeClass),
+      setFeeDefaultersOnly: adapted(FEE_ACTIONS.SET_DEFAULTERS_ONLY, state.feeDefaultersOnly),
+      setFeeDraft: adapted(FEE_ACTIONS.SET_DRAFT, state.feeDraft),
+      setPayModal: adapted(FEE_ACTIONS.SET_PAY_MODAL, state.payModal),
+      setPayForm: adapted(FEE_ACTIONS.SET_PAY_FORM, state.payForm),
+      setFeeSaving: adapted(FEE_ACTIONS.SET_SAVING, state.feeSaving),
+      setReminderModal: adapted(FEE_ACTIONS.SET_REMINDER_MODAL, state.reminderModal),
+      setReminderSending: adapted(FEE_ACTIONS.SET_REMINDER_SENDING, state.reminderSending),
+      setReminderResult: adapted(FEE_ACTIONS.SET_REMINDER_RESULT, state.reminderResult),
+      setReminderMessage: adapted(FEE_ACTIONS.SET_REMINDER_MESSAGE, state.reminderMessage),
+      setReminderStudentMessage: adapted(FEE_ACTIONS.SET_REMINDER_STUDENT_MESSAGE, state.reminderStudentMessage),
+      setReconcileModal: adapted(FEE_ACTIONS.SET_RECONCILE_MODAL, state.reconcileModal),
+      setReconcileSending: adapted(FEE_ACTIONS.SET_RECONCILE_SENDING, state.reconcileSending),
+      setReconcileResult: adapted(FEE_ACTIONS.SET_RECONCILE_RESULT, state.reconcileResult),
+      setPendingReconciles: adapted(FEE_ACTIONS.SET_PENDING_RECONCILES, state.pendingReconciles),
+      setAudit: adapted(FEE_ACTIONS.SET_AUDIT, state.audit),
+    };
+    return { state: { ...state, ...setters }, dispatch };
+  }, [state, dispatch]);
+
+  return <FeeContext.Provider value={value}>{children}</FeeContext.Provider>;
 }
 
 /**

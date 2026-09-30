@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { isOnline, getPendingSummary, queueChange } from "@/lib/offline-db";
 
 // Maximum number of retry attempts before an item is considered dead-lettered
@@ -22,11 +22,53 @@ export function useOfflineSync() {
   const [syncing, setSyncing] = useState(false);
   const [lastSync, setLastSync] = useState(null);
 
+  /**
+   * Update retry count for a pending change.
+   */
+  const updateRetryCount = useCallback(async (id, retryCount) => {
+    // Direct IndexedDB access to update retry count
+    const request = indexedDB.open("edutrack-offline", 1);
+    request.onsuccess = (event) => {
+      const db = event.target.result;
+      const tx = db.transaction("pendingChanges", "readwrite");
+      const store = tx.objectStore("pendingChanges");
+      store.get(id).onsuccess = (e) => {
+        const record = e.target.result;
+        if (record) {
+          record.retryCount = retryCount;
+          store.put(record);
+        }
+      };
+    };
+  }, []);
+
+  /**
+   * Invalidate SW cache for a specific API endpoint after a successful write.
+   * This ensures the next read fetches fresh data from the server.
+   */
+  const invalidateSWCache = useCallback((endpoint) => {
+    if (typeof navigator === "undefined" || !navigator.serviceWorker?.controller) return;
+    try {
+      navigator.serviceWorker.controller.postMessage({
+        type: "INVALIDATE_CACHE",
+        url: endpoint,
+      });
+    } catch {
+      // SW not available — ignore
+    }
+  }, []);
+
   // syncPending must be declared BEFORE the useEffect that references it
-  // to avoid a stale closure capturing undefined.
+  // to avoid a stale closure capturing undefined. Uses a syncingRef guard
+  // instead of closing over the `syncing` state — a `[syncing]` dep here
+  // made the compiler unable to preserve the memoization (and would
+  // re-create the callback, re-binding the online/offline listeners).
+  const syncingRef = useRef(false);
   const syncPending = useCallback(async () => {
-    if (syncing || !isOnline()) return;
+    if (syncingRef.current || !isOnline()) return;
+    syncingRef.current = true;
     setSyncing(true);
+
 
     try {
       const { getPendingChanges, markSynced, removeSynced } = await import("@/lib/offline-db");
@@ -68,47 +110,10 @@ export function useOfflineSync() {
       setFailedCount(remaining.filter((c) => (c.retryCount || 0) >= MAX_RETRIES).length);
       setLastSync(Date.now());
     } finally {
+      syncingRef.current = false;
       setSyncing(false);
     }
-  }, [syncing]);
-
-  /**
-   * Update retry count for a pending change.
-   */
-  const updateRetryCount = async (id, retryCount) => {
-    const { getPendingChanges } = await import("@/lib/offline-db");
-    const db = await import("@/lib/offline-db").then((m) => m.default || m);
-    // Direct IndexedDB access to update retry count
-    const request = indexedDB.open("edutrack-offline", 1);
-    request.onsuccess = (event) => {
-      const db = event.target.result;
-      const tx = db.transaction("pendingChanges", "readwrite");
-      const store = tx.objectStore("pendingChanges");
-      store.get(id).onsuccess = (e) => {
-        const record = e.target.result;
-        if (record) {
-          record.retryCount = retryCount;
-          store.put(record);
-        }
-      };
-    };
-  };
-
-  /**
-   * Invalidate SW cache for a specific API endpoint after a successful write.
-   * This ensures the next read fetches fresh data from the server.
-   */
-  const invalidateSWCache = (endpoint) => {
-    if (typeof navigator === "undefined" || !navigator.serviceWorker?.controller) return;
-    try {
-      navigator.serviceWorker.controller.postMessage({
-        type: "INVALIDATE_CACHE",
-        url: endpoint,
-      });
-    } catch {
-      // SW not available — ignore
-    }
-  };
+  }, [updateRetryCount, invalidateSWCache]);
 
   /**
    * Queue a change for later sync (call this instead of fetch when offline).
@@ -123,8 +128,6 @@ export function useOfflineSync() {
   useEffect(() => {
     if (typeof window === "undefined") return;
 
-    setOnline(navigator.onLine);
-
     const handleOnline = () => {
       setOnline(true);
       // Auto-sync when coming back online
@@ -135,10 +138,20 @@ export function useOfflineSync() {
     window.addEventListener("online", handleOnline);
     window.addEventListener("offline", handleOffline);
 
-    // Check pending count on mount
-    getPendingSummary().then((s) => setPendingCount(s.total));
+    // Read the initial state + pending count in an async boundary —
+    // synchronous setState in the effect body is flagged by the React
+    // Compiler lint as a cascading-render risk.
+    let cancelled = false;
+    Promise.resolve().then(() => {
+      if (cancelled) return;
+      if (!navigator.onLine) setOnline(false);
+      return getPendingSummary();
+    }).then((s) => {
+      if (!cancelled && s) setPendingCount(s.total);
+    }).catch(() => {});
 
     return () => {
+      cancelled = true;
       window.removeEventListener("online", handleOnline);
       window.removeEventListener("offline", handleOffline);
     };
@@ -180,7 +193,7 @@ export function useOfflineSync() {
         headers: { "Content-Type": "application/json" },
       });
     }
-  }, [queueOfflineChange]);
+  }, [queueOfflineChange, invalidateSWCache]);
 
   /**
    * Discard all dead-lettered (failed) items from the queue.

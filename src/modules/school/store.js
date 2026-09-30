@@ -103,6 +103,10 @@ export async function searchSchools(search, limit = 8) {
   const q = (search || "").toLowerCase().trim();
   return schools
     .filter((s) => !s.isPlatformSchool)
+    // Deliberate: pending, frozen and deleted (grace-period) schools remain
+    // searchable so their users can find their school card and read the
+    // login route's specific status message instead of a generic "school not
+    // found". Pinned by demo-seed-gate + school-deletion tests.
     .filter((s) => !q || s.name.toLowerCase().includes(q))
     .slice(0, limit)
     .map((s) => ({

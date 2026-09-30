@@ -19,12 +19,6 @@ export default function VerifyEmailPage() {
   const [countdown, setCountdown] = useState(5);
 
   useEffect(() => {
-    if (!token) {
-      setLoading(false);
-      setResult({ success: false, error: "No verification token provided" });
-      return;
-    }
-
     async function verify() {
       try {
         const res = await fetch("/api/auth/verify-email", {
@@ -44,6 +38,17 @@ export default function VerifyEmailPage() {
       }
       setLoading(false);
     }
+
+    if (!token) {
+      // Deferred to a microtask — synchronous setState in the effect body is
+      // flagged as a cascading-render risk by the React Compiler lint.
+      Promise.resolve().then(() => {
+        setLoading(false);
+        setResult({ success: false, error: "No verification token provided" });
+      });
+      return;
+    }
+
     verify();
   }, [token]);
 

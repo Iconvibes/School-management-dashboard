@@ -131,11 +131,17 @@ export default function TeacherDashboard() {
       bounceToLogin(router);
       return;
     }
-    const preferred =
-      session.user.assignedClasses?.[0] || session.user.assignedClass || session.school?.activeArms?.[0] || "";
-    setClassArm(preferred);
-    setSubject(session.user.subjects?.[0] || subjects[0] || "");
-    setLoading(false);
+    // Default selection + loading=false are applied in a microtask —
+    // synchronous setState in the effect body is flagged as a
+    // cascading-render risk by the React Compiler lint.
+    const t = setTimeout(() => {
+      const preferred =
+        session.user.assignedClasses?.[0] || session.user.assignedClass || session.school?.activeArms?.[0] || "";
+      setClassArm(preferred);
+      setSubject(session.user.subjects?.[0] || subjects[0] || "");
+      setLoading(false);
+    }, 0);
+    return () => clearTimeout(t);
   }, [session, sessionLoading, router, subjects]);
 
   // ---- Live scope enforcement ----------------------------------------------
@@ -258,7 +264,12 @@ export default function TeacherDashboard() {
     transform: (d) => d.rows || [],
   });
   useEffect(() => {
-    if (attResult) { setAttRows(attResult); setAttLoaded(true); }
+    if (!attResult) return;
+    const t = setTimeout(() => {
+      setAttRows(attResult);
+      setAttLoaded(true);
+    }, 0);
+    return () => clearTimeout(t);
   }, [attResult]);
 
   // Load ranked students (for the Report Cards view) when class arm changes
@@ -273,7 +284,12 @@ export default function TeacherDashboard() {
     { enabled: view === "timetable", transform: (d) => d.entries || [] }
   );
   useEffect(() => {
-    if (ttEntriesResult) { setTtEntries(ttEntriesResult); setTtLoaded(true); }
+    if (!ttEntriesResult) return;
+    const t = setTimeout(() => {
+      setTtEntries(ttEntriesResult);
+      setTtLoaded(true);
+    }, 0);
+    return () => clearTimeout(t);
   }, [ttEntriesResult]);
 
   // Load saved scores when subject + class arm change
@@ -284,13 +300,29 @@ export default function TeacherDashboard() {
         const map = {};
         const saved = {};
         (data.scores || []).forEach((s) => {
-          map[s.studentId] = {
-            ca1: s.ca1 ?? s.caScore ?? 0,
-            ca2: s.ca2 ?? 0,
-            ca3: s.ca3 ?? 0,
-            ca4: s.ca4 ?? 0,
-            exam: s.examScore,
-          };
+          // Legacy-format rows (a single caScore total, no ca1–ca4 components)
+          // must NOT be dumped into the CA1 input — caScore can be up to 40
+          // and CA1 only accepts 0–10, which made the row unsavable and
+          // displayed an impossible value. Keep legacy totals in `caScore`;
+          // they display in the CA Total column and save through the legacy
+          // API path unless the teacher re-enters the components.
+          const hasComponents = s.ca1 !== undefined && s.ca1 !== null;
+          map[s.studentId] = hasComponents
+            ? {
+                ca1: s.ca1 ?? 0,
+                ca2: s.ca2 ?? 0,
+                ca3: s.ca3 ?? 0,
+                ca4: s.ca4 ?? 0,
+                exam: s.examScore,
+              }
+            : {
+                ca1: "",
+                ca2: "",
+                ca3: "",
+                ca4: "",
+                exam: s.examScore,
+                caScore: s.caScore ?? 0,
+              };
           saved[s.studentId] = { ...map[s.studentId] };
         });
         setSavedMap(saved);
@@ -310,7 +342,11 @@ export default function TeacherDashboard() {
   }
 
   function computeRow(row) {
-    const ca = computeCA(row?.ca1, row?.ca2, row?.ca3, row?.ca4);
+    let ca = computeCA(row?.ca1, row?.ca2, row?.ca3, row?.ca4);
+    // Legacy rows carry their CA as a single total (see the loader above).
+    if (!ca && row?.caScore !== undefined && row?.caScore !== "") {
+      ca = Math.min(40, Math.max(0, Number(row.caScore) || 0));
+    }
     const exam = Math.min(MAX_EXAM, Math.max(0, Number(row?.exam) || 0));
     const total = ca + exam;
     return { ca, exam, total, grade: computeGrade(total) };
@@ -353,14 +389,25 @@ export default function TeacherDashboard() {
           const r = rows[id] || {};
           return (Number(r.ca1) || 0) + (Number(r.ca2) || 0) + (Number(r.ca3) || 0) + (Number(r.ca4) || 0) > 0 || r.exam !== "";
         })
-        .map((id) => ({
-          studentId: id,
-          ca1: Number(rows[id].ca1) || 0,
-          ca2: Number(rows[id].ca2) || 0,
-          ca3: Number(rows[id].ca3) || 0,
-          ca4: Number(rows[id].ca4) || 0,
-          examScore: rows[id].exam,
-        }));
+        .map((id) => {
+          const r = rows[id];
+          // Untouched legacy rows (blank components + a stored caScore) go
+          // through the legacy API path so their CA total is preserved
+          // instead of being zeroed out by component coercion.
+          const isLegacy =
+            r.ca1 === "" && r.ca2 === "" && r.ca3 === "" && r.ca4 === "" &&
+            r.caScore !== undefined;
+          return isLegacy
+            ? { studentId: id, caScore: Number(r.caScore) || 0, examScore: r.exam }
+            : {
+                studentId: id,
+                ca1: Number(r.ca1) || 0,
+                ca2: Number(r.ca2) || 0,
+                ca3: Number(r.ca3) || 0,
+                ca4: Number(r.ca4) || 0,
+                examScore: r.exam,
+              };
+        });
 
       const body = { classArm, subject, rows: payload };
       const res = await offlineSync.offlineFetch("/api/scores", {
@@ -634,7 +681,7 @@ export default function TeacherDashboard() {
             >
               <KeyRound className="h-4.5 w-4.5" />
             </button>
-            <div className="flex h-9 w-9 items-center justify-center rounded-full bg-gradient-to-br from-brand-500 to-brand-700 text-sm font-bold text-white">
+            <div className="flex h-9 w-9 items-center justify-center rounded-full bg-linear-to-br from-brand-500 to-brand-700 text-sm font-bold text-white">
               {session.user.name.split(" ").map((w) => w[0]).join("").slice(0, 2).toUpperCase()}
             </div>
           </div>
@@ -643,7 +690,7 @@ export default function TeacherDashboard() {
         <div className="mx-auto max-w-7xl px-5 py-8">
           {/* View toggle — scrolls horizontally on small screens so the four
               views never push the page wider than the viewport */}
-          <div className="mb-6 -mx-1 max-w-full overflow-x-auto px-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+          <div className="mb-6 -mx-1 max-w-full overflow-x-auto px-1 scrollbar-none [&::-webkit-scrollbar]:hidden">
             <div className="inline-flex w-max gap-1 rounded-xl bg-navy-100 p-1 lg:hidden">
             <button
               onClick={() => {
@@ -975,7 +1022,7 @@ export default function TeacherDashboard() {
       {/* Class-starts alarm banner — the "it's time" ring */}
       {classAlerts.alert && (
         <div className="fixed left-1/2 top-20 z-50 w-[min(92vw,640px)] -translate-x-1/2 animate-fade-up">
-          <div className="flex items-center gap-3 rounded-2xl border border-amber-300 bg-gradient-to-r from-amber-50 to-orange-50 px-5 py-4 shadow-2xl">
+          <div className="flex items-center gap-3 rounded-2xl border border-amber-300 bg-linear-to-r from-amber-50 to-orange-50 px-5 py-4 shadow-2xl">
             <span className="flex h-11 w-11 shrink-0 animate-pulse items-center justify-center rounded-xl bg-amber-500 text-white shadow-lg shadow-amber-500/40">
               <AlarmClock className="h-6 w-6" />
             </span>

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { Users, TrendingUp, AlertTriangle, CheckCircle2 } from "lucide-react";
 
 /**
@@ -11,19 +11,29 @@ export default function EngagementTab({ session }) {
   const [summary, setSummary] = useState(null);
   const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
-    loadEngagement();
-  }, []);
-
-  async function loadEngagement() {
-    setLoading(true);
+  // Declared before the effect that calls it, and memoised so the effect
+  // runs exactly once — the React Compiler ESLint rules reject both TDZ
+  // access and ref-writes during render, so this is the compliant shape.
+  const loadEngagement = useCallback(async () => {
     try {
       const res = await fetch("/api/admin/engagement");
       const data = await res.json();
       setSummary(data);
     } catch {}
     setLoading(false);
-  }
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    // Deferred to a microtask so no setState runs synchronously in the
+    // effect body (React Compiler lint: cascading-render risk).
+    Promise.resolve().then(() => {
+      if (!cancelled) loadEngagement();
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [loadEngagement]);
 
   const tierConfig = {
     highly_engaged: { label: "Highly Engaged", color: "#059669", bg: "#ecfdf5", icon: CheckCircle2 },

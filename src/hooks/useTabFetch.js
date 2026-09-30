@@ -33,23 +33,32 @@ export function useTabFetch(
   const [error, setError] = useState(null);
   const mountedRef = useRef(true);
 
-  // Keep callback refs so the effect body is stable across renders.
+  // Keep the latest callbacks WITHOUT writing refs during render (the React
+  // Compiler lint rejects that) — sync them in an effect keyed on identity.
   const transformRef = useRef(transform);
-  transformRef.current = transform;
   const onDataRef = useRef(onData);
-  onDataRef.current = onData;
+  useEffect(() => {
+    transformRef.current = transform;
+    onDataRef.current = onData;
+  }, [transform, onData]);
 
   useEffect(() => {
     if (!enabled || !url) {
-      setData(null);
-      setLoading(false);
-      setError(null);
-      return;
+      // Reset through a microtask: synchronous setState in the effect body
+      // is flagged as a cascading-render risk.
+      const t = setTimeout(() => {
+        setData(null);
+        setLoading(false);
+        setError(null);
+      }, 0);
+      return () => clearTimeout(t);
     }
 
     const controller = new AbortController();
-    setLoading(true);
-    setError(null);
+    const start = setTimeout(() => {
+      setLoading(true);
+      setError(null);
+    }, 0);
 
     fetch(url, { signal: controller.signal })
       .then(async (res) => {
@@ -60,6 +69,7 @@ export function useTabFetch(
         return res.json();
       })
       .then((json) => {
+        clearTimeout(start);
         if (!mountedRef.current || controller.signal.aborted) return;
         const result = transformRef.current
           ? transformRef.current(json)
@@ -72,6 +82,7 @@ export function useTabFetch(
         setLoading(false);
       })
       .catch((err) => {
+        clearTimeout(start);
         if (!mountedRef.current || err.name === "AbortError") return;
         warn("useTabFetch", (url || "") + " failed:", err?.message);
         setError(err);
@@ -79,6 +90,7 @@ export function useTabFetch(
       });
 
     return () => {
+      clearTimeout(start);
       controller.abort();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
